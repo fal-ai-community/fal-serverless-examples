@@ -1,0 +1,6 @@
+# Harness deps - pinned; CI installs exactly these (.github/workflows/numbers.yml).
+# fal is pinned because measure.py works around version-specific SDK behavior
+# (see the module docstring); bump deliberately, not transitively.
+fal==1.78.2
+httpx==0.28.1
+pytest==9.1.1

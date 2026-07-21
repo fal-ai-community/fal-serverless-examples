@@ -10,4 +10,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `01.2` | Migrations (external Docker, Modal, Replicate, RunPod) | `ready-now` | [SERV-1291](https://linear.app/features-and-labels/issue/SERV-1291) |
 | `01.3` | Dev → staging → prod (environments, secrets, promotion, rollback) | `ready-now` | [SERV-1299](https://linear.app/features-and-labels/issue/SERV-1299) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

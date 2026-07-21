@@ -1,12 +1,12 @@
-"""Smoke test (stub) - executed by the harness/CI via ephemeral deploy.
+"""Smoke test - run by the harness against the live ephemeral app.
 
-Pattern: fal's AppClient testing flow (see fal docs: "test models and endpoints");
-the harness (SERV-1310) provides the deploy/teardown plumbing so tests stay tiny.
+The harness (harness/check.py) deploys app.py, then executes this file with
+the `app_client` fixture from harness/pytest_plugin.py. Outside the harness
+the fixture skips, so plain `pytest` costs nothing. Keep tests tiny -
+deploy/teardown plumbing lives in the harness.
 """
 
 
-def test_smoke_placeholder():
-    # Replace with a real call through the harness once SERV-1310 lands:
-    # response = app_client.run("/", {"prompt": "a calico cat riding a bicycle"})
-    # assert response["result"]
-    assert True
+def test_smoke(app_client):
+    response = app_client.run("/", {"prompt": "a calico cat riding a bicycle"})
+    assert response["result"]

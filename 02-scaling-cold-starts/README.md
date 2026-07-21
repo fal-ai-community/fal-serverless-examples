@@ -11,4 +11,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `02.3` | Serve a 20+ GB video model (parallel loading, GPU sizing reasoning) | `needs-deploy` | [SERV-1303](https://linear.app/features-and-labels/issue/SERV-1303) |
 | `02.4` | Free-lunch optimizations, with numbers (prompt cache, FA3 one-liner, GPU branching) | `net-new` · blocked: [SERV-1272](https://linear.app/features-and-labels/issue/SERV-1272) (IP disclosure decision) | [SERV-1308](https://linear.app/features-and-labels/issue/SERV-1308) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

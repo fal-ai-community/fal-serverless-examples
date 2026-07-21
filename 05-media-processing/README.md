@@ -13,4 +13,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `05.5` | Provenance & safety stamping (watermark / C2PA on every output) | `net-new` · blocked: [SERV-1276](https://linear.app/features-and-labels/issue/SERV-1276) (C2PA certificate story) | [SERV-1307](https://linear.app/features-and-labels/issue/SERV-1307) |
 | `05.6` | Batch fan-out over a bucket (CPU stages on CPU machines) | `net-new` | [SERV-1313](https://linear.app/features-and-labels/issue/SERV-1313) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

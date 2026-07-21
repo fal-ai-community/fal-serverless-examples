@@ -11,4 +11,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `03.3` | Real-time video-to-video (re-theme from YOLO to genmedia style transfer) | `net-new` | [SERV-1289](https://linear.app/features-and-labels/issue/SERV-1289) |
 | `03.4` | Real-time world model over WebRTC (Matrix-Game / WMA) | `ready-now` | [SERV-1295](https://linear.app/features-and-labels/issue/SERV-1295) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

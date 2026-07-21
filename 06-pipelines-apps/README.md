@@ -13,4 +13,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `06.5` | Wrap a partner API with a self-hosted fallback (reroute + re-bill on failure) | `net-new` | [SERV-1315](https://linear.app/features-and-labels/issue/SERV-1315) |
 | `06.6` | Compose fal endpoints inside your app (fal_client chaining: caption, upscale, fan out) | `ready-now` | [SERV-1317](https://linear.app/features-and-labels/issue/SERV-1317) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

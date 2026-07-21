@@ -21,9 +21,10 @@ class Output(BaseModel):
 
 class App(fal.App, keep_alive=60):
     machine_type = "GPU-H100"  # see docs: machine types
+    app_auth = "private"  # required at deploy time; 'public' for playground-open demos
     # Authoritative deploy-time deps; keep requirements.txt an exact pinned mirror for local/CI.
     requirements = [
-        "fal",
+        "fal==1.78.2",  # keep in sync with harness/requirements.txt
         # pin everything: "torch==x.y.z", ...
     ]
 

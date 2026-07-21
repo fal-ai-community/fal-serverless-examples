@@ -4,7 +4,7 @@ This file onboards anyone (human or AI assistant) into the **fal Serverless Exam
 
 ## Mission
 
-Close fal's examples/onboarding gap vs Modal, Replicate, Baseten, and RunPod by rebuilding the serverless examples as a **numbered curriculum (tiers 00–08, ~40 entries)** on current models — every example ending in a production deploy with **real measured numbers** (cold start, latency, cost). This repo holds the runnable source; the docs pages that walk through each example live in [fal-docs](https://github.com/fal-ai/fal-docs).
+Close fal's examples/onboarding gap vs Modal, Replicate, Baseten, and RunPod by rebuilding the serverless examples as a **numbered curriculum (tiers 00–08, ~40 entries)** on current models — every example ending in a production deploy that **CI re-verifies with real ephemeral deploys** (deploy + smoke + tests). This repo holds the runnable source; the docs pages that walk through each example live in [fal-docs](https://github.com/fal-ai/fal-docs).
 
 ## Current repo state (read this before assuming anything)
 
@@ -36,7 +36,7 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 - **Milestones = catalog order**: `Foundations` → `Tier 00 · Getting started` → … → `Tier 08 · Production ops`. Foundations holds pre-catalog work: link hygiene ([SERV-1264](https://linear.app/features-and-labels/issue/SERV-1264)), page template + card data ([SERV-1265](https://linear.app/features-and-labels/issue/SERV-1265)), IA scaffolding ([SERV-1266](https://linear.app/features-and-labels/issue/SERV-1266)), and the **numbers harness ([SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310) — build this first; every entry's numbers depend on it; same ticket as catalog entry 08.4, because the harness IS that example: build it in Foundations, document it as 08.4)**. Note: the re-branch ([SERV-1262](https://linear.app/features-and-labels/issue/SERV-1262)) and descoped lint-fix ([SERV-1263](https://linear.app/features-and-labels/issue/SERV-1263)) tickets were **archived in Linear on Jul 20** — treat them as retired unless Rehan says otherwise (the lint ticket's defect list remains valid reference).
 - **Labels**: `tier-00`…`tier-08` (catalog tier) · `ready-now` (8: writable from existing docs) / `needs-deploy` (20: needs validation deployment) / `net-new` (12: new code/pattern) · `decision` (gating tickets).
 - **Blocked-by relations** wire 12 gated entries to their decision tickets — "blocked" is filterable and auto-clears.
-- Every entry ticket carries: work needed, risks, existing docs assets, missing reference docs, and a **Definition of Done** (§4-A page structure, snippet + nav + gallery card with dateAdded, validated deployment, measured numbers via the harness, source linked here).
+- Every entry ticket carries: work needed, risks, existing docs assets, missing reference docs, and a **Definition of Done** (§4-A page structure, snippet + nav + gallery card with dateAdded, validated deployment, measured numbers via the harness, source linked here). **Note:** per the 2026-07-21 descope (fact #2 below), read "measured numbers via the harness" in DoDs as "passes the CI deploy-check".
 
 ## The full catalog (slot → ticket)
 
@@ -105,7 +105,7 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 ## Hard-won facts — do not relearn these
 
 1. **Always branch fal-docs work from current `origin/main`.** An earlier working branch was 135 commits stale and half its plan was fiction. Main's layout: concept docs in `documentation/`, references in `api-reference/` + `model-api-reference/`, examples categorized in `examples/{image-generation,video-generation,audio-speech,integrations,serverless}/`, shared code in `snippets/`. Existing example pages live under `examples/<category>/`; where NEW curriculum pages and nav go is decided by the IA-scaffolding ticket ([SERV-1266](https://linear.app/features-and-labels/issue/SERV-1266)) — read it before creating pages.
-2. **Numbers are the differentiator and the contract.** Modal/Replicate publish none. Never fabricate or hand-edit `numbers.json` — the harness (SERV-1310) measures them in CI via ephemeral deploys (`FAL_KEY` secret, paid GPU time).
+2. **Measured numbers were descoped on 2026-07-21 (Rehan's call, after a modal-examples CI audit).** The original plan made CI-measured cold start/latency/cost the differentiator; the owner rescoped CI to correctness only — deploy + health + smoke + tests via `harness/check.py`, matching modal-examples' exit-code-correctness model. The full measurement harness (`harness/measure.py`, per-example `numbers.json`) was built, adversarially reviewed, and E2E-validated first (hello-fal: 7.3s cold start, p50 0.41s, $0.000012/run on S) — recover it from git history (PR #1) if numbers come back. Until then: never publish performance claims that can't be backed by a reproducible run, and ticket DoDs mentioning "measured numbers via the harness" should be read as "validated deployment via the deploy-check".
 3. **Known defects in the old examples** are catalogued in [SERV-1263](https://linear.app/features-and-labels/issue/SERV-1263) (descoped to surviving content + copy-and-it-breaks bugs; ticket archived Jul 20 but the defect list remains valid reference). Don't copy patterns from `snippets/wan-code.mdx` et al. without checking that ticket.
 4. **This repo's transfer plan** ([SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279)): built on a personal account first, then ownership transfers to [fal-ai-community](https://github.com/fal-ai-community). GitHub auto-redirects old URLs after transfer — but creating a same-named repo on the personal account afterwards kills the redirect. Post-transfer: re-check Actions secrets, org Actions policies, apps, branch protection, team permissions.
 5. **Differentiation is substance, not cosmetics** (numbered example repos are a genre): journey tiers, CI-regenerated numbers, playground links on every example, llms.txt/MCP-readable index. Don't mirror modal-examples' README voice.
@@ -113,11 +113,11 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 
 ## Build order (recommended)
 
-1. **Harness first** ([SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310)): implement `harness/measure.py` + wire `.github/workflows/numbers.yml`.
-2. **Template end-to-end**: prove the layout with one tiny real example (e.g. 00.1's hello-fal once hot-reload is confirmed, or a stub app) through run → deploy → measure → numbers.json.
+1. **Harness first** ([SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310)): ✅ done — `harness/check.py` + `.github/workflows/check.yml` (deploy-check scope per fact #2).
+2. **Template end-to-end**: ✅ done — `00-getting-started/hello-fal/` proven through run → ephemeral deploy-check → registered `fal deploy` (live as `rehan/hello-fal`).
 3. **Flagships with tickets unblocked**: 00.2 (first image API), 04.2 (LTX text-to-video), 02.1 (cold starts — FlashPack gate pending).
 4. The 8 `ready-now` entries are docs-first (their pages can be written before code lands here).
 
 ## Repo conventions
 
-See [CLAUDE.md](CLAUDE.md). Every example: own folder under its tier, copied from `templates/example/`, pinned requirements, smoke test, CI-owned numbers.json, README in §4-A order (problem → output first → code → deploy → numbers → cost & tuning → next steps).
+See [CLAUDE.md](CLAUDE.md). Every example: own folder under its tier, copied from `templates/example/`, pinned requirements, smoke test run by CI against a real ephemeral deploy, README in §4-A-derived order (problem → output first → code → deploy → cost & tuning → next steps; the "numbers" section was dropped with the measurement descope).
