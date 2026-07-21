@@ -11,7 +11,7 @@ One paragraph: the problem this solves and who hits it.
 ## Run it
 
 ```bash
-pip install fal
+pip install fal==1.78.2   # keep pinned to this example's requirements.txt
 fal auth login
 fal run app.py        # local iteration against real GPUs
 ```

@@ -1,5 +1,4 @@
 # Regenerates numbers.json for examples via the measurement harness (SERV-1310).
-# STATUS: stub — becomes active once harness/measure.py is implemented.
 #
 # Requires the FAL_KEY repository secret (ephemeral deploys cost real GPU time,
 # so this runs on manual dispatch + a weekly schedule, never on every push).
@@ -10,6 +9,12 @@ name: numbers
 permissions:
   contents: write # the numbers-bot commit push needs this (GITHUB_TOKEN defaults to read-only)
 
+# Never two measurement runs at once: ephemeral deploys cost real money and
+# concurrent runs would race the numbers-bot push.
+concurrency:
+  group: numbers
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -17,14 +22,15 @@ on:
         description: "Path to one example dir (e.g. 00-getting-started/hello-fal). Empty = all examples."
         required: false
         default: ""
-  # Enable the weekly schedule once the harness is implemented (SERV-1310) —
-  # until then scheduled runs would burn Actions minutes as green no-ops.
+  # Enable the weekly schedule after the first successful manual dispatch
+  # (needs the FAL_KEY secret and account balance — ephemeral deploys bill real time).
   # schedule:
   #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
 
 jobs:
   measure:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - uses: actions/setup-python@e797f83a49b83e6d5aa9d1a4b8d1908998cba1cc # v6.0.0
@@ -39,17 +45,22 @@ jobs:
         id: guard
       - name: Install
         if: steps.guard.outputs.skip != 'true'
-        run: pip install fal pytest
+        run: pip install -r harness/requirements.txt
       - name: Measure
         if: steps.guard.outputs.skip != 'true'
         env:
           FAL_KEY: ${{ secrets.FAL_KEY }}
-        run: python harness/measure.py --example "${{ inputs.example }}"
+          EXAMPLE: ${{ inputs.example }} # via env, never interpolated into the script
+        run: python harness/measure.py --example "$EXAMPLE"
       - name: Commit updated numbers
-        if: steps.guard.outputs.skip != 'true'
+        # Runs even when Measure failed: a partial measure-all run still paid
+        # for the numbers it DID produce - commit them, keep the job red.
+        if: steps.guard.outputs.skip != 'true' && !cancelled()
         run: |
           git config user.name "numbers-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add -A "**/numbers.json" || true
-          git diff --cached --quiet || git commit -m "chore: regenerate numbers.json [skip ci]"
+          git add -A -- ':(glob)**/numbers.json' || true
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: regenerate numbers.json [skip ci]"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push

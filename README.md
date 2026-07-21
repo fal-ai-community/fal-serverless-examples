@@ -41,7 +41,7 @@ Start from [`templates/example/`](templates/example/). Folder names are short ke
 ## Running an example
 
 ```bash
-pip install fal
+pip install fal==1.78.2   # each example's requirements.txt pins the exact version
 fal auth login
 cd 00-getting-started/<example>
 fal run app.py        # iterate

@@ -1,0 +1,8 @@
+# Repo-wide tooling config. No [project] table on purpose - this repo is a
+# collection of standalone examples, not an installable package.
+
+[tool.pytest.ini_options]
+# importlib mode lets every example keep the same test_app.py basename.
+# The app_client fixture comes from the root conftest.py (skips when no live
+# app is under test).
+addopts = "--import-mode=importlib"
