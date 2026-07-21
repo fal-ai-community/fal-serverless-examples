@@ -17,6 +17,7 @@
 ## Live examples
 
 - [00.1 hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the CI deploy-check
+- [00.2 first-image-api](00-getting-started/first-image-api/README.md): FLUX.2 [klein] 4B text-to-image API - load/warmup discipline, machine-type fallback, seed contract, sync_mode, playground + clients
 
 ## Docs
 
