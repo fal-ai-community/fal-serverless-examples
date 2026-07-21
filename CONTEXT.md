@@ -8,13 +8,9 @@ Close fal's examples/onboarding gap vs Modal, Replicate, Baseten, and RunPod by 
 
 ## Current repo state (read this before assuming anything)
 
-Local-only right now: initial commit on `main`, **no remote configured yet**. First push goes to Rehan's personal GitHub account (git user `rehan-remade`), e.g.:
+Live at **[github.com/rehan-remade/fal-serverless-examples](https://github.com/rehan-remade/fal-serverless-examples)** (private, git user `rehan-remade`) since 2026-07-20. PR #1 (merged 2026-07-21) landed the deploy-check harness (`harness/check.py` + `.github/workflows/check.yml`) and the first example (`00-getting-started/hello-fal/`, also live as a registered app `rehan/hello-fal`). The **`FAL_KEY` Actions secret is not set yet** — CI's guard step skips deploy-checks until it exists; the weekly cron stays commented until the first green run.
 
-```bash
-gh repo create rehan-remade/fal-serverless-examples --private --source=. --push
-```
-
-Later it transfers to [fal-ai-community](https://github.com/fal-ai-community) per [SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279) — after the transfer, never create a same-named repo on the personal account (it kills GitHub's redirect). GitHub Actions (`.github/workflows/numbers.yml`) and the `FAL_KEY` secret only exist once pushed.
+Later the repo transfers to [fal-ai-community](https://github.com/fal-ai-community) per [SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279) — after the transfer, never create a same-named repo on the personal account (it kills GitHub's redirect), and re-add `FAL_KEY` + re-check org Actions policies.
 
 Project owner: Rehan Sheikh (rehan@fal.ai).
 
