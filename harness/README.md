@@ -1,34 +1,22 @@
-# Measurement harness
+# Deploy-check harness
 
-Implements the repo's core promise: **every example ships CI-measured numbers** — cold start, latency, and cost per machine type — written to each example's `numbers.json`. Never hand-edit those files.
+Keeps the catalog honest: **every example must actually deploy and serve** — CI re-verifies it so nothing here can silently rot (the known failure mode of the old examples was "copy it and it breaks").
 
-Tracked in [SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310) (Foundations milestone — built before example content).
+Tracked in [SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310).
+
+> **Scope decision (2026-07-21, Rehan):** CI checks correctness only — deploy + health + smoke + tests. The earlier measurement layer (cold start / p50/p95 / cost written to per-example `numbers.json`) was descoped after comparing with modal-examples' CI (exit-code correctness only). The full measurement harness lives in git history (`harness/measure.py`, PR #1) and was E2E-validated before removal — recover it from there if measured numbers come back into scope.
 
 ## Contract
 
-`python harness/measure.py --example <dir>` — omit `--example` (or pass an empty value, as CI does) to measure all examples:
+`python harness/check.py --example <dir>` — omit `--example` (or pass an empty value, as CI does) to check all examples:
 
-1. Ephemeral-deploys the example's app (AppClient spawn pattern — see the fal docs page on testing models and endpoints) under a unique run-scoped alias.
-2. Measures: cold start (runner state transitions), p50/p95 latency over N warm requests (default 10, `--runs`), and cost derived from machine-type pricing × measured runtime.
+1. Ephemeral-deploys the example's app (AppClient spawn pattern) with **private** auth.
+2. Waits for `/health`, fires **one smoke request** at the example's `/` endpoint (payload built from the Input model's `Field(examples=[...])`), and validates a 2xx response.
 3. Runs the example's `test_app.py` (if present) against the live app via the `app_client` fixture from `harness/pytest_plugin.py`.
-4. Writes `<dir>/numbers.json` (schema in `templates/example/numbers.json`) with `measured_at` and `harness_version`.
-5. Tears the deployment down (stops runners immediately so keep-alive seconds aren't billed) and exits non-zero if the app fails to deploy or the smoke test fails — CI doubles as example rot detection.
+4. Tears the deployment down and **confirms via REST that the runner stopped** (runners bill until terminated); an unconfirmed runner fails the run.
+5. Exits non-zero if any example fails to deploy, respond, or pass its tests.
 
-## How each number is produced
-
-| Field | Method |
-|---|---|
-| `cold_start_s` | Runner boot→app-ready duration from the platform's **server-side log timestamps**: `Runner scheduled for allocation` (PENDING begins) → `Application startup complete` (uvicorn serving). One clock domain, no polling error; matches the fal docs' definition ("the time from PENDING to IDLE is your cold start latency"). Falls back to client-clock marker arrival → first healthy `/health` if a timestamp is missing. Note: ephemeral runners are invisible to `fal runners list` / `fal apps runners` — runner state/machine-type come from REST `GET /runners/{id}` with the id parsed from the `Starting runner <uuid>` log line. Caveat: ephemeral runners restore the Python env on the runner itself, so cold start includes env restore (small when cached); a registered `fal deploy` can boot faster. |
-| `p50_latency_s`, `p95_latency_s` | Client-measured wall time of `runs` warm POSTs to the example's `/` endpoint, after one untimed smoke request. |
-| `cost_per_run_usd` | Effective `$ / second` for the runner's **actual** machine type — fetched at measure time from fal's billing rates endpoint (`/billing/v2/machine_prices`, account-effective rates) — × p50 latency. If the rate is unavailable or the server returns its `0.0` "unpriced" sentinel, the value is `null`; the harness never invents a rate. Note this is marginal compute per request; total billing also counts keep-alive idle seconds (see fal's serverless pricing docs). |
-| `machine_type` | Taken from the live runner (not the requested value — apps may list fallback machine types). |
-| `runs` | Number of timed warm requests behind the p50/p95. |
-
-A `CRASH_BACKOFF` runner state aborts the measurement as a failed smoke test.
-
-## Sample-input convention
-
-The harness builds the request payload from the endpoint's Input model: every **required** field must carry `examples=[...]` on its `Field(...)` — the same sample the README shows. Optional fields use their defaults. A required field without examples fails the measurement with a clear error.
+A `CRASH_BACKOFF` runner state aborts the check as a failure.
 
 ## Smoke tests (`test_app.py`)
 
@@ -40,14 +28,20 @@ def test_smoke(app_client):
     assert response["result"]
 ```
 
-`app_client` comes from `harness/pytest_plugin.py`; the harness invokes pytest with `HARNESS_APP_URL` pointing at the live ephemeral app. Outside the harness the fixture skips, so plain `pytest` never needs GPU time.
+`app_client` comes from `harness/pytest_plugin.py` (registered repo-wide by the root `conftest.py`); the harness invokes pytest with `HARNESS_APP_URL` pointing at the live ephemeral app. Outside the harness the fixture skips, so plain `pytest` never costs anything.
+
+## Sample-input convention
+
+The harness builds the smoke payload from the endpoint's Input model: every **required** field must carry `examples=[...]` on its `Field(...)` — the same sample the README shows. Optional fields use their defaults.
 
 ## Auth
 
 One code path for both environments (`fal.sdk.get_credentials()`):
 
-- **CI**: `FAL_KEY` env var (repository secret). An API-scoped key suffices — the billing rates endpoint serves default rates without admin scope.
+- **CI**: `FAL_KEY` env var (repository secret; API scope suffices).
 - **Local**: a stored `fal auth login` session works; no `FAL_KEY` needed.
+
+A preflight call fails the whole run in seconds (with a real error) on bad credentials.
 
 ## Knobs (env vars)
 
@@ -55,11 +49,11 @@ One code path for both environments (`fal.sdk.get_credentials()`):
 |---|---|---|
 | `HARNESS_URL_TIMEOUT` | 900 | seconds to wait for the deploy to produce a URL (covers env build) |
 | `HARNESS_STARTUP_TIMEOUT` | 600 | seconds to wait for `/health` after the URL exists (covers `setup()`) |
-| `HARNESS_REQUEST_TIMEOUT` | 120 | per-request timeout for smoke/warm calls |
-| `HARNESS_WARM_RUNS` | 10 | default number of timed warm requests |
+| `HARNESS_REQUEST_TIMEOUT` | 120 | timeout for the smoke request |
+| `HARNESS_TEST_TIMEOUT` | 600 | timeout for the example's pytest run |
 
 ## Notes
 
-- Runs cost real GPU time: the only CI trigger is manual dispatch (`.github/workflows/numbers.yml`); the weekly cron gets uncommented after the first successful CI run.
-- Deps are pinned in `harness/requirements.txt`. `fal` is pinned deliberately: measure.py guards against a v1.78.2 behavior where a deploy that fails before emitting a URL would hang the SDK's own `AppClient.connect()` forever (the spawn worker's exception is discarded upstream).
+- Runs cost real compute time: CI triggers are PRs touching example/harness code, manual dispatch, and a weekly cron (enable after the first green run) — `.github/workflows/check.yml`.
+- Deps are pinned in `harness/requirements.txt`. `fal` is pinned deliberately: check.py guards against a v1.78.2 behavior where a deploy that fails before emitting a URL would hang the SDK's own `AppClient.connect()` forever (the spawn worker's exception is discarded upstream), and relies on REST `/runners/{id}` because ephemeral runners are invisible to the gRPC runner lists.
 - Python 3.11 required (matches CI and the runner env — fal ships cloudpickled code, so client and runner Python versions must agree).

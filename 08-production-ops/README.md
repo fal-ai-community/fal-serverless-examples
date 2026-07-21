@@ -12,4 +12,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `08.4` | Test endpoints in CI with AppClient (ephemeral deploys as tests) | `needs-deploy` | [SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310) |
 | `08.5` | Track usage & cost per app and API key | `ready-now` | [SERV-1314](https://linear.app/features-and-labels/issue/SERV-1314) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

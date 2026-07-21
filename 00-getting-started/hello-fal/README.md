@@ -30,7 +30,7 @@ fal run app.py        # ephemeral app on fal infra; prints playground + API URLs
 
 [`app.py`](app.py) has three parts:
 
-- **`Input` / `Output`** — pydantic models that become the endpoint's request/response schema. The `Field(examples=[...])` values feed the playground, the OpenAPI docs, and the [numbers harness](../../harness/README.md)'s sample request.
+- **`Input` / `Output`** — pydantic models that become the endpoint's request/response schema. The `Field(examples=[...])` values feed the playground, the OpenAPI docs, and the [CI deploy-check](../../harness/README.md)'s smoke request.
 - **`HelloFal(fal.App)`** — the app. `machine_type = "S"` picks the small 1 GB CPU tier (no GPU needed to say hello); `keep_alive=60` keeps a warm worker for 60s after the last request. `requirements` is what fal installs at deploy time — [`requirements.txt`](requirements.txt) mirrors it exactly for local tooling.
 - **`@fal.endpoint("/")`** — one POST route. `setup()` is where bigger apps load model weights once per worker; here it's deliberately empty.
 
@@ -49,19 +49,11 @@ curl -X POST https://fal.run/<your-username>/hello-fal \
   -d '{"name": "fal"}'
 ```
 
-## Numbers
-
-Measured by [`harness/measure.py`](../../harness/measure.py) — the machine-readable source of truth is [`numbers.json`](numbers.json) (CI-regenerated; the table below is copied from it, never invented):
-
-| Machine type | Cold start | p50 latency | p95 latency | Cost per run | Runs |
-|---|---|---|---|---|---|
-| `S` | 7.3 s | 0.411 s | 0.485 s | ~$0.000012 | 10 |
-
 ## Cost & tuning
 
 - `S` is a CPU tier billed per second; a greeting endpoint costs fractions of a cent per run. GPU tiers cost dollars per hour — see the machine-types docs before reaching for one.
 - `keep_alive=60` trades ~60s of idle billing after each burst for zero cold starts within it. Set it to `0` if you only care about batch-style calls, or higher if your traffic is steady.
-- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — that's the ~7 s measured above.
+- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — a few seconds, versus the model-load-dominated cold starts you'll meet in 00.2.
 
 ## Next steps
 

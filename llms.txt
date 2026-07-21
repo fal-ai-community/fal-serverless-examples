@@ -1,6 +1,6 @@
 # fal-serverless-examples
 
-> Production-grade fal Serverless examples, organized as a numbered curriculum (tiers 00-08) from first app to production operations. Every example ends in a deployed endpoint and ships CI-measured numbers (cold start, latency, cost) in a numbers.json file.
+> Production-grade fal Serverless examples, organized as a numbered curriculum (tiers 00-08) from first app to production operations. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
 
 ## Catalog
 
@@ -16,11 +16,11 @@
 
 ## Live examples
 
-- [00.1 hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the numbers harness
+- [00.1 hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the CI deploy-check
 
 ## Docs
 
 - [fal Serverless documentation](https://fal.ai/docs/documentation/serverless): concept docs these examples back
 - [Example template](templates/example/README.md): the structure every example follows
-- [Numbers harness](harness/README.md): how cold start / latency / cost are measured into each numbers.json
+- [Deploy-check harness](harness/README.md): how CI re-deploys and smoke-tests every example
 - [Project context](CONTEXT.md): full catalog map, ticket links, conventions

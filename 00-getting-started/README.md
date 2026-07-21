@@ -11,4 +11,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `00.3` | Media in, media out (files, CDN, persistent storage) | `needs-deploy` · blocked: [SERV-1269](https://linear.app/features-and-labels/issue/SERV-1269) (Files UI / ACL confirmation) | [SERV-1302](https://linear.app/features-and-labels/issue/SERV-1302) |
 | `00.4` | Bulletproof inputs (typed 422s, decompression-bomb gate, SSRF-safe downloads) | `net-new` | [SERV-1309](https://linear.app/features-and-labels/issue/SERV-1309) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.

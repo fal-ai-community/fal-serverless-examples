@@ -28,10 +28,6 @@ fal deploy app.py
 
 <!-- Playground link + curl / fal_client / @fal-ai/client call against the deployed endpoint. -->
 
-## Numbers
-
-<!-- Copy the measured values from this example's numbers.json (harness-written) into a small table here: machine type, cold start, p50/p95 latency, cost per run. Copying measured values is fine; inventing them is not — numbers.json stays the machine-readable source of truth. -->
-
 ## Cost & tuning
 
 <!-- keep_alive / concurrency / machine-type tradeoffs specific to this example. -->

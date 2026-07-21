@@ -1,0 +1,60 @@
+# Deploy-checks every example via the harness (SERV-1310): ephemeral deploy,
+# health, one smoke request, test_app.py against the live app, teardown.
+# Pass = it all works; nothing is committed back.
+#
+# Requires the FAL_KEY repository secret (ephemeral deploys cost real compute
+# time). Runs on PRs touching example/harness code, manual dispatch, and a
+# weekly cron (enable after the first green run with the secret in place).
+# After the transfer to fal-ai-community: re-add FAL_KEY and check org Actions policies.
+
+name: examples-check
+
+permissions:
+  contents: read
+
+# Never two check runs at once: ephemeral deploys cost real money.
+concurrency:
+  group: examples-check
+  cancel-in-progress: false
+
+on:
+  pull_request:
+    paths:
+      - "[0-9][0-9]-*/**"
+      - "harness/**"
+      - ".github/workflows/check.yml"
+  workflow_dispatch:
+    inputs:
+      example:
+        description: "Path to one example dir (e.g. 00-getting-started/hello-fal). Empty = all examples."
+        required: false
+        default: ""
+  # Enable after the first successful run (needs the FAL_KEY secret).
+  # schedule:
+  #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-python@e797f83a49b83e6d5aa9d1a4b8d1908998cba1cc # v6.0.0
+        with:
+          python-version: "3.11"
+      - name: Guard - FAL_KEY present
+        run: |
+          if [ -z "${{ secrets.FAL_KEY }}" ]; then
+            echo "::warning::FAL_KEY secret not set - skipping deploy-check run"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+        id: guard
+      - name: Install
+        if: steps.guard.outputs.skip != 'true'
+        run: pip install -r harness/requirements.txt
+      - name: Deploy-check examples
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          FAL_KEY: ${{ secrets.FAL_KEY }}
+          EXAMPLE: ${{ inputs.example }} # via env, never interpolated into the script
+        run: python harness/check.py --example "$EXAMPLE"

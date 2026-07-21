@@ -14,4 +14,4 @@ Example folders land here as their tickets complete. Every example follows the l
 | `04.6` | TTS (Kokoro) + text-to-music (DiffRhythm); refresh models | `needs-deploy` | [SERV-1318](https://linear.app/features-and-labels/issue/SERV-1318) |
 | `04.7` | 3D progressive rendering (SAM-3D) | `needs-deploy` | [SERV-1319](https://linear.app/features-and-labels/issue/SERV-1319) |
 
-Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment + measured numbers · `net-new` = new code/pattern to design first.
+Readiness: `ready-now` = writable from existing docs today · `needs-deploy` = needs a validation deployment · `net-new` = new code/pattern to design first.
