@@ -1,0 +1,41 @@
+# <Example name>
+
+<!-- Section order is the quality bar (design doc S4-A). Keep it. -->
+
+One paragraph: the problem this solves and who hits it.
+
+## What you get
+
+<!-- OUTPUT FIRST: show the result before any code — image/video/audio sample or response JSON. -->
+
+## Run it
+
+```bash
+pip install fal
+fal auth login
+fal run app.py        # local iteration against real GPUs
+```
+
+## How it works
+
+<!-- Walk the interesting parts of app.py: setup()/weights, endpoint I/O schema, machine_type choice. Link concept docs rather than re-explaining them. -->
+
+## Deploy
+
+```bash
+fal deploy app.py
+```
+
+<!-- Playground link + curl / fal_client / @fal-ai/client call against the deployed endpoint. -->
+
+## Numbers
+
+<!-- Copy the measured values from this example's numbers.json (harness-written) into a small table here: machine type, cold start, p50/p95 latency, cost per run. Copying measured values is fine; inventing them is not — numbers.json stays the machine-readable source of truth. -->
+
+## Cost & tuning
+
+<!-- keep_alive / concurrency / machine-type tradeoffs specific to this example. -->
+
+## Next steps
+
+<!-- 2-3 links: the next example in the journey + relevant concept docs. -->
