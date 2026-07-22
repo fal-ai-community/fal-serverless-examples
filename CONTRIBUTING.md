@@ -1,32 +1,24 @@
 # Contributing
 
-Thanks for wanting to add an example! This repo is a curated, numbered curriculum — every example is CI-verified against real fal infrastructure, so the bar is "runs, deploys, and stays running", not "worked once on my machine".
+This catalog is **maintained by the fal team** — examples are planned, built, and validated internally against the [Linear board](https://linear.app/features-and-labels/project/serverless-examples-and-onboarding-revamp-ab1f7491f6e7). We're not accepting example contributions from outside fal right now.
 
-## Before you write code
+**Found a broken example or a mistake?** Please open an issue — CI re-deploys every example against real infrastructure, but reader eyes catch what smoke tests don't. Small correction PRs (typos, broken links) are welcome too.
 
-1. **Propose the example first** — open an issue using the "Propose an example" template. The catalog (tiers 00–08, each tier README has the table) is maintainer-curated; proposals that fill a planned slot or add a genuinely new production pattern are most likely to land.
-2. Wait for a maintainer 👍 on the slot/scope before investing in a PR.
+## For fal folks adding an example
 
-## Building an example
-
-- Copy [`templates/example/`](templates/example/) into the right tier directory. Short kebab-case folder name, no slot prefix.
-- **Pin everything.** `App.requirements` in `app.py` is authoritative; `requirements.txt` must mirror it exactly. No unpinned installs anywhere, including README snippets.
-- Set `app_auth` explicitly on the App class (deploys fail without it).
-- Every required `Input` field carries `Field(examples=[...])` — that's what the playground and the CI smoke request are built from.
-- README follows the template's section order: problem → output shown first → run it → how it works → deploy → cost & tuning → next steps. Show real output. Never publish a performance claim you can't back with a reproducible run.
-- `test_app.py` stays tiny: the `app_client` fixture (provided by the harness) hits your live ephemeral deploy.
-
-## Validating
+1. **Start from the ticket.** Every catalog slot has a Linear ticket (tier README tables link them); the ticket is the source of truth for scope. Read [`CONTEXT.md`](CONTEXT.md) first.
+2. Copy [`templates/example/`](templates/example/) into the tier directory. Short kebab-case folder name, no slot prefix; add the folder link to the tier README table.
+3. **Pin everything.** `App.requirements` in `app.py` is authoritative; `requirements.txt` mirrors it exactly. No unpinned installs anywhere, including README snippets.
+4. Set `app_auth` explicitly (deploys fail without it). Every required `Input` field carries `Field(examples=[...])` — that powers the playground and the CI smoke request.
+5. README follows the template's section order: problem → output first → run it → how it works → deploy → cost & tuning → next steps. Show real output. Never publish a performance claim you can't back with a reproducible run.
+6. Validate before the PR:
 
 ```bash
 pip install -r harness/requirements.txt
-python harness/static_check.py                      # free, no account needed
-python harness/check.py --example <your-example>    # real ephemeral deploy: needs `fal auth login` and spends a few cents
+python harness/static_check.py                      # free
+python harness/check.py --example <your-example>    # real ephemeral deploy (fal auth login; costs a few cents)
 ```
 
-CI runs the same two stages: static checks on every PR, and the real deploy-check after maintainer approval (it spends money, so fork PRs wait for a reviewer).
+7. PR title: `type(scope): description` — e.g. `feat(03-streaming-realtime): SSE preview frames`. One example per PR; include the deploy-check output tail. Update `llms.txt`.
 
-## PR conventions
-
-- Title: `type(scope): description` — e.g. `feat(03-streaming-realtime): SSE preview frames`.
-- One example per PR. Include what you validated (deploy-check output, playground link if you deployed it yourself).
+CI runs the static job on every PR; the real deploy-check runs behind the maintainer-approved `deploy-check` environment.
