@@ -1,6 +1,6 @@
 """Pytest plugin providing the `app_client` fixture for example smoke tests.
 
-The harness (measure.py) deploys the example ephemerally, then runs the
+The harness (check.py) deploys the example ephemerally, then runs the
 example's test_app.py with this plugin (`-p harness.pytest_plugin`) and
 HARNESS_APP_URL pointing at the live app - so tests stay tiny:
 
@@ -48,5 +48,5 @@ class HarnessAppClient:
 def app_client() -> HarnessAppClient:
     url = os.environ.get("HARNESS_APP_URL")
     if not url:
-        pytest.skip("no live app under test - run via harness/measure.py")
+        pytest.skip("no live app under test - run via harness/check.py")
     return HarnessAppClient(url)

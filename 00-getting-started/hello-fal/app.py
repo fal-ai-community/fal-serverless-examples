@@ -1,7 +1,7 @@
 """Hello, fal - the smallest deployable fal app.
 
 Catalog slot 00.1 (SERV-1284). One pydantic-typed endpoint: run it with
-`fal run`, ship it with `fal deploy`, measure it with the numbers harness.
+`fal run`, ship it with `fal deploy`, verify it with the CI deploy-check.
 The full "one app, run three ways" walkthrough lands with SERV-1284.
 """
 import fal

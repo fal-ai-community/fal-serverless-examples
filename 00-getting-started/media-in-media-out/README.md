@@ -55,7 +55,7 @@ curl -X POST https://queue.fal.run/<your-username>/media-in-media-out \
 
 - **How uploads are billed — the honest version.** On fal Serverless there is no per-request metering (with one documented exception: requests failing with a 5xx aren't charged) and no separate fee for CDN uploads: you pay one per-second rate for every second the runner is alive, from `setup()` through teardown — setup, busy, and idle all bill the same. `Image.from_pil()` uploads synchronously inside your handler, so upload time is part of request wall-clock — this app *measures* it for you in `report.upload_ms` rather than promising a number. What's worth optimizing is *throughput*: a handler that returns sooner serves more requests per billed second. (fal's hosted Model APIs bill differently — per output, excluding upload — which is where "uploads aren't billed" claims come from; don't expect that on self-hosted apps.)
 - A telling detail from the SDK itself: PNG outputs are saved at `compress_level=1` — fal deliberately trades a slightly larger file for less handler time, which is exactly the right trade under per-second billing.
-- This app runs on `M` (2 vCPUs / 2 GB) — about $0.25/hour at today's default catalog rate. File plumbing needs no GPU; picking the smallest machine that fits is the whole cost story for CPU apps.
+- This app runs on `M` (2 vCPUs / 2 GB) — a small CPU rate — see [fal pricing](https://fal.ai/pricing). File plumbing needs no GPU; picking the smallest machine that fits is the whole cost story for CPU apps.
 
 ## Next steps
 
