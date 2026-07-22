@@ -21,10 +21,18 @@ def test_processes_to_requested_format(app_client):
 def test_output_format_sets_content_type_and_cache_hits(app_client):
     response = app_client.run("/", {"image_url": SAMPLE, "output_format": "jpeg"})
     assert response["image"]["content_type"] == "image/jpeg"
-    # Same URL as the earlier test: the /data cache should make this download
-    # near-instant. Generous bound - it's a smoke test, not a benchmark.
+    # Same URL as the earlier test: the URL-hash cache on /data skips the
+    # transfer entirely, so this request must report a cache hit.
     report = httpx.get(response["report"]["url"], timeout=30).json()
+    assert report["source"]["cache_hit"] is True
     assert report["download_ms"] < 2000
+    assert "upload_ms" in report
+
+
+def test_sync_mode_returns_data_uris(app_client):
+    response = app_client.run("/", {"image_url": SAMPLE, "sync_mode": True})
+    assert response["image"]["url"].startswith("data:image/")
+    assert response["report"]["url"].startswith("data:application/json")
 
 
 def test_bad_url_is_a_typed_422(app_client):

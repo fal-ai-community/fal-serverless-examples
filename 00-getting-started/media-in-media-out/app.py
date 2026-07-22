@@ -5,9 +5,10 @@ about how media moves through a fal app - URL in, safe bounded download,
 /data caching, processing on a cheap CPU machine, and typed outputs on
 fal's CDN with the content type you asked for.
 """
-import io
+import hashlib
 import json
 import time
+from pathlib import Path
 from typing import Literal
 
 import fal
@@ -17,7 +18,9 @@ from fal.toolkit.utils.download_utils import DownloadError
 from pydantic import BaseModel, Field
 
 MAX_DOWNLOAD_MB = 20
+MAX_PIXELS = 89_478_485  # decode gate: PIL's own bomb error only fires at 2x this
 THUMBNAIL_EDGE = 256
+CACHE_ROOT = Path("/data/cache/media-in")
 
 
 class Input(BaseModel):
@@ -30,7 +33,10 @@ class Input(BaseModel):
         default=1024,
         ge=64,
         le=4096,
-        description="Longest edge of the processed image, in pixels.",
+        description=(
+            "Upper bound for the longest edge, in pixels. Aspect ratio is "
+            "preserved and images are never upscaled."
+        ),
     )
     output_format: Literal["jpeg", "png", "webp"] = Field(
         default="webp",
@@ -45,6 +51,13 @@ class Input(BaseModel):
         description=(
             "Optional retention for the uploaded outputs; omit to use your "
             "account's default media lifecycle."
+        ),
+    )
+    sync_mode: bool = Field(
+        default=False,
+        description=(
+            "Return outputs as data URIs instead of hosted CDN URLs - "
+            "skips the upload round-trip for latency-sensitive callers."
         ),
     )
 
@@ -74,39 +87,69 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         from PIL import Image as PILImage
         from PIL import ImageOps
 
-        # MEDIA IN - a bounded download with /data caching built in: a relative
-        # target_dir lands under /data (persistent, account-wide), and a repeat
-        # request for the same URL reuses the cached file instead of re-downloading.
+        # MEDIA IN - a bounded, SSRF-guarded download (both built into
+        # download_file), cached on /data persistent storage. The cache is
+        # keyed by URL hash so a repeat request for the same URL skips the
+        # transfer entirely - across workers, deploys, and CI runs.
         t0 = time.monotonic()
-        try:
-            source_path = download_file(
-                request.image_url, "cache/media-in", filesize_limit=MAX_DOWNLOAD_MB
-            )
-        except DownloadError as exc:
-            raise FieldException(
-                field="image_url",
-                message=f"could not download (limit {MAX_DOWNLOAD_MB} MB): {exc}",
-            )
+        cache_dir = CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
+        cached = next(cache_dir.glob("*"), None) if cache_dir.is_dir() else None
+        if cached is not None:
+            source_path = cached
+        else:
+            try:
+                source_path = download_file(
+                    request.image_url, cache_dir, filesize_limit=MAX_DOWNLOAD_MB
+                )
+            except DownloadError as exc:
+                raise FieldException(
+                    field="image_url",
+                    message=f"could not download (limit {MAX_DOWNLOAD_MB} MB): {exc}",
+                )
         download_ms = int((time.monotonic() - t0) * 1000)
 
-        # PROCESS - plain Pillow work: honor EXIF rotation, bound the size.
+        # PROCESS - plain Pillow work with the gotchas handled the way
+        # production apps do: decode errors are a typed 422, oversized pixel
+        # counts are rejected before decode allocates, EXIF rotation is
+        # best-effort, and exotic modes (CMYK, palette) are normalized to
+        # something the chosen encoder can actually write.
         t1 = time.monotonic()
         try:
             source = PILImage.open(source_path)
-            source = ImageOps.exif_transpose(source)
+            if source.width * source.height > MAX_PIXELS:
+                raise FieldException(
+                    field="image_url",
+                    message=(
+                        f"image too large ({source.width}x{source.height}); "
+                        f"max ~{MAX_PIXELS // 1_000_000} megapixels"
+                    ),
+                )
+            source.load()
+        except FieldException:
+            raise
         except Exception:
             raise FieldException(field="image_url", message="not a decodable image")
+        try:
+            source = ImageOps.exif_transpose(source)
+        except Exception:
+            pass  # best-effort: bad EXIF metadata must not reject a decodable image
         original_size = (source.width, source.height)
-        if request.output_format == "jpeg":
+        if source.mode not in ("RGB", "RGBA"):
+            source = source.convert(
+                "RGBA" if request.output_format in ("png", "webp") else "RGB"
+            )
+        if request.output_format == "jpeg" and source.mode == "RGBA":
             source = source.convert("RGB")  # JPEG has no alpha channel
         processed = source.copy()
         processed.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
-        thumb = source.copy()
+        thumb = processed.copy()  # derive from the smaller image, not the original
         thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.LANCZOS)
         processed_ms = int((time.monotonic() - t1) * 1000)
 
         # MEDIA OUT - format choice becomes the file's content type; an optional
-        # per-file retention rides along as an object lifecycle preference.
+        # per-file retention rides along as an object lifecycle preference; and
+        # sync_mode swaps the CDN for inline data URIs.
+        repository = "in_memory" if request.sync_mode else "fal_v3"
         save_kwargs = None
         if request.expires_in_seconds is not None:
             save_kwargs = {
@@ -114,34 +157,40 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                     "expiration_duration_seconds": request.expires_in_seconds
                 }
             }
+        t2 = time.monotonic()
         image = Image.from_pil(
             processed,
             format=request.output_format,
+            repository=repository,
             save_kwargs=save_kwargs,
             fallback_save_kwargs=save_kwargs,
         )
         thumbnail = Image.from_pil(
             thumb,
             format=request.output_format,
+            repository=repository,
             save_kwargs=save_kwargs,
             fallback_save_kwargs=save_kwargs,
         )
+        upload_ms = int((time.monotonic() - t2) * 1000)
 
         report_data = {
             "source": {
                 "url": request.image_url,
                 "width": original_size[0],
                 "height": original_size[1],
-                "cached_at": str(source_path),
+                "cache_hit": cached is not None,
             },
             "output_format": request.output_format,
-            "download_ms": download_ms,  # near-zero when /data already has the file
+            "download_ms": download_ms,  # near-zero on a cache hit
             "processed_ms": processed_ms,
+            "upload_ms": upload_ms,  # image + thumbnail; 0-ish in sync_mode
         }
         report = File.from_bytes(
             json.dumps(report_data, indent=2).encode(),
             content_type="application/json",
             file_name="report.json",
+            repository=repository,
             save_kwargs=save_kwargs,
             fallback_save_kwargs=save_kwargs,
         )
