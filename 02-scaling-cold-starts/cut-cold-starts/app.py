@@ -31,6 +31,13 @@ MODEL_ID = "stabilityai/sd-turbo"
 # kernel caches from an old pin must never be loaded by a new one.
 PACK_DIR = Path("/data/examples/cut-cold-starts/sd-turbo-fp16-v1")
 INDUCTOR_CACHE_KEY = "cut-cold-starts-sd-turbo/v1"
+# Written (atomically) only after BOTH caches exist: the FlashPack pack is on
+# /data AND the compile+warmup block has exited, i.e. the shared inductor
+# cache was populated. A worker that crashes between the two leaves no
+# marker, so the next boot correctly reports itself as a cache-building boot.
+# Lives inside PACK_DIR (couples to the pack version) and carries the
+# inductor key (couples to the kernel-cache version).
+READY_MARKER = PACK_DIR / (".ready-" + INDUCTOR_CACHE_KEY.replace("/", "-"))
 RESOLUTION = 512  # SD-Turbo's native resolution; fixed so warmup covers all shapes
 
 
@@ -85,8 +92,10 @@ class SetupReport(BaseModel):
     gpu: str = Field(description="GPU this worker booted on.")
     built_caches_this_boot: bool = Field(
         description=(
-            "True only on the account's first boot, which builds the /data "
-            "FlashPack pack that every later cold start reuses."
+            "True when this boot found no readiness marker and had to build "
+            "cache state (the /data FlashPack pack and/or the shared compiled-"
+            "kernel cache). Boots that find the marker reuse both and report "
+            "False - that is the steady state every later cold start gets."
         )
     )
     stages: list[StageTiming] = Field(description="Per-stage setup timings, in order.")
@@ -159,7 +168,12 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         # seconds to ~2 min depending on the host). The copy lands in a temp
         # dir and is atomically renamed so concurrently booting workers can't
         # observe a half-written pack; the loser of the race just cleans up.
-        self.built_caches_this_boot = False
+        #
+        # "Built caches" is decided by the readiness marker, not by which
+        # branches run: the marker only exists once a previous boot finished
+        # the whole pack + compile sequence, so a boot after a mid-setup crash
+        # honestly reports itself as cache-building.
+        self.built_caches_this_boot = not READY_MARKER.is_file()
         if not PACK_DIR.is_dir():
             t0 = time.perf_counter()
             pipe = StableDiffusionPipeline.from_pretrained(
@@ -202,7 +216,6 @@ class ColdStartOptimized(fal.App, keep_alive=60):
                     raise
             shutil.rmtree(local_dir.parent, ignore_errors=True)
             stage("publish pack to /data (first boot only)", t0)
-            self.built_caches_this_boot = True
 
         # LEVER 2 - every boot: weights stream from /data to GPU via FlashPack.
         # No Hub round-trip, no safetensors CPU deserialization. The .to() call
@@ -268,6 +281,15 @@ class ColdStartOptimized(fal.App, keep_alive=60):
                     guidance_scale=0.0,
                 )
         stage("compile + warmup (shared inductor cache)", t0)
+
+        # Both caches are now in place: the pack was on /data before this
+        # point and synchronized_inductor_cache synced the kernels on exit.
+        # Publish the readiness marker atomically (tmp + rename); a crash
+        # anywhere above leaves no marker and the next boot rebuilds honestly.
+        if self.built_caches_this_boot:
+            marker_tmp = READY_MARKER.with_name(f"{READY_MARKER.name}.tmp-{uuid.uuid4().hex}")
+            marker_tmp.write_text("ok")
+            marker_tmp.rename(READY_MARKER)
 
         self.setup_stages = stages
         self.setup_total = round(time.perf_counter() - setup_start, 2)
