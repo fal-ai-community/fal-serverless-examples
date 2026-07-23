@@ -178,9 +178,15 @@ class ColdStartOptimized(fal.App, keep_alive=60):
             pipe.tokenizer.save_pretrained(str(local_dir / "tokenizer"))
             pipe.scheduler.save_pretrained(str(local_dir / "scheduler"))
             del pipe
-            stage("pack weights to FlashPack (first boot only)", t0)
+            # The from_pretrained() above includes the HF fetch when the
+            # /data-backed cache is cold, so this stage's timer covers
+            # download + repack together.
+            stage("download + pack to FlashPack (first boot only)", t0)
 
             t0 = time.perf_counter()
+            # copytree would create missing parents itself (os.makedirs);
+            # explicit here so the stale-build sweep below has a dir to scan.
+            PACK_DIR.parent.mkdir(parents=True, exist_ok=True)
             for stale in PACK_DIR.parent.glob(".build-*"):  # crashed builds, if any
                 if time.time() - stale.stat().st_mtime > 3600:
                     shutil.rmtree(stale, ignore_errors=True)
@@ -189,7 +195,11 @@ class ColdStartOptimized(fal.App, keep_alive=60):
             try:
                 publish_dir.rename(PACK_DIR)
             except OSError:
-                shutil.rmtree(publish_dir)  # another worker finished first
+                shutil.rmtree(publish_dir, ignore_errors=True)
+                if not PACK_DIR.is_dir():
+                    # Nobody else published either: this was a real storage/
+                    # permission failure, not a lost race - fail the boot.
+                    raise
             shutil.rmtree(local_dir.parent, ignore_errors=True)
             stage("publish pack to /data (first boot only)", t0)
             self.built_caches_this_boot = True
@@ -197,9 +207,23 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         # LEVER 2 - every boot: weights stream from /data to GPU via FlashPack.
         # No Hub round-trip, no safetensors CPU deserialization. The .to() call
         # moves the buffers that skeleton-init left on the CPU.
+        def ensure_materialized(module, component: str) -> None:
+            """Fail the boot on a pack/model mismatch. Must run straight after
+            the FlashPack assignment, BEFORE any .to() - a meta tensor rides
+            through .to() unchanged, so a later check could be masked."""
+            leftover = [
+                name
+                for name, tensor in list(module.named_parameters()) + list(module.named_buffers())
+                if tensor.is_meta
+            ]
+            if leftover:
+                raise RuntimeError(f"{component}: tensors not materialized from pack: {leftover}")
+
         t0 = time.perf_counter()
         unet = PackedUNet.from_pretrained_flashpack(str(PACK_DIR / "unet"), device="cuda")
+        ensure_materialized(unet, "unet")
         vae = PackedVAE.from_pretrained_flashpack(str(PACK_DIR / "vae"), device="cuda")
+        ensure_materialized(vae, "vae")
         # Text encoder via the direct function API: skeleton on the meta
         # device (buffers stay real - packs only hold state_dict tensors),
         # then stream the pack onto the GPU.
@@ -210,17 +234,10 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         assign_from_file(
             text_encoder, str(PACK_DIR / "text_encoder" / "model.flashpack"), device="cuda"
         )
+        ensure_materialized(text_encoder, "text_encoder")
         text_encoder.eval()
         for module in (unet, vae, text_encoder):
             module.to("cuda", torch.float16)
-        leftover_meta = [
-            name
-            for module in (unet, vae, text_encoder)
-            for name, tensor in list(module.named_parameters()) + list(module.named_buffers())
-            if tensor.is_meta
-        ]
-        if leftover_meta:  # a pack/model mismatch must fail the boot, not the request
-            raise RuntimeError(f"tensors not materialized from pack: {leftover_meta}")
         self.pipe = StableDiffusionPipeline(
             vae=vae,
             text_encoder=text_encoder,

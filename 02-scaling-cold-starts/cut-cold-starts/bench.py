@@ -12,11 +12,15 @@ Run from the repo root venv (harness/requirements.txt + `fal auth login`):
 
     python 02-scaling-cold-starts/cut-cold-starts/bench.py
 
-By default each app runs twice. Run 1 of the optimized app is the account's
-first boot: it builds the /data FlashPack pack and populates the shared
-inductor cache (a one-time cost); run 2 is the steady-state cold start every
-later worker enjoys. Run 1 of the baseline may also pay one-time environment
-build; run 2 is its honest steady state. Compare run 2 against run 2.
+By default each app runs twice. Optimized runs are labeled by what the worker
+actually did (the app's built_caches_this_boot flag): a "first boot" builds
+the /data FlashPack pack and populates the shared inductor cache (a one-time
+cost); every boot after that - on ANY run index - is a steady-state cold
+start. A first-boot measurement is only reproducible on an account whose
+caches don't exist yet (or after bumping the version in app.py). The first
+run on a fresh requirements set may also pay a one-time environment build
+(visible in spawn -> healthy, never in the setup() stages). Compare baseline
+steady state against optimized steady state.
 
 Ephemeral deploys bill real GPU time (~2-15 min per run on GPU-H100).
 """
@@ -175,7 +179,24 @@ def bench_once(app_file: Path, label: str) -> dict:
         )
         report.raise_for_status()
         result["setup_report"] = report.json()
+        # Optimized runs are classified by what the worker actually did, not
+        # by run index: once the account's /data caches exist, every run -
+        # including "run 1" of a later invocation - is a steady-state boot.
+        if result["setup_report"].get("variant") == "optimized":
+            first_boot = result["setup_report"].get("built_caches_this_boot")
+            result["label"] = f"{label} ({'first boot' if first_boot else 'steady state'})"
     finally:
+        # A runner can exist (and bill) before its id ever appears in the
+        # logs - e.g. a deploy that failed mid-boot. Keep discovery alive for
+        # a bounded window before tearing down, so teardown() has an id to
+        # confirm termination against.
+        deadline = time.monotonic() + 45
+        while (
+            poller.runner_id is None
+            and watcher.runner_id is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.5)
         if poller.runner_id is None and watcher.runner_id:
             poller.runner_id = watcher.runner_id
         leaked = teardown(spawn_info, poller, headers)
@@ -186,6 +207,14 @@ def bench_once(app_file: Path, label: str) -> dict:
                 "it bills until terminated; check `fal runners list`"
             )
             result["leaked_runner"] = leaked
+        if poller.runner_id is None:
+            # Never saw a runner id: termination cannot be confirmed either
+            # way. Report loudly instead of pretending teardown succeeded.
+            print(
+                f"[{label}] WARNING: no runner id was ever observed; teardown "
+                "is UNCONFIRMED - check `fal runners list` for anything billing"
+            )
+            result["teardown_unconfirmed"] = True
 
     report = result["setup_report"]
     print(
@@ -211,10 +240,10 @@ def print_table(runs: list[dict]) -> None:
     headers = ["Setup stage"] + [r["label"] for r in runs]
     rows = [
         ("imports", "imports"),
-        ("download weights", "download"),
+        ("download weights", "download weights"),
         ("weights -> GPU", "load weights"),
         ("compile + warmup", "compile + warmup"),
-        ("pack to FlashPack (one-time)", "pack weights"),
+        ("download + pack (one-time)", "download + pack"),
         ("publish pack to /data (one-time)", "publish pack"),
     ]
     lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
@@ -272,7 +301,9 @@ def main() -> int:
             return 1
 
     print_table(runs)
-    return 1 if any(r.get("leaked_runner") for r in runs) else 0
+    return 1 if any(
+        r.get("leaked_runner") or r.get("teardown_unconfirmed") for r in runs
+    ) else 0
 
 
 if __name__ == "__main__":

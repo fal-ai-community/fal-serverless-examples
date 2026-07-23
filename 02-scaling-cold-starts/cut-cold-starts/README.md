@@ -12,15 +12,15 @@ The same endpoint, before and after — measured on real ephemeral deploys (`GPU
 | Setup stage | Baseline (2 runs) | Optimized, steady state | Optimized, first boot (one-time) |
 |---|---|---|---|
 | imports | 10.5s / 20.3s | 10.0s | 11.0s |
-| download weights | 10.8s / 9.3s | 0 (weights on `/data`) | 0 (`/data`-backed HF cache) |
+| download weights | 10.8s / 9.3s | 0 (weights on `/data`) | included in pack stage ↓ |
 | weights → GPU | 1.3s / 1.9s (safetensors) | 2.6s (FlashPack) | 2.8s |
-| pack + publish to `/data` | — | — | 7.0s |
+| download + pack + publish to `/data` | — | — | 7.0s |
 | compile + warmup | 328.9s / 383.5s | **73.2s** (cache hit) | 359.4s (compiles, syncs cache) |
 | **`setup()` total** | **351.6s / 414.9s** | **85.8s** | 380.2s |
 | spawn → healthy | 357.9s / 435.1s | 92.6s | 388.4s |
 | first request after boot | 1.55s / 1.96s | 1.54s | 1.74s |
 
-**4.1–4.8× faster cold starts**, measured 2026-07-23 on real fal ephemeral deploys (`GPU-H100`, torch 2.12.1, identical environments — see [`bench.py`](bench.py)). The two baseline runs show honest host-to-host variance. For this 2.6 GB model the compile cache is the big win; the weight levers keep loading constant-time and network-free, and grow with model size. The runners' REST state timeline exposed only `PENDING`/`RUNNING` for ephemeral runners, so the per-stage split above comes from each app's own `/setup-report` endpoint.
+**4.1–4.8× faster cold starts**, measured 2026-07-23 on real fal ephemeral deploys (`GPU-H100`, torch 2.12.1, identical environments — see [`bench.py`](bench.py)). The two baseline runs show honest host-to-host variance. For this 2.6 GB model the compile cache is the big win; the weight levers keep loading constant-time and network-free, and grow with model size. Notes on the first-boot column: the HF fetch happens inside the "download + pack" stage — on our measured boot it was served by an already-warm platform-side cache (hence only 2.8s); a cold cache adds the model download to that stage. The runners' REST state timeline exposed only `PENDING`/`RUNNING` for ephemeral runners, so the per-stage split above comes from each app's own `/setup-report` endpoint.
 <!-- BENCH_TABLE_END -->
 
 …and a typed text-to-image API that answers in well under a second once warm:
@@ -50,7 +50,7 @@ To reproduce the table with real deployments (bills real GPU minutes):
 python bench.py           # deploys each app twice, prints the before/after table
 ```
 
-Run 1 of the optimized app is the account's one-time cache build; run 2 is the steady-state cold start that every later worker gets.
+`bench.py` labels each optimized run by what the worker actually did (the app's `built_caches_this_boot` flag): the one-time cache build only happens on an account whose `/data` caches don't exist yet — once they do, every run is a steady-state boot. To reproduce the first-boot measurement, bump the version in `app.py`'s `PACK_DIR`/`INDUCTOR_CACHE_KEY` (or measure on a fresh account).
 
 ## How it works
 
@@ -75,7 +75,7 @@ The first boot compiles for real and syncs the kernels to `/data` on exit; every
 
 **Everything is versioned.** The pack dir (`…/sd-turbo-fp16-v1`) and cache key (`…/v1`) both carry a version. Compiled kernels are torch-version-specific, and a stale pack silently loaded by a new pin is a debugging nightmare — bump the version whenever the model, dtype, or torch pin changes.
 
-**What's deliberately identical** so the benchmark isolates the levers: both apps pin the same requirements (one shared environment), the same machine type, the same fp16 payload, and the same compile flags — the baseline even gets `hf-transfer`, the fast downloader.
+**What's deliberately identical** so the benchmark isolates the levers: both apps pin the same requirements (one shared environment), the same machine type, the same fp16 payload, and the same compile flags.
 
 ## Deploy
 
