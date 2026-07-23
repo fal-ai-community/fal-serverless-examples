@@ -6,7 +6,8 @@ baseline_app.py, with every cold-start lever pulled:
   1. /data persistent storage - weights are downloaded and packed ONCE per
      account; every later cold start reads them from shared storage.
   2. FlashPack weight loading - tensors stream from /data straight to GPU
-     (2.6 GB in ~2.6 s measured), constant-time and network-free.
+     with no Hub download; speed depends on the host's /data throughput
+     (2.6 GB in ~2.6-8 s typically; see the README for the measured tail).
   3. synchronized_inductor_cache - torch.compile kernels are compiled once,
      zipped to /data, and every later worker unpacks them instead of
      recompiling.

@@ -13,14 +13,14 @@ The same endpoint, before and after — measured on real ephemeral deploys (`GPU
 |---|---|---|---|
 | imports | 10.5s / 20.3s | 10.0s / 12.3s / 75.8s | 11.0s |
 | download weights | 10.8s / 9.3s | 0 (weights on `/data`) | included in pack stage ↓ |
-| weights → GPU | 1.3s / 1.9s (safetensors) | 2.6s / 8.0s / 571.5s (FlashPack, see note) | 2.8s |
+| weights → GPU | 1.3s / 1.9s (safetensors) | 2.6s / 571.5s / 8.0s (FlashPack, see note) | 2.8s |
 | download + pack + publish to `/data` | — | — | 7.0s |
 | compile + warmup | 328.9s / 383.5s | **73.2s / 64.7s / 87.6s** (cache hit) | 359.4s (compiles, syncs cache) |
 | **`setup()` total** | **351.6s / 414.9s** | **85.8s / 648.5s / 171.4s** | 380.2s |
 | spawn → healthy | 357.9s / 435.1s | 92.6s / 655.4s / 211.7s | 388.4s |
 | first request after boot | 1.55s / 1.96s | 1.54s / 1.71s / 1.87s | 1.74s |
 
-**Typically 2–4.8× faster cold starts**, measured 2026-07-23 on real fal ephemeral deploys (`GPU-H100`, torch 2.12.1, identical environments — see [`bench.py`](bench.py)); every run is published, including the ugly one. The consistent win is the compile cache: **65–88s on every cache-hit boot vs 329–384s of recompilation on every baseline boot** — the dominant cold-start term for this model, cut ~4–5× reliably. The weight path is normally 2.6–8.0s for 2.6 GB, but one steady-state boot landed on a host with degraded `/data` read throughput (571.5s for the same read, ~4.5 MB/s) and totaled 648.5s — host storage variance is the real tail risk, and it would hit a `/data`-cached safetensors load just as hard. Notes on the first-boot column: the HF fetch is not timed separately — it is folded into the 7.0s "download + pack + publish" stage, and on our measured boot it was served by an already-warm platform-side cache; a cold cache adds the full model download to that stage. The runners' REST state timeline exposed only `PENDING`/`RUNNING` for ephemeral runners, so the per-stage split above comes from each app's own `/setup-report` endpoint.
+**Typically 2–4.8× faster cold starts**, measured 2026-07-23 on real fal ephemeral deploys (`GPU-H100`, torch 2.12.1, identical environments — see [`bench.py`](bench.py)); every run is published, including the ugly one. The consistent win is the compile cache: **65–88s on every cache-hit boot vs 329–384s of recompilation on every baseline boot** — the dominant cold-start term for this model, cut ~4–5× reliably. The weight path is normally 2.6–8.0s for 2.6 GB, but one steady-state boot landed on a host with degraded `/data` read throughput (571.5s for the same read, ~4.5 MB/s) and totaled 648.5s — host storage variance is the real tail risk — and would likely hit a `/data`-cached safetensors load just as hard, though only FlashPack was measured here. Notes on the first-boot column: the HF fetch is not timed separately — it is folded into the 7.0s "download + pack + publish" stage, and on our measured boot it was served by an already-warm platform-side cache; a cold cache adds the full model download to that stage. The runners' REST state timeline exposed only `PENDING`/`RUNNING` for ephemeral runners, so the per-stage split above comes from each app's own `/setup-report` endpoint.
 <!-- BENCH_TABLE_END -->
 
 …and a typed text-to-image API that answers in well under a second once warm:
@@ -101,7 +101,7 @@ There's no reason to deploy the baseline except to measure it — that's `bench.
 
 - **Cold starts are a cost multiplier on autoscaling.** Every second of `setup()` is billed GPU time on *each* new worker — and slow setups mean scale-up lags your traffic. Cutting setup by Nx cuts both.
 - **The one-time build is the price of admission**: the optimized app's first boot pays download + pack + compile. After that it's amortized across every worker forever. If you change GPU type, the inductor cache rebuilds once for the new type (packs on `/data` are GPU-agnostic).
-- **`/data` throughput varies by host.** The same 2.6 GB FlashPack read measured 2.6s, 8.0s and 571.5s across three boots. The caches make the *typical* cold start cheap; if your p99 cold start matters more than idle cost, `min_concurrency > 0` (always-warm workers) is the only hard guarantee.
+- **`/data` throughput varies by host.** The same 2.6 GB FlashPack read measured 2.6s, 8.0s and 571.5s across three boots. The caches make the *typical* cold start cheap; if your p99 cold start matters more than idle cost, add `min_concurrency > 0` — it maintains a floor of warm workers and sharply reduces cold-start exposure, though it's not an absolute guarantee (bursts beyond the provisioned floor, worker replacement, and new deployments still cold-start).
 - `keep_alive=60` holds a warm worker for a minute after the last request — cold starts only matter for traffic that outruns your warm pool. Pair this example with autoscaler tuning (example 02.2) for the full picture.
 - `startup_timeout=1200` exists for the first-ever boot; steady-state boots come in far under it.
 
