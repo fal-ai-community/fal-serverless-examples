@@ -2,7 +2,7 @@
 
 Production-grade examples for [fal Serverless](https://fal.ai/docs/documentation/serverless) — a numbered curriculum that takes you from your first app to production operations. Every example ends in a **deployed endpoint**, and CI **re-deploys and smoke-tests each one for real**, so nothing here can silently rot.
 
-> Status: scaffold. Examples land tier by tier — see the catalog board in [Linear](https://linear.app/features-and-labels/project/serverless-examples-and-onboarding-revamp-ab1f7491f6e7) and each tier's README for what's planned.
+> Examples land tier by tier — see the catalog board in [Linear](https://linear.app/features-and-labels/project/serverless-examples-and-onboarding-revamp-ab1f7491f6e7) and each tier's README for what's planned.
 
 ## Catalog
 
@@ -54,4 +54,4 @@ fal deploy app.py     # ship it
 
 ## License
 
-TBD — decided as part of the org-transfer ticket ([SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279)).
+[MIT](LICENSE).

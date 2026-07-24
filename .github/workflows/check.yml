@@ -1,20 +1,24 @@
-# Deploy-checks every example via the harness (SERV-1310): ephemeral deploy,
-# health, one smoke request, test_app.py against the live app, teardown.
-# Pass = it all works; nothing is committed back.
+# Two-tier verification (SERV-1310):
+#   static  - no secrets, runs on every PR including forks: layout, pinning
+#             mirror, app loads, smoke payload derivable. Real signal, free.
+#   deploy  - ephemeral deploy + health + smoke + test_app.py against live
+#             infra. Spends real money, so it runs in the 'deploy-check'
+#             environment (configure required reviewers in repo settings so
+#             fork PRs need maintainer approval before it runs).
 #
-# Requires the FAL_KEY repository secret (ephemeral deploys cost real compute
-# time). Runs on PRs touching example/harness code, manual dispatch, and a
-# weekly cron (enable after the first green run with the secret in place).
-# After the transfer to fal-ai-community: re-add FAL_KEY and check org Actions policies.
+# SECURITY: never switch the deploy job to pull_request_target. With a
+# head-ref checkout that would execute untrusted PR code (app.py setup/
+# endpoints AND harness code the PR can modify) with FAL_KEY in reach. The
+# environment-gated pattern below is the safe shape; keep it.
 
 name: examples-check
 
 permissions:
   contents: read
 
-# Never two check runs at once: ephemeral deploys cost real money.
+# Never two deploy runs at once: ephemeral deploys cost real money.
 concurrency:
-  group: examples-check
+  group: examples-check-${{ github.ref }}
   cancel-in-progress: false
 
 on:
@@ -22,6 +26,7 @@ on:
     paths:
       - "[0-9][0-9]-*/**"
       - "harness/**"
+      - "templates/**"
       - ".github/workflows/check.yml"
   workflow_dispatch:
     inputs:
@@ -29,31 +34,52 @@ on:
         description: "Path to one example dir (e.g. 00-getting-started/hello-fal). Empty = all examples."
         required: false
         default: ""
-  # Enable after the first successful run (needs the FAL_KEY secret).
+  # Enable after the first successful deploy run (needs the FAL_KEY
+  # environment secret).
   # schedule:
   #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
 
 jobs:
-  check:
+  static:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-      - uses: actions/setup-python@e797f83a49b83e6d5aa9d1a4b8d1908998cba1cc # v6.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install -r harness/requirements.txt
+      - name: Static checks (layout, pins, app loads)
+        run: python harness/static_check.py
+      - name: Pytest collection (fixtures skip without a live app)
+        run: python -m pytest -q
+
+  deploy-check:
+    # Real ephemeral deploys. The 'deploy-check' environment must be
+    # configured with required reviewers + the FAL_KEY secret; runs for
+    # fork PRs then wait for maintainer approval. Until that setup exists,
+    # set the repo variable DEPLOY_CHECKS_ENABLED=true to turn this on -
+    # a skipped job is honest; a green no-op would not be.
+    if: vars.DEPLOY_CHECKS_ENABLED == 'true'
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: deploy-check
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: "3.11"
       - name: Guard - FAL_KEY present
         run: |
           if [ -z "${{ secrets.FAL_KEY }}" ]; then
-            echo "::warning::FAL_KEY secret not set - skipping deploy-check run"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::error::FAL_KEY is not configured in the deploy-check environment"
+            exit 1
           fi
-        id: guard
       - name: Install
-        if: steps.guard.outputs.skip != 'true'
         run: pip install -r harness/requirements.txt
       - name: Deploy-check examples
-        if: steps.guard.outputs.skip != 'true'
         env:
           FAL_KEY: ${{ secrets.FAL_KEY }}
           EXAMPLE: ${{ inputs.example }} # via env, never interpolated into the script

@@ -8,11 +8,9 @@ Close fal's examples/onboarding gap vs Modal, Replicate, Baseten, and RunPod by 
 
 ## Current repo state (read this before assuming anything)
 
-Live at **[github.com/rehan-remade/fal-serverless-examples](https://github.com/rehan-remade/fal-serverless-examples)** (private, git user `rehan-remade`) since 2026-07-20. PR #1 (merged 2026-07-21) landed the deploy-check harness (`harness/check.py` + `.github/workflows/check.yml`) and the first example (`00-getting-started/hello-fal/`, also live as a registered app `rehan/hello-fal`). The **`FAL_KEY` Actions secret is not set yet** — CI's guard step skips deploy-checks until it exists; the weekly cron stays commented until the first green run.
+Home: **[github.com/fal-ai-community/fal-serverless-examples](https://github.com/fal-ai-community/fal-serverless-examples)** (transferred from the bootstrap personal account on 2026-07-22 per [SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279); never recreate the old name on the personal account — it kills GitHub's redirect). Tier 00 has three merged, live-validated examples; the CI deploy-check harness is in `harness/` + `.github/workflows/check.yml`. The **`FAL_KEY` Actions secret must be re-added post-transfer** (as a `deploy-check` environment secret, ideally from a bot/org fal account) — until then CI's static job gives signal and the deploy job skips; the weekly cron stays commented until the first green deploy run.
 
-Later the repo transfers to [fal-ai-community](https://github.com/fal-ai-community) per [SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279) — after the transfer, never create a same-named repo on the personal account (it kills GitHub's redirect), and re-add `FAL_KEY` + re-check org Actions policies.
-
-Project owner: Rehan Sheikh (rehan@fal.ai).
+Project owner: Rehan Sheikh ([@rehan-remade](https://github.com/rehan-remade)).
 
 ## Where everything lives
 
@@ -53,7 +51,7 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 | `03.2` | Realtime WebSocket endpoint (interactive-latency editing) | `needs-deploy` | [SERV-1283](https://linear.app/features-and-labels/issue/SERV-1283) |
 | `03.3` | Real-time video-to-video (re-theme from YOLO to genmedia style transfer) | `net-new` | [SERV-1289](https://linear.app/features-and-labels/issue/SERV-1289) |
 | `03.4` | Real-time world model over WebRTC (Matrix-Game / WMA) | `ready-now` | [SERV-1295](https://linear.app/features-and-labels/issue/SERV-1295) |
-| `04.1` | ComfyUI workflow → production API (real workflow, custom nodes, current models) | `needs-deploy` · blocked: [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) (coordinate with Alex, PR #404) | [SERV-1292](https://linear.app/features-and-labels/issue/SERV-1292) |
+| `04.1` | ComfyUI workflow → production API (real workflow, custom nodes, current models) | `needs-deploy` · blocked: [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) (upstream coordination) | [SERV-1292](https://linear.app/features-and-labels/issue/SERV-1292) |
 | `04.2` | Text-to-video on a current model (LTX-class, 720p+, endpoint + client + numbers) | `needs-deploy` | [SERV-1300](https://linear.app/features-and-labels/issue/SERV-1300) |
 | `04.3` | Serve thousands of per-user LoRAs with routing hints (avatar/personalization) | `needs-deploy` · blocked: [SERV-1273](https://linear.app/features-and-labels/issue/SERV-1273) (provide_hints at scale) | [SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306) |
 | `04.4` | Train a LoRA → serve it (closes the WAN training loop) | `needs-deploy` | [SERV-1312](https://linear.app/features-and-labels/issue/SERV-1312) |
@@ -90,7 +88,7 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 | [SERV-1271](https://linear.app/features-and-labels/issue/SERV-1271) | FlashPack public-wheel parity | 02.1 |
 | [SERV-1272](https://linear.app/features-and-labels/issue/SERV-1272) | Which optimizations/numbers fal will publish | 02.4 |
 | [SERV-1273](https://linear.app/features-and-labels/issue/SERV-1273) | provide_hints at thousands of hints | 04.3 |
-| [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) | ComfyUI coordination with Alex (fal-docs PR #404) | 04.1 |
+| [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) | ComfyUI upstream coordination | 04.1 |
 | [SERV-1275](https://linear.app/features-and-labels/issue/SERV-1275) | CDN persistence vs 7-day retention FAQ | 05.3 |
 | [SERV-1276](https://linear.app/features-and-labels/issue/SERV-1276) | C2PA signing certificate story | 05.5 |
 | [SERV-1277](https://linear.app/features-and-labels/issue/SERV-1277) | Marketplace publishing coordination | 08.3 |
@@ -101,11 +99,11 @@ Linear + Notion MCP tools are typically connected — load them via ToolSearch t
 ## Hard-won facts — do not relearn these
 
 1. **Always branch fal-docs work from current `origin/main`.** An earlier working branch was 135 commits stale and half its plan was fiction. Main's layout: concept docs in `documentation/`, references in `api-reference/` + `model-api-reference/`, examples categorized in `examples/{image-generation,video-generation,audio-speech,integrations,serverless}/`, shared code in `snippets/`. Existing example pages live under `examples/<category>/`; where NEW curriculum pages and nav go is decided by the IA-scaffolding ticket ([SERV-1266](https://linear.app/features-and-labels/issue/SERV-1266)) — read it before creating pages.
-2. **Measured numbers were descoped on 2026-07-21 (Rehan's call, after a modal-examples CI audit).** The original plan made CI-measured cold start/latency/cost the differentiator; the owner rescoped CI to correctness only — deploy + health + smoke + tests via `harness/check.py`, matching modal-examples' exit-code-correctness model. The full measurement harness (`harness/measure.py`, per-example `numbers.json`) was built, adversarially reviewed, and E2E-validated first (hello-fal: 7.3s cold start, p50 0.41s, $0.000012/run on S) — recover it from git history (PR #1) if numbers come back. Until then: never publish performance claims that can't be backed by a reproducible run, and ticket DoDs mentioning "measured numbers via the harness" should be read as "validated deployment via the deploy-check".
+2. **Measured numbers were descoped on 2026-07-21 (Rehan's call, after a modal-examples CI audit).** The original plan made CI-measured cold start/latency/cost the differentiator; the owner rescoped CI to correctness only — deploy + health + smoke + tests via `harness/check.py`, matching modal-examples' exit-code-correctness model. The full measurement harness (`harness/measure.py`, per-example `numbers.json`) was built, adversarially reviewed, and E2E-validated first (values live in the internal record) — recover it from git history (PR #1) if numbers come back. Until then: never publish performance claims that can't be backed by a reproducible run, and ticket DoDs mentioning "measured numbers via the harness" should be read as "validated deployment via the deploy-check".
 3. **Known defects in the old examples** are catalogued in [SERV-1263](https://linear.app/features-and-labels/issue/SERV-1263) (descoped to surviving content + copy-and-it-breaks bugs; ticket archived Jul 20 but the defect list remains valid reference). Don't copy patterns from `snippets/wan-code.mdx` et al. without checking that ticket.
 4. **This repo's transfer plan** ([SERV-1279](https://linear.app/features-and-labels/issue/SERV-1279)): built on a personal account first, then ownership transfers to [fal-ai-community](https://github.com/fal-ai-community). GitHub auto-redirects old URLs after transfer — but creating a same-named repo on the personal account afterwards kills the redirect. Post-transfer: re-check Actions secrets, org Actions policies, apps, branch protection, team permissions.
 5. **Differentiation is substance, not cosmetics** (numbered example repos are a genre): journey tiers, CI-regenerated numbers, playground links on every example, llms.txt/MCP-readable index. Don't mirror modal-examples' README voice.
-6. **ComfyUI (04.1)**: do not parallel-build — Alex's [fal-docs PR #404](https://github.com/fal-ai/fal-docs/pull/404) and internal serverless-comfyui-v2 are the path.
+6. **ComfyUI (04.1)**: do not parallel-build — a ComfyUI serving path is already owned upstream; coordinate before building (see the decision ticket). It is the path.
 
 ## Build order (recommended)
 

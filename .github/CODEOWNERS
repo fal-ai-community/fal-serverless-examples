@@ -1,0 +1,6 @@
+# Default reviewers for everything.
+* @rehan-remade
+
+# The harness and CI are the trust layer - changes here always need the maintainer.
+/harness/ @rehan-remade
+/.github/ @rehan-remade

@@ -6,7 +6,7 @@ Example folders land here as their tickets complete. Every example follows the l
 
 | Slot | Example | Readiness | Ticket |
 |---|---|---|---|
-| `04.1` | ComfyUI workflow → production API (real workflow, custom nodes, current models) | `needs-deploy` · blocked: [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) (coordinate with Alex, PR #404) | [SERV-1292](https://linear.app/features-and-labels/issue/SERV-1292) |
+| `04.1` | ComfyUI workflow → production API (real workflow, custom nodes, current models) | `needs-deploy` · blocked: [SERV-1274](https://linear.app/features-and-labels/issue/SERV-1274) (upstream coordination) | [SERV-1292](https://linear.app/features-and-labels/issue/SERV-1292) |
 | `04.2` | Text-to-video on a current model (LTX-class, 720p+, endpoint + client + numbers) | `needs-deploy` | [SERV-1300](https://linear.app/features-and-labels/issue/SERV-1300) |
 | `04.3` | Serve thousands of per-user LoRAs with routing hints (avatar/personalization) | `needs-deploy` · blocked: [SERV-1273](https://linear.app/features-and-labels/issue/SERV-1273) (provide_hints at scale) | [SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306) |
 | `04.4` | Train a LoRA → serve it (closes the WAN training loop) | `needs-deploy` | [SERV-1312](https://linear.app/features-and-labels/issue/SERV-1312) |
