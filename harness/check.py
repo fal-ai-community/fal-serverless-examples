@@ -88,6 +88,17 @@ def discover_examples() -> list[Path]:
     return dirs
 
 
+def discover_variants(example_dir: Path) -> list[Path]:
+    """App files to check for one example.
+
+    Most examples are a single `app.py`. Comparison examples (e.g. the same
+    model served two ways) ship additional `app_<variant>.py` files; each is
+    deployed and tested independently, against the same test_app.py - if two
+    builds of one model don't pass identical tests, the comparison is a lie.
+    """
+    return sorted(example_dir.glob("app*.py"))
+
+
 def load_app_class(app_file: Path):
     """Load the unique fal.App subclass from an example's app.py.
 
@@ -335,7 +346,9 @@ def smoke_request(url: str, path: str, payload: dict, headers: dict) -> None:
         log(f"    smoke response: {resp.text[:200]}")
 
 
-def run_example_tests(example_dir: Path, url: str, endpoint_path: str) -> None:
+def run_example_tests(
+    example_dir: Path, url: str, endpoint_path: str, variant: str = ""
+) -> None:
     """Run the example's test_app.py against the live ephemeral app."""
     test_file = example_dir / "test_app.py"
     if not test_file.is_file():
@@ -345,6 +358,7 @@ def run_example_tests(example_dir: Path, url: str, endpoint_path: str) -> None:
     env = os.environ.copy()
     env["HARNESS_APP_URL"] = url
     env["HARNESS_ENDPOINT_PATH"] = endpoint_path
+    env["HARNESS_VARIANT"] = variant
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [str(REPO_ROOT), env.get("PYTHONPATH")])
     )
@@ -418,11 +432,20 @@ def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
 # --------------------------------------------------------------------------
 
 def check(example_dir: Path, teardown_report: dict | None = None) -> None:
-    from fal.app import wrap_app
-
-    app_file = example_dir / "app.py"
-    if not app_file.is_file():
+    """Deploy-check every variant of one example."""
+    variants = discover_variants(example_dir)
+    if not variants:
         raise CheckError(f"{example_dir}: no app.py")
+    for app_file in variants:
+        if len(variants) > 1:
+            log(f"  variant {app_file.name}")
+        check_variant(example_dir, app_file, teardown_report=teardown_report)
+
+
+def check_variant(
+    example_dir: Path, app_file: Path, teardown_report: dict | None = None
+) -> None:
+    from fal.app import wrap_app
 
     app_cls = load_app_class(app_file)
     endpoint_path, endpoint_fn = pick_endpoint(app_cls)
@@ -431,7 +454,8 @@ def check(example_dir: Path, teardown_report: dict | None = None) -> None:
 
     fn = wrap_app(app_cls)
     log(
-        f"  deploying ephemeral app (machine_type={app_cls.machine_type}, "
+        f"  deploying ephemeral app (machine_type={app_cls.machine_type}"
+        f"{', custom image' if getattr(app_cls, 'image', None) else ''}, "
         f"endpoint {endpoint_path}, smoke payload {json.dumps(payload)})"
     )
 
@@ -447,7 +471,7 @@ def check(example_dir: Path, teardown_report: dict | None = None) -> None:
             poller.runner_id = watcher.runner_id
         wait_healthy(url, headers, poller)
         smoke_request(url, endpoint_path, payload, headers)
-        run_example_tests(example_dir, url, endpoint_path)
+        run_example_tests(example_dir, url, endpoint_path, variant=app_file.stem)
     finally:
         if poller.runner_id is None and watcher.runner_id:
             poller.runner_id = watcher.runner_id
