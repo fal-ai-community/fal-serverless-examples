@@ -19,6 +19,7 @@
 - [00.1 hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the CI deploy-check
 - [00.2 first-image-api](00-getting-started/first-image-api/README.md): FLUX.2 [klein] 4B text-to-image API - load/warmup discipline, machine-type fallback, seed contract, sync_mode, playground + clients
 - [00.3 media-in-media-out](00-getting-started/media-in-media-out/README.md): file plumbing on a CPU machine - URL inputs, bounded downloads cached on /data, CDN outputs with output_format -> content-type, per-file retention
+- [00.4 bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
 
 ## Docs
 
