@@ -19,7 +19,7 @@ REQUIRED_FILES = ("app.py", "README.md", "requirements.txt", "test_app.py")
 
 
 def check_example(example_dir: Path) -> list[str]:
-    from harness.check import load_app_class, pick_endpoint, sample_input
+    from harness.check import discover_variants, load_app_class, pick_endpoint, sample_input
 
     errors = []
     for name in REQUIRED_FILES:
@@ -28,30 +28,36 @@ def check_example(example_dir: Path) -> list[str]:
     if errors:
         return errors
 
-    try:
-        app_cls = load_app_class(example_dir / "app.py")
-    except Exception as exc:
-        return [f"app.py failed to load: {exc}"]
-
-    if not getattr(app_cls, "app_auth", None):
-        errors.append("app_auth must be set explicitly (deploys fail without it)")
-
-    try:
-        _, endpoint_fn = pick_endpoint(app_cls)
-        sample_input(endpoint_fn)
-    except Exception as exc:
-        errors.append(str(exc))
-
     pinned = [line.strip() for line in (example_dir / "requirements.txt").read_text().splitlines()
               if line.strip() and not line.strip().startswith("#")]
-    if pinned != app_cls.requirements:
-        errors.append(
-            "requirements.txt does not mirror App.requirements exactly "
-            f"(file: {pinned} vs app: {app_cls.requirements})"
-        )
-    for spec in app_cls.requirements:
-        if "==" not in spec:
-            errors.append(f"unpinned requirement: {spec!r}")
+
+    for app_file in discover_variants(example_dir):
+        where = "" if app_file.name == "app.py" else f"{app_file.name}: "
+        try:
+            app_cls = load_app_class(app_file)
+        except Exception as exc:
+            errors.append(f"{where}failed to load: {exc}")
+            continue
+
+        if not getattr(app_cls, "app_auth", None):
+            errors.append(f"{where}app_auth must be set explicitly (deploys fail without it)")
+
+        try:
+            _, endpoint_fn = pick_endpoint(app_cls)
+            sample_input(endpoint_fn)
+        except Exception as exc:
+            errors.append(f"{where}{exc}")
+
+        # Variants that bake dependencies into a container image declare no
+        # requirements - there is nothing for requirements.txt to mirror.
+        if app_cls.requirements and pinned != app_cls.requirements:
+            errors.append(
+                f"{where}requirements.txt does not mirror App.requirements exactly "
+                f"(file: {pinned} vs app: {app_cls.requirements})"
+            )
+        for spec in app_cls.requirements:
+            if "==" not in spec:
+                errors.append(f"{where}unpinned requirement: {spec!r}")
     return errors
 
 
