@@ -267,3 +267,159 @@ def simulate(
             RunnerWindow(r["id"], r["setup_start"], r["last_activity"]) for r in runners
         ],
     )
+
+
+TRACE_SCHEMA = "fal-serverless-examples/tune-autoscaling/trace@1"
+
+
+@dataclass(frozen=True)
+class Calibration:
+    """What one measured burst tells us, so the model can extrapolate.
+
+    Everything here is measured except the scale_config, which is declared.
+    """
+
+    cold_start_s: float
+    service_s: float
+    arrivals: tuple[float, ...]
+    observed_runners: int
+    scale_config: dict
+    machine_type: str
+
+
+def _ok_requests(trace: dict) -> list[dict]:
+    """Successful requests only. fal does not bill 5xx, and a failed request
+    carries no usable timing."""
+    return [r for r in trace["requests"] if 200 <= int(r["status"]) < 300]
+
+
+def _by_runner(requests: list[dict]) -> dict[str, list[dict]]:
+    """Group requests by the runner that served them, in id order."""
+    grouped: dict[str, list[dict]] = {}
+    for request in requests:
+        grouped.setdefault(str(request["served_by"]), []).append(request)
+    return dict(sorted(grouped.items()))
+
+
+def _check_schema(trace: dict) -> None:
+    if trace.get("schema") != TRACE_SCHEMA:
+        raise ValueError(
+            f"unsupported trace schema {trace.get('schema')!r}; expected {TRACE_SCHEMA!r}"
+        )
+
+
+def calibrate(trace: dict) -> Calibration:
+    """Extract cold start, service time and traffic shape from a real burst."""
+    _check_schema(trace)
+    ok = _ok_requests(trace)
+    if not ok:
+        raise ValueError("trace contains no successful requests")
+
+    cold = [float(r["setup_duration_s"]) for r in ok if r["was_cold"]]
+    if not cold:
+        raise ValueError("trace contains no cold request; cannot measure cold start")
+
+    # Service time from back-to-back completions on ONE runner. A saturated
+    # runner's consecutive completions are separated by exactly one service
+    # time. Round-trip minus arrival would NOT work: in a spike, warm
+    # requests also queued behind a cold start, so that inflates service time
+    # and drives the derived SETUP start negative.
+    gaps = []
+    for requests in _by_runner(ok).values():
+        completions = sorted(float(r["completed_s"]) for r in requests)
+        gaps.extend(b - a for a, b in zip(completions, completions[1:]))
+    if not gaps:
+        raise ValueError(
+            "no runner served two requests; cannot measure service time - "
+            "fire more requests than max_concurrency so at least one runner "
+            "serves back-to-back"
+        )
+
+    return Calibration(
+        # Nearest-rank p50, the same estimator as every other percentile
+        # here - not an interpolated median. One convention, deliberately.
+        cold_start_s=percentile(cold, 50),
+        service_s=min(gaps),
+        arrivals=tuple(float(r["arrived_s"]) for r in ok),
+        observed_runners=len({r["served_by"] for r in ok}),
+        scale_config=dict(trace["scale_config"]),
+        machine_type=str(trace["machine_type"]),
+    )
+
+
+def measured_windows(trace: dict) -> list[RunnerWindow]:
+    """One billed window per runner actually observed in the burst.
+
+    Derived, not fetched: SETUP start is recovered as
+    (first completion) - setup_duration_s - service_s, using the app's
+    self-reported setup duration. /v1/serverless/analytics is a cross-check
+    for this, not its source - see burst.py --from-analytics.
+    """
+    calibration = calibrate(trace)
+    windows = []
+    for runner_id, requests in _by_runner(_ok_requests(trace)).items():
+        completions = [float(r["completed_s"]) for r in requests]
+        setup_duration = float(requests[0]["setup_duration_s"])
+        windows.append(
+            RunnerWindow(
+                runner_id=runner_id,
+                setup_start_s=min(completions) - setup_duration - calibration.service_s,
+                last_completion_s=max(completions),
+            )
+        )
+    return windows
+
+
+def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
+    """Runner states and queue depth over time, reconstructed from the trace.
+
+    Same row shape as SimResult.timeline so the two can be overlaid. Note
+    this is a reconstruction from per-request observations, not a sampled
+    metric - fal's own metrics endpoint caches for 10s, which is coarser
+    than this.
+    """
+    calibration = calibrate(trace)
+    ok = _ok_requests(trace)
+    windows = {w.runner_id: w for w in measured_windows(trace)}
+    grouped = _by_runner(ok)
+    # Each runner's own reported setup duration, not the fleet median - this
+    # is a reconstruction of what actually happened, runner by runner.
+    ready_at = {
+        runner_id: windows[runner_id].setup_start_s
+        + float(grouped[runner_id][0]["setup_duration_s"])
+        for runner_id in windows
+    }
+    busy: dict[str, list[tuple[float, float]]] = {rid: [] for rid in windows}
+    for request in ok:
+        runner_id = str(request["served_by"])
+        completed = float(request["completed_s"])
+        busy[runner_id].append((completed - calibration.service_s, completed))
+
+    start = min(w.setup_start_s for w in windows.values())
+    end = max(w.last_completion_s for w in windows.values())
+    keep_alive = float(calibration.scale_config.get("keep_alive", 0))
+
+    timeline = []
+    steps = int(math.ceil((end - start) / tick_s)) + 1
+    for step in range(steps):
+        t = round(start + step * tick_s, 6)
+        setup = idle = running = 0
+        for runner_id, window in windows.items():
+            if t < window.setup_start_s or t > window.last_completion_s + keep_alive:
+                continue
+            if t < ready_at[runner_id]:
+                setup += 1
+            elif any(begin <= t < finish for begin, finish in busy[runner_id]):
+                running += 1
+            else:
+                idle += 1
+        queued = sum(
+            1
+            for r in ok
+            if float(r["arrived_s"]) <= t
+            < float(r["completed_s"]) - calibration.service_s
+        )
+        timeline.append(
+            {"t": t, "setup": setup, "idle": idle, "running": running, "queue_depth": queued}
+        )
+    return timeline

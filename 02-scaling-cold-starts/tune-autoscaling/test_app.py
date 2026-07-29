@@ -307,3 +307,101 @@ def test_min_concurrency_prestart_never_exceeds_max_concurrency():
     )
     for row in result.timeline:
         assert row["setup"] + row["idle"] + row["running"] <= 1, row
+
+
+def synthetic_trace(**overrides):
+    """A hand-built trace with known-good arithmetic, for the model's readers.
+
+    Two runners, both starting SETUP at t=0, service time exactly 4s:
+      r-aaa: setup 30s -> ready at 30 -> serves req 0 (done 34), req 2 (done 38)
+      r-bbb: setup 32s -> ready at 32 -> serves req 1 (done 36)
+    All three requests arrive at t=0, so all three queue behind a cold start.
+    """
+    trace = {
+        "schema": model.TRACE_SCHEMA,
+        "recorded_at": "2026-07-28T14:03:11Z",
+        "app": "someone/tune-autoscaling",
+        "machine_type": "GPU-H100",
+        "fal_version": "1.78.2",
+        "rate_usd_per_second": model.USD_PER_SECOND,
+        "scale_config": {
+            "keep_alive": 300, "min_concurrency": 0, "max_concurrency": 4,
+            "concurrency_buffer": 0, "concurrency_buffer_perc": 0,
+            "scaling_delay": 0, "max_multiplexing": 1,
+        },
+        "burst": {"pattern": "spike", "requests": 3, "duration_s": 0.0, "concurrency": 3},
+        "requests": [
+            {"id": 0, "arrived_s": 0.0, "completed_s": 34.0, "status": 200,
+             "served_by": "r-aaa", "was_cold": True, "setup_duration_s": 30.0},
+            {"id": 1, "arrived_s": 0.0, "completed_s": 36.0, "status": 200,
+             "served_by": "r-bbb", "was_cold": True, "setup_duration_s": 32.0},
+            {"id": 2, "arrived_s": 0.0, "completed_s": 38.0, "status": 200,
+             "served_by": "r-aaa", "was_cold": False, "setup_duration_s": 30.0},
+        ],
+    }
+    trace.update(overrides)
+    return trace
+
+
+def test_calibration_reads_cold_start_from_the_app_self_report():
+    calibration = model.calibrate(synthetic_trace())
+    # nearest-rank p50 of setup_duration_s over the two cold requests,
+    # i.e. percentile([30.0, 32.0], 50) -> 30.0, not an interpolated 31.0
+    assert calibration.cold_start_s == 30.0
+    # r-aaa completed at 34 then 38 back-to-back: one service time is 4s
+    assert calibration.service_s == 4.0
+    assert calibration.observed_runners == 2
+    assert calibration.machine_type == "GPU-H100"
+    assert calibration.arrivals == (0.0, 0.0, 0.0)
+    assert calibration.scale_config["keep_alive"] == 300
+
+
+def test_calibration_rejects_an_unknown_schema():
+    import pytest
+
+    with pytest.raises(ValueError, match="schema"):
+        model.calibrate(synthetic_trace(schema="something/else@9"))
+
+
+def test_calibration_rejects_a_trace_where_no_runner_served_twice():
+    import pytest
+
+    trace = synthetic_trace()
+    # Drop r-aaa's second request: now every runner served exactly once, so
+    # there is no back-to-back completion gap to read service time from.
+    trace["requests"] = [r for r in trace["requests"] if r["id"] != 2]
+    with pytest.raises(ValueError, match="two requests"):
+        model.calibrate(trace)
+
+
+def test_calibration_ignores_failed_requests():
+    trace = synthetic_trace()
+    trace["requests"].append(
+        {"id": 3, "arrived_s": 0.0, "completed_s": 1.0, "status": 500,
+         "served_by": "r-ccc", "was_cold": True, "setup_duration_s": 0.1}
+    )
+    calibration = model.calibrate(trace)
+    assert calibration.observed_runners == 2, "a 5xx runner is not a data point"
+    assert calibration.cold_start_s == 30.0
+
+
+def test_measured_windows_derive_each_runner_billed_span():
+    windows = {w.runner_id: w for w in model.measured_windows(synthetic_trace())}
+    assert set(windows) == {"r-aaa", "r-bbb"}
+    # r-aaa: first completion 34.0, its own setup 30.0, service 4.0
+    # -> SETUP started at 34 - 30 - 4 = 0.0, which is when the burst began.
+    assert windows["r-aaa"].setup_start_s == 0.0
+    assert windows["r-aaa"].last_completion_s == 38.0
+    # r-bbb: 36 - 32 - 4 = 0.0 as well; both booted on the same spike.
+    assert windows["r-bbb"].setup_start_s == 0.0
+    assert windows["r-bbb"].last_completion_s == 36.0
+
+
+def test_measured_timeline_has_the_same_row_shape_as_the_simulation():
+    timeline = model.measured_timeline(synthetic_trace(), tick_s=1.0)
+    assert timeline, "a trace with requests must produce a timeline"
+    assert set(timeline[0]) == {"t", "setup", "idle", "running", "queue_depth"}
+    peak = max(r["setup"] + r["idle"] + r["running"] for r in timeline)
+    assert peak == 2, "two distinct served_by values were observed"
+    assert max(r["queue_depth"] for r in timeline) == 3, "all three queued at t=0"
+    assert timeline[-1]["queue_depth"] == 0, "the queue drains"
