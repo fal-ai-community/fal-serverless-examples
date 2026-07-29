@@ -14,7 +14,10 @@ nowhere at all - which is why this example measures them instead.
 """
 from __future__ import annotations
 
+import argparse
+import json
 import math
+import sys
 from dataclasses import dataclass
 
 # Published list price for GPU-H100 on fal.ai/pricing. The negotiated
@@ -169,8 +172,11 @@ def simulate(
     next_arrival = 0
     next_request_id = 0
 
-    def start_runner(at: float) -> dict:
-        ready_at = _grid(at + cold_start_s)
+    def start_runner(at: float, *, prewarmed: bool = False) -> dict:
+        # A min_concurrency runner is alive around the clock, so by the time a
+        # burst arrives it booted long ago and is already READY. Only runners
+        # the autoscaler starts in response to this burst pay a cold start.
+        ready_at = _grid(at) if prewarmed else _grid(at + cold_start_s)
         runner = {
             "id": f"sim-{len(runners):04d}",
             "setup_start": at,
@@ -186,7 +192,9 @@ def simulate(
     if max_concurrency is not None:
         prestart = min(prestart, max_concurrency)
     for _ in range(prestart):
-        start_runner(0.0)  # a min_concurrency runner still pays for SETUP
+        # Alive around the clock, already warm - it is billed from the
+        # window start, not from a cold start paid at t=0.
+        start_runner(0.0, prewarmed=True)
 
     for step in range(_MAX_TICKS):
         t = round(step * tick_s, 6)
@@ -260,12 +268,23 @@ def simulate(
     else:  # pragma: no cover - the guard should never trip in practice
         raise RuntimeError("simulation did not settle; check keep_alive/min_concurrency")
 
+    end_t = timeline[-1]["t"]
+    windows = []
+    for runner in runners:
+        last = runner["last_activity"]
+        if runner["terminated_at"] is None:
+            # Never scaled down (it is holding the min_concurrency floor), so
+            # it is alive for the whole window. billable_seconds adds
+            # keep_alive to last_completion_s, so subtract it here to make the
+            # billed span exactly the window rather than the window plus a
+            # tail that never happened.
+            last = max(last, end_t - keep_alive)
+        windows.append(RunnerWindow(runner["id"], runner["setup_start"], last))
+
     return SimResult(
         timeline=timeline,
         waits=[waits[i] for i in sorted(waits)],
-        windows=[
-            RunnerWindow(r["id"], r["setup_start"], r["last_activity"]) for r in runners
-        ],
+        windows=windows,
     )
 
 
@@ -454,3 +473,183 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
             {"t": t, "setup": setup, "idle": idle, "running": running, "queue_depth": queued}
         )
     return timeline
+
+
+FRONTIER_SCHEMA = "fal-serverless-examples/tune-autoscaling/frontier@1"
+
+# Small enough to label legibly on one chart, wide enough to show the
+# trade-off: scale-to-zero through always-warm.
+DEFAULT_GRID = {
+    "keep_alive": (0, 30, 60, 300),
+    "min_concurrency": (0, 1, 2),
+    "concurrency_buffer": (0, 1),
+}
+
+
+def sweep(
+    calibration: Calibration,
+    *,
+    grid: dict | None = None,
+    usd_per_second: float | None = None,
+    granularity: float = 1.0,
+    bursts_per_hour: float = 1.0,
+) -> list[dict]:
+    """Simulate the same measured traffic under every knob combination."""
+    grid = grid or DEFAULT_GRID
+    rate = USD_PER_SECOND if usd_per_second is None else usd_per_second
+    base = calibration.scale_config
+    max_multiplexing = int(base.get("max_multiplexing", 1))
+    buffer_perc = int(base.get("concurrency_buffer_perc", 0))
+
+    points = []
+    for keep_alive in grid["keep_alive"]:
+        for min_concurrency in grid["min_concurrency"]:
+            for concurrency_buffer in grid["concurrency_buffer"]:
+                result = simulate(
+                    list(calibration.arrivals),
+                    service_s=calibration.service_s,
+                    cold_start_s=calibration.cold_start_s,
+                    keep_alive=float(keep_alive),
+                    min_concurrency=int(min_concurrency),
+                    max_concurrency=base.get("max_concurrency"),
+                    concurrency_buffer=int(concurrency_buffer),
+                    concurrency_buffer_perc=buffer_perc,
+                    max_multiplexing=max_multiplexing,
+                    scaling_delay=float(base.get("scaling_delay", 0)),
+                )
+                billable = billable_seconds(
+                    result.windows, keep_alive=float(keep_alive), granularity=granularity
+                )
+                cost = cost_usd(billable, usd_per_second=rate)
+                peak = max(
+                    row["setup"] + row["idle"] + row["running"] for row in result.timeline
+                )
+                points.append(
+                    {
+                        "keep_alive": int(keep_alive),
+                        "min_concurrency": int(min_concurrency),
+                        "concurrency_buffer": int(concurrency_buffer),
+                        "concurrency_buffer_perc": buffer_perc,
+                        "max_concurrency": base.get("max_concurrency"),
+                        "max_multiplexing": max_multiplexing,
+                        "p50_wait_s": round(percentile(result.waits, 50), 3),
+                        "p95_wait_s": round(percentile(result.waits, 95), 3),
+                        "billable_s": round(billable, 3),
+                        "cost_usd": round(cost, 6),
+                        "hourly_usd": round(cost * bursts_per_hour, 6),
+                        "peak_runners": peak,
+                        # Beyond the measured envelope this is extrapolation:
+                        # we never observed that many runners, so the chart
+                        # must not present it as an equal to a validated point.
+                        "validated": peak <= calibration.observed_runners,
+                        "measured": (
+                            int(keep_alive) == int(base.get("keep_alive", -1))
+                            and int(min_concurrency) == int(base.get("min_concurrency", -1))
+                            and int(concurrency_buffer)
+                            == int(base.get("concurrency_buffer", -1))
+                        ),
+                    }
+                )
+    return points
+
+
+def pareto_front(points: list[dict]) -> list[int]:
+    """Indices of points no other point beats on both cost and p95 wait."""
+    front = []
+    for i, point in enumerate(points):
+        dominated = any(
+            other["cost_usd"] <= point["cost_usd"]
+            and other["p95_wait_s"] <= point["p95_wait_s"]
+            and (
+                other["cost_usd"] < point["cost_usd"]
+                or other["p95_wait_s"] < point["p95_wait_s"]
+            )
+            for j, other in enumerate(points)
+            if j != i
+        )
+        if not dominated:
+            front.append(i)
+    return sorted(front, key=lambda i: (points[i]["cost_usd"], points[i]["p95_wait_s"]))
+
+
+def build_frontier(
+    trace: dict,
+    *,
+    grid: dict | None = None,
+    usd_per_second: float | None = None,
+    granularity: float = 1.0,
+    bursts_per_hour: float = 1.0,
+) -> dict:
+    """The whole frontier.json document.
+
+    Deliberately carries NO wall-clock stamp: it inherits the trace's
+    recorded_at so that regenerating from an unchanged trace is
+    byte-identical, which is what lets CI detect chart and model rot for free.
+    """
+    calibration = calibrate(trace)
+    points = sweep(
+        calibration,
+        grid=grid,
+        usd_per_second=usd_per_second,
+        granularity=granularity,
+        bursts_per_hour=bursts_per_hour,
+    )
+    return {
+        "schema": FRONTIER_SCHEMA,
+        "trace_recorded_at": trace["recorded_at"],
+        "machine_type": calibration.machine_type,
+        "rate_usd_per_second": (
+            USD_PER_SECOND if usd_per_second is None else usd_per_second
+        ),
+        "billing_granularity_s": granularity,
+        "bursts_per_hour": bursts_per_hour,
+        "calibration": {
+            "cold_start_s": calibration.cold_start_s,
+            "service_s": calibration.service_s,
+            "observed_runners": calibration.observed_runners,
+            "requests": len(calibration.arrivals),
+        },
+        "points": points,
+        "pareto_front": pareto_front(points),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--calibrate", required=True, metavar="TRACE",
+                       help="trace.json from burst.py")
+    parser.add_argument("--sweep", action="store_true",
+                       help="sweep the knob grid (currently the only mode)")
+    parser.add_argument("--rate", type=float, default=None,
+                       help=f"USD per second (default {USD_PER_SECOND:.9f}, "
+                            f"the ${H100_USD_PER_HOUR}/h H100 list price)")
+    parser.add_argument("--billing-granularity", type=float, default=1.0,
+                       help="seconds each runner's billed time rounds up to (assumption)")
+    parser.add_argument("--bursts-per-hour", type=float, default=1.0,
+                       help="how often this burst repeats, for the hourly figure")
+    parser.add_argument("--out", default="frontier.json")
+    args = parser.parse_args(argv)
+
+    with open(args.calibrate) as handle:
+        trace = json.load(handle)
+    document = build_frontier(
+        trace,
+        usd_per_second=args.rate,
+        granularity=args.billing_granularity,
+        bursts_per_hour=args.bursts_per_hour,
+    )
+    with open(args.out, "w") as handle:
+        json.dump(document, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    cheapest = document["points"][document["pareto_front"][0]]
+    print(f"wrote {args.out}: {len(document['points'])} points, "
+          f"{len(document['pareto_front'])} on the front")
+    print(f"  cheapest on front: keep_alive={cheapest['keep_alive']} "
+          f"min_concurrency={cheapest['min_concurrency']} "
+          f"buffer={cheapest['concurrency_buffer']} "
+          f"-> ${cheapest['cost_usd']:.4f}, p95 wait {cheapest['p95_wait_s']:.1f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

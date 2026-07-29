@@ -166,7 +166,10 @@ def test_min_concurrency_removes_the_cold_start_penalty():
     arrivals = model.arrival_schedule("spike", requests=2, duration_s=0)
     cold = model.simulate(arrivals, service_s=1.0, cold_start_s=20.0,
                           keep_alive=0.0, max_concurrency=2)
-    warm = model.simulate(arrivals, service_s=1.0, cold_start_s=0.0,
+    # A real cold_start_s here (not 0.0) is what actually pins the claim:
+    # a min_concurrency runner is alive around the clock, so it is already
+    # READY - not paying this 20s cold start - by the time the burst hits.
+    warm = model.simulate(arrivals, service_s=1.0, cold_start_s=20.0,
                           keep_alive=0.0, min_concurrency=2, max_concurrency=2)
     assert model.percentile(cold.waits, 95) > 19.0
     assert model.percentile(warm.waits, 95) < 0.5
@@ -323,10 +326,27 @@ def test_min_concurrency_prestart_never_exceeds_max_concurrency():
 def synthetic_trace(**overrides):
     """A hand-built trace with known-good arithmetic, for the model's readers.
 
-    Two runners, both starting SETUP at t=0, service time exactly 4s:
-      r-aaa: setup 30s -> ready at 30 -> serves req 0 (done 34), req 2 (done 38)
+    Two waves. First wave, both runners cold-start at t=0, service time
+    exactly 4s:
+      r-aaa: setup 30s -> ready at 30 -> serves req 0 (done 34)
       r-bbb: setup 32s -> ready at 32 -> serves req 1 (done 36)
-    All three requests arrive at t=0, so all three queue behind a cold start.
+    Second wave: req 2 arrives at t=34 and is served warm by r-aaa
+    back-to-back with req 0 (done 38).
+
+    t=34 specifically, because that is when r-aaa finishes req 0 and is
+    genuinely free - the first instant either runner is. Arriving any
+    earlier would have forced a THIRD runner and contradicted the two this
+    fixture claims: at t=30, say, r-aaa is busy with req 0 and r-bbb is
+    still in SETUP, so ongoing = 1 in-flight + 2 queued = 3, and
+    desired_runners() demands 3. That holds in the calibrated reading too,
+    where both runners share one cold_start_s (p50 = 30.0) and so both go
+    busy at t=30.
+
+    It also has to stagger at all rather than sending all three at once:
+    with max_concurrency=4 >= 3 requests, three simultaneous arrivals would
+    each get their own runner, and no runner would ever serve two requests
+    back-to-back - which is the only way this fixture can measure service_s
+    at all (see calibrate()'s docstring on back-to-back completions).
     """
     trace = {
         "schema": model.TRACE_SCHEMA,
@@ -340,13 +360,13 @@ def synthetic_trace(**overrides):
             "concurrency_buffer": 0, "concurrency_buffer_perc": 0,
             "scaling_delay": 0, "max_multiplexing": 1,
         },
-        "burst": {"pattern": "spike", "requests": 3, "duration_s": 0.0, "concurrency": 3},
+        "burst": {"pattern": "custom", "requests": 3, "duration_s": 34.0, "concurrency": 3},
         "requests": [
             {"id": 0, "arrived_s": 0.0, "completed_s": 34.0, "status": 200,
              "served_by": "r-aaa", "was_cold": True, "setup_duration_s": 30.0},
             {"id": 1, "arrived_s": 0.0, "completed_s": 36.0, "status": 200,
              "served_by": "r-bbb", "was_cold": True, "setup_duration_s": 32.0},
-            {"id": 2, "arrived_s": 0.0, "completed_s": 38.0, "status": 200,
+            {"id": 2, "arrived_s": 34.0, "completed_s": 38.0, "status": 200,
              "served_by": "r-aaa", "was_cold": False, "setup_duration_s": 30.0},
         ],
     }
@@ -363,7 +383,7 @@ def test_calibration_reads_cold_start_from_the_app_self_report():
     assert calibration.service_s == 4.0
     assert calibration.observed_runners == 2
     assert calibration.machine_type == "GPU-H100"
-    assert calibration.arrivals == (0.0, 0.0, 0.0)
+    assert calibration.arrivals == (0.0, 0.0, 34.0)
     assert calibration.scale_config["keep_alive"] == 300
 
 
@@ -414,7 +434,13 @@ def test_measured_timeline_has_the_same_row_shape_as_the_simulation():
     assert set(timeline[0]) == {"t", "setup", "idle", "running", "queue_depth"}
     peak = max(r["setup"] + r["idle"] + r["running"] for r in timeline)
     assert peak == 2, "two distinct served_by values were observed"
-    assert max(r["queue_depth"] for r in timeline) == 3, "all three queued at t=0"
+    # A request counts as queued over [arrived_s, completed_s - service_s),
+    # i.e. from arrival until its service starts. For this fixture:
+    #   req 0 -> [0, 30)   req 1 -> [0, 32)   req 2 -> [34, 34) = empty
+    # req 2 is served the instant it arrives (r-aaa frees up at exactly
+    # t=34), so it never queues at all. The peak is therefore 2 - the two
+    # first-wave requests both waiting out a cold start.
+    assert max(r["queue_depth"] for r in timeline) == 2
     assert timeline[-1]["queue_depth"] == 0, "the queue drains"
 
 
@@ -480,3 +506,90 @@ def test_measured_windows_do_not_depend_on_a_runners_request_order():
     }
     assert reordered_windows["r-aaa"].setup_start_s == baseline["r-aaa"].setup_start_s
     assert reordered_windows["r-bbb"].setup_start_s == baseline["r-bbb"].setup_start_s
+
+
+def test_sweep_covers_the_default_grid_and_flags_the_measured_point():
+    points = model.sweep(model.calibrate(synthetic_trace()))
+    expected = (
+        len(model.DEFAULT_GRID["keep_alive"])
+        * len(model.DEFAULT_GRID["min_concurrency"])
+        * len(model.DEFAULT_GRID["concurrency_buffer"])
+    )
+    assert len(points) == expected
+    measured = [p for p in points if p["measured"]]
+    assert len(measured) == 1, "exactly one grid point matches the trace's own config"
+    assert measured[0]["keep_alive"] == 300
+    assert measured[0]["min_concurrency"] == 0
+    assert measured[0]["concurrency_buffer"] == 0
+
+
+def test_sweep_points_carry_every_documented_key():
+    point = model.sweep(model.calibrate(synthetic_trace()))[0]
+    assert set(point) == {
+        "keep_alive", "min_concurrency", "concurrency_buffer",
+        "concurrency_buffer_perc", "max_concurrency", "max_multiplexing",
+        "p50_wait_s", "p95_wait_s", "billable_s", "cost_usd", "hourly_usd",
+        "peak_runners", "validated", "measured",
+    }
+
+
+def test_warm_configs_cost_more_and_wait_less():
+    points = {
+        (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
+        for p in model.sweep(model.calibrate(synthetic_trace()))
+    }
+    scale_to_zero = points[(0, 0, 0)]
+    always_warm = points[(300, 2, 0)]
+    assert always_warm["p95_wait_s"] < scale_to_zero["p95_wait_s"]
+    assert always_warm["cost_usd"] > scale_to_zero["cost_usd"]
+
+
+def test_points_beyond_the_measured_envelope_are_flagged_unvalidated():
+    # The synthetic trace observed 2 runners. A config that needs more than
+    # that is an extrapolation, not a validated prediction.
+    points = model.sweep(
+        model.calibrate(synthetic_trace()),
+        grid={"keep_alive": (0,), "min_concurrency": (0, 4), "concurrency_buffer": (0,)},
+    )
+    by_min = {p["min_concurrency"]: p for p in points}
+    assert by_min[0]["validated"] is True
+    assert by_min[4]["validated"] is False
+
+
+def test_pareto_front_keeps_only_non_dominated_points():
+    points = [
+        {"cost_usd": 1.0, "p95_wait_s": 10.0},  # 0 cheap and slow  -> on front
+        {"cost_usd": 2.0, "p95_wait_s": 5.0},   # 1 mid/mid         -> on front
+        {"cost_usd": 3.0, "p95_wait_s": 6.0},   # 2 dominated by 1
+        {"cost_usd": 4.0, "p95_wait_s": 1.0},   # 3 dear and fast   -> on front
+    ]
+    assert model.pareto_front(points) == [0, 1, 3]
+
+
+def test_build_frontier_is_deterministic_and_carries_no_wall_clock():
+    trace = synthetic_trace()
+    first = model.build_frontier(trace)
+    second = model.build_frontier(trace)
+    assert first == second, "regenerating must be byte-identical"
+    assert first["schema"] == model.FRONTIER_SCHEMA
+    assert first["trace_recorded_at"] == trace["recorded_at"]
+    assert "generated_at" not in first, "a wall-clock stamp would break CI byte-identity"
+    assert first["calibration"]["cold_start_s"] == 30.0
+    assert first["rate_usd_per_second"] == model.USD_PER_SECOND
+    assert first["pareto_front"] == model.pareto_front(first["points"])
+
+
+def test_cli_writes_a_frontier_file(tmp_path):
+    import json
+
+    trace_path = tmp_path / "trace.json"
+    out_path = tmp_path / "frontier.json"
+    trace_path.write_text(json.dumps(synthetic_trace()))
+    exit_code = model.main([
+        "--calibrate", str(trace_path), "--sweep",
+        "--rate", "0.001", "--out", str(out_path),
+    ])
+    assert exit_code == 0
+    written = json.loads(out_path.read_text())
+    assert written["rate_usd_per_second"] == 0.001
+    assert out_path.read_text().endswith("\n")
