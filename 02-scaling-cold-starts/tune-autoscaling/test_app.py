@@ -126,6 +126,17 @@ def test_percentile_nearest_rank():
     assert model.percentile([7], 95) == 7
 
 
+def test_percentile_nearest_rank_pins_even_length_p50():
+    # test_percentile_nearest_rank above never exercises p=50 on an
+    # even-length sample - exactly the case that caused a mid-task
+    # discrepancy in the trace-calibration work (SERV-1294): nearest-rank
+    # picks the lower middle value (30.0), and deliberately does NOT
+    # interpolate to the statistical median (31.0). One estimator, used
+    # everywhere in this module - cold_start_s included - and it does not
+    # interpolate.
+    assert model.percentile([30.0, 32.0], 50) == 30.0
+
+
 def test_cold_spike_every_request_waits_for_a_cold_start():
     # 4 requests at t=0, one runner each, 10s cold start, 2s service.
     result = model.simulate(
@@ -405,3 +416,67 @@ def test_measured_timeline_has_the_same_row_shape_as_the_simulation():
     assert peak == 2, "two distinct served_by values were observed"
     assert max(r["queue_depth"] for r in timeline) == 3, "all three queued at t=0"
     assert timeline[-1]["queue_depth"] == 0, "the queue drains"
+
+
+def test_measured_timeline_spans_the_full_keep_alive_tail():
+    # fal bills a runner from SETUP start until keep_alive seconds after its
+    # last request finishes. The timeline's tick range must cover that whole
+    # billed span, not stop at the last completion - the idle keep_alive
+    # tail is the whole visual point of this example (it is what shows a
+    # reader that keep_alive is billed).
+    trace = synthetic_trace()
+    keep_alive = trace["scale_config"]["keep_alive"]
+    last_completion = max(r["completed_s"] for r in trace["requests"])  # 38.0
+
+    timeline = model.measured_timeline(trace, tick_s=1.0)
+
+    assert timeline[-1]["t"] >= last_completion + keep_alive, (
+        "the timeline must keep emitting rows through the keep_alive idle "
+        "tail instead of stopping at the last completion"
+    )
+    # Well after the last completion, but still inside the keep_alive
+    # window, both runners must still be reported alive (idle) - they have
+    # not scaled down yet.
+    well_after = next(
+        row for row in timeline if row["t"] == last_completion + 100.0
+    )
+    assert well_after["idle"] >= 1
+
+
+def test_calibration_excludes_requests_with_no_usable_runner_identity():
+    # A 2xx response whose body is missing the expected fields yields
+    # served_by == "". That record carries no usable runner identity and
+    # must not be treated as its own runner - grouping it in would fabricate
+    # a completion gap that pollutes service_s and inflates observed_runners.
+    baseline = model.calibrate(synthetic_trace())
+
+    trace = synthetic_trace()
+    trace["requests"] = trace["requests"] + [
+        {"id": 3, "arrived_s": 0.0, "completed_s": 1.0, "status": 200,
+         "served_by": "", "was_cold": False, "setup_duration_s": 0.0},
+    ]
+    calibration = model.calibrate(trace)
+
+    assert calibration.observed_runners == baseline.observed_runners
+    assert calibration.service_s == baseline.service_s
+
+
+def test_measured_windows_do_not_depend_on_a_runners_request_order():
+    # _by_runner's docstring claims id order, but it only sorts the outer
+    # dict by runner id - each runner's own request list keeps whatever
+    # order it was given in. measured_windows must recover the same
+    # setup_start_s regardless of that order.
+    baseline = {w.runner_id: w for w in model.measured_windows(synthetic_trace())}
+
+    reordered = synthetic_trace()
+    requests = reordered["requests"]
+    r_aaa = [r for r in requests if r["served_by"] == "r-aaa"]
+    others = [r for r in requests if r["served_by"] != "r-aaa"]
+    assert len(r_aaa) == 2, "fixture must still have two requests for r-aaa"
+    reordered["requests"] = others + list(reversed(r_aaa))
+
+    reordered_windows = {
+        w.runner_id: w for w in model.measured_windows(reordered)
+    }
+    assert reordered_windows["r-aaa"].setup_start_s == baseline["r-aaa"].setup_start_s
+    assert reordered_windows["r-bbb"].setup_start_s == baseline["r-bbb"].setup_start_s

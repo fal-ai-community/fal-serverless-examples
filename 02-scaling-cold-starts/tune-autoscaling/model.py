@@ -288,9 +288,20 @@ class Calibration:
 
 
 def _ok_requests(trace: dict) -> list[dict]:
-    """Successful requests only. fal does not bill 5xx, and a failed request
-    carries no usable timing."""
-    return [r for r in trace["requests"] if 200 <= int(r["status"]) < 300]
+    """Successful requests with a usable runner identity.
+
+    fal does not bill 5xx, and a failed request carries no usable timing -
+    so status must be 2xx. Separately, a 2xx response whose body is missing
+    the expected fields yields served_by == "" ; a record with no runner
+    identity cannot be grouped into a real runner's window, and keeping it
+    would fabricate a phantom runner out of every such record (polluting
+    the service_s minimum, contaminating the cold_start_s sample, and
+    inflating observed_runners)."""
+    return [
+        r
+        for r in trace["requests"]
+        if 200 <= int(r["status"]) < 300 and str(r["served_by"])
+    ]
 
 
 def _by_runner(requests: list[dict]) -> dict[str, list[dict]]:
@@ -359,7 +370,13 @@ def measured_windows(trace: dict) -> list[RunnerWindow]:
     windows = []
     for runner_id, requests in _by_runner(_ok_requests(trace)).items():
         completions = [float(r["completed_s"]) for r in requests]
-        setup_duration = float(requests[0]["setup_duration_s"])
+        # Select by the cold flag, not list position: _by_runner preserves
+        # whatever order it was given, and a runner's cold request is the
+        # one whose setup_duration_s is authoritative (set once in setup()
+        # and echoed by every response). Fall back to the first request if
+        # none is flagged cold.
+        cold_first = next((r for r in requests if r["was_cold"]), requests[0])
+        setup_duration = float(cold_first["setup_duration_s"])
         windows.append(
             RunnerWindow(
                 runner_id=runner_id,
@@ -384,10 +401,18 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
     grouped = _by_runner(ok)
     # Each runner's own reported setup duration, not the fleet median - this
     # is a reconstruction of what actually happened, runner by runner.
+    # Select by the cold flag rather than list position, same as
+    # measured_windows: _by_runner preserves whatever order it was given,
+    # not necessarily the cold request first. Fall back to the first
+    # request if none is flagged cold.
     ready_at = {
         runner_id: windows[runner_id].setup_start_s
-        + float(grouped[runner_id][0]["setup_duration_s"])
-        for runner_id in windows
+        + float(
+            next((r for r in requests if r["was_cold"]), requests[0])[
+                "setup_duration_s"
+            ]
+        )
+        for runner_id, requests in grouped.items()
     }
     busy: dict[str, list[tuple[float, float]]] = {rid: [] for rid in windows}
     for request in ok:
@@ -396,8 +421,14 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
         busy[runner_id].append((completed - calibration.service_s, completed))
 
     start = min(w.setup_start_s for w in windows.values())
-    end = max(w.last_completion_s for w in windows.values())
+    # keep_alive must be looked up before `end`: fal bills a runner from
+    # SETUP start until keep_alive seconds after its last request finishes,
+    # and the per-tick loop below treats a runner as alive through
+    # last_completion_s + keep_alive. `end` has to bound the tick range at
+    # that same point, or the idle keep_alive tail - the whole visual point
+    # of this example - is never emitted.
     keep_alive = float(calibration.scale_config.get("keep_alive", 0))
+    end = max(w.last_completion_s + keep_alive for w in windows.values())
 
     timeline = []
     steps = int(math.ceil((end - start) / tick_s)) + 1
