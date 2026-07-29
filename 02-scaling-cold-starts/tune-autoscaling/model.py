@@ -15,6 +15,7 @@ nowhere at all - which is why this example measures them instead.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 # Published list price for GPU-H100 on fal.ai/pricing. The negotiated
 # "as low as" tier is $1.89/h; a reader on that tier should pass --rate.
@@ -46,3 +47,41 @@ def desired_runners(
     if max_concurrency is not None:
         want = min(want, max_concurrency)
     return want
+
+
+@dataclass(frozen=True)
+class RunnerWindow:
+    """One runner's billed lifetime.
+
+    `setup_start_s` is when billing starts (the SETUP state). Everything
+    before it - PENDING, DOCKER_PULL - is free. `last_completion_s` is when
+    it finished its last request; it stays alive, and billing, for
+    keep_alive seconds after that.
+    """
+
+    runner_id: str
+    setup_start_s: float
+    last_completion_s: float
+
+
+def billable_seconds(
+    windows: list[RunnerWindow], *, keep_alive: float, granularity: float = 1.0
+) -> float:
+    """Billed runner-seconds across every runner in `windows`.
+
+    ASSUMPTION: each runner's alive time is rounded up to `granularity`.
+    fal publishes no billing granularity or minimum billable duration, so
+    the default of 1s is a stated assumption, not a documented fact. It
+    matters most at short keep_alive values.
+    """
+    total = 0.0
+    for window in windows:
+        alive = (window.last_completion_s + keep_alive) - window.setup_start_s
+        if alive <= 0:
+            continue
+        total += math.ceil(alive / granularity) * granularity
+    return total
+
+
+def cost_usd(billable_s: float, *, usd_per_second: float = USD_PER_SECOND) -> float:
+    return billable_s * usd_per_second

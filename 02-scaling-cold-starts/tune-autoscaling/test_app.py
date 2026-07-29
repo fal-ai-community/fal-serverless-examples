@@ -11,12 +11,14 @@ example folder needs no package plumbing - same trick as
 00-getting-started/bulletproof-inputs/test_app.py.
 """
 import importlib.util
+import sys
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
     "autoscale_model", Path(__file__).parent / "model.py"
 )
 model = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = model
 _spec.loader.exec_module(model)
 
 
@@ -68,3 +70,40 @@ def test_max_concurrency_is_a_hard_ceiling():
 def test_published_h100_list_rate():
     assert model.H100_USD_PER_HOUR == 3.99
     assert abs(model.USD_PER_SECOND - 3.99 / 3600) < 1e-12
+
+
+def test_billed_window_spans_setup_through_keep_alive_expiry():
+    # One runner: SETUP starts at t=0, last request finishes at t=40,
+    # keep_alive=60 -> alive 0..100 -> 100 billed seconds.
+    windows = [model.RunnerWindow("r1", setup_start_s=0.0, last_completion_s=40.0)]
+    assert model.billable_seconds(windows, keep_alive=60) == 100.0
+
+
+def test_billable_seconds_sums_across_runners():
+    windows = [
+        model.RunnerWindow("r1", setup_start_s=0.0, last_completion_s=40.0),
+        model.RunnerWindow("r2", setup_start_s=30.0, last_completion_s=45.0),
+    ]
+    # r1: 0..100 = 100. r2: 30..105 = 75. Total 175.
+    assert model.billable_seconds(windows, keep_alive=60) == 175.0
+
+
+def test_keep_alive_zero_bills_only_setup_plus_work():
+    windows = [model.RunnerWindow("r1", setup_start_s=10.0, last_completion_s=25.0)]
+    assert model.billable_seconds(windows, keep_alive=0) == 15.0
+
+
+def test_granularity_rounds_up_per_runner():
+    # Billing granularity is published NOWHERE. The model rounds each
+    # runner's alive time up to `granularity`, and states the assumption.
+    windows = [
+        model.RunnerWindow("r1", setup_start_s=0.0, last_completion_s=0.5),
+        model.RunnerWindow("r2", setup_start_s=0.0, last_completion_s=0.5),
+    ]
+    assert model.billable_seconds(windows, keep_alive=0, granularity=1.0) == 2.0
+    assert model.billable_seconds(windows, keep_alive=0, granularity=60.0) == 120.0
+
+
+def test_cost_uses_the_published_rate_by_default():
+    assert abs(model.cost_usd(3600.0) - 3.99) < 1e-9
+    assert abs(model.cost_usd(3600.0, usd_per_second=1.89 / 3600) - 1.89) < 1e-9
