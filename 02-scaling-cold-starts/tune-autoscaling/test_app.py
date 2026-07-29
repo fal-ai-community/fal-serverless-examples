@@ -107,3 +107,92 @@ def test_granularity_rounds_up_per_runner():
 def test_cost_uses_the_published_rate_by_default():
     assert abs(model.cost_usd(3600.0) - 3.99) < 1e-9
     assert abs(model.cost_usd(3600.0, usd_per_second=1.89 / 3600) - 1.89) < 1e-9
+
+
+def test_arrival_schedule_shapes():
+    assert model.arrival_schedule("spike", requests=4, duration_s=10) == [0.0, 0.0, 0.0, 0.0]
+    assert model.arrival_schedule("steady", requests=4, duration_s=10) == [0.0, 2.5, 5.0, 7.5]
+    ramp = model.arrival_schedule("ramp", requests=4, duration_s=10)
+    assert ramp[0] == 0.0
+    # A ramp accelerates: later gaps are wider than earlier ones.
+    gaps = [b - a for a, b in zip(ramp, ramp[1:])]
+    assert gaps == sorted(gaps) and gaps[0] < gaps[-1]
+
+
+def test_percentile_nearest_rank():
+    assert model.percentile([1, 2, 3, 4, 5], 50) == 3
+    assert model.percentile([1, 2, 3, 4, 5], 100) == 5
+    assert model.percentile(list(range(1, 21)), 95) == 19
+    assert model.percentile([7], 95) == 7
+
+
+def test_cold_spike_every_request_waits_for_a_cold_start():
+    # 4 requests at t=0, one runner each, 10s cold start, 2s service.
+    result = model.simulate(
+        model.arrival_schedule("spike", requests=4, duration_s=0),
+        service_s=2.0, cold_start_s=10.0, keep_alive=0.0, max_concurrency=4,
+    )
+    assert len(result.waits) == 4, "requests are never dropped"
+    assert all(abs(w - 10.0) < 0.2 for w in result.waits), result.waits
+    assert len(result.windows) == 4
+    # Each runner bills SETUP (10s) + its single 2s request, keep_alive=0.
+    assert model.billable_seconds(result.windows, keep_alive=0.0) == 48.0
+
+
+def test_max_concurrency_caps_runners_and_queues_the_rest():
+    result = model.simulate(
+        model.arrival_schedule("spike", requests=10, duration_s=0),
+        service_s=1.0, cold_start_s=5.0, keep_alive=0.0, max_concurrency=2,
+    )
+    assert len(result.waits) == 10, "every request is eventually served"
+    assert max(r["setup"] + r["idle"] + r["running"] for r in result.timeline) == 2
+    # Ten requests through two runners at 1s each: the last waits ~4 rounds
+    # on top of the 5s cold start.
+    assert model.percentile(result.waits, 100) > 8.0
+
+
+def test_min_concurrency_removes_the_cold_start_penalty():
+    arrivals = model.arrival_schedule("spike", requests=2, duration_s=0)
+    cold = model.simulate(arrivals, service_s=1.0, cold_start_s=20.0,
+                          keep_alive=0.0, max_concurrency=2)
+    warm = model.simulate(arrivals, service_s=1.0, cold_start_s=0.0,
+                          keep_alive=0.0, min_concurrency=2, max_concurrency=2)
+    assert model.percentile(cold.waits, 95) > 19.0
+    assert model.percentile(warm.waits, 95) < 0.5
+
+
+def test_scaling_delay_defers_the_scale_up():
+    result = model.simulate(
+        [0.0], service_s=1.0, cold_start_s=0.0, keep_alive=0.0,
+        max_concurrency=1, scaling_delay=5.0,
+    )
+    # The queued request must age scaling_delay seconds before it counts
+    # toward the desired runner count.
+    assert result.waits[0] >= 5.0
+
+
+def test_keep_alive_keeps_the_second_burst_warm():
+    # Two bursts 30s apart. keep_alive=60 spans the gap; keep_alive=5 does not.
+    arrivals = [0.0, 30.0]
+    warm = model.simulate(arrivals, service_s=1.0, cold_start_s=20.0,
+                          keep_alive=60.0, max_concurrency=1)
+    cold = model.simulate(arrivals, service_s=1.0, cold_start_s=20.0,
+                          keep_alive=5.0, max_concurrency=1)
+    assert warm.waits[1] < 1.0, "second request should hit a warm runner"
+    assert cold.waits[1] > 15.0, "second request should pay another cold start"
+    # And the warm run bills more idle time for the privilege.
+    assert model.billable_seconds(warm.windows, keep_alive=60.0) > \
+           model.billable_seconds(cold.windows, keep_alive=5.0)
+
+
+def test_timeline_states_are_disjoint_and_bounded():
+    result = model.simulate(
+        model.arrival_schedule("ramp", requests=6, duration_s=20),
+        service_s=2.0, cold_start_s=8.0, keep_alive=10.0, max_concurrency=3,
+    )
+    for row in result.timeline:
+        assert row["setup"] >= 0 and row["idle"] >= 0 and row["running"] >= 0
+        assert row["setup"] + row["idle"] + row["running"] <= 3
+        assert row["queue_depth"] >= 0
+    assert result.timeline[0]["t"] == 0.0
+    assert result.timeline[-1]["queue_depth"] == 0, "the queue must drain"

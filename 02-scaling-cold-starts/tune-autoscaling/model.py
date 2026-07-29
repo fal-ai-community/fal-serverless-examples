@@ -85,3 +85,170 @@ def billable_seconds(
 
 def cost_usd(billable_s: float, *, usd_per_second: float = USD_PER_SECOND) -> float:
     return billable_s * usd_per_second
+
+
+TICK_S = 0.1
+_MAX_TICKS = 2_000_000  # runaway guard; 0.1s ticks = ~55 hours of sim time
+
+
+def arrival_schedule(pattern: str, *, requests: int, duration_s: float) -> list[float]:
+    """Deterministic arrival times, in seconds from burst start.
+
+    The real burst driver fires this exact schedule, so a simulated run and
+    a measured run share their traffic shape.
+    """
+    if requests < 1:
+        raise ValueError("requests must be >= 1")
+    if pattern == "spike":
+        return [0.0] * requests
+    if pattern == "steady":
+        step = duration_s / requests
+        return [round(i * step, 6) for i in range(requests)]
+    if pattern == "ramp":
+        return [round(duration_s * (i / requests) ** 2, 6) for i in range(requests)]
+    raise ValueError(f"unknown pattern {pattern!r}: use spike, ramp or steady")
+
+
+def percentile(values: list[float], p: float) -> float:
+    """Nearest-rank percentile. No interpolation - these are small samples."""
+    if not values:
+        raise ValueError("percentile of an empty sample")
+    ordered = sorted(values)
+    rank = math.ceil(p / 100 * len(ordered)) - 1
+    return ordered[max(0, min(rank, len(ordered) - 1))]
+
+
+@dataclass
+class SimResult:
+    timeline: list[dict]
+    waits: list[float]
+    windows: list[RunnerWindow]
+
+
+def simulate(
+    arrivals: list[float],
+    *,
+    service_s: float,
+    cold_start_s: float,
+    keep_alive: float,
+    min_concurrency: int = 0,
+    max_concurrency: int | None = None,
+    concurrency_buffer: int = 0,
+    concurrency_buffer_perc: int = 0,
+    max_multiplexing: int = 1,
+    scaling_delay: float = 0.0,
+    tick_s: float = TICK_S,
+) -> SimResult:
+    """Fixed-step simulation of one burst.
+
+    A fixed 0.1s tick rather than an event queue: it is far easier to verify
+    against the published diagrams, and 0.1s resolution is well below the
+    10s floor of fal's own metrics endpoint anyway.
+
+    Scale-down is modelled as keep_alive expiry only, because fal publishes
+    no other scale-down dynamics. That is why this example MEASURES a real
+    burst - the measurement is the authority, and the residual chart shows
+    where this model disagrees with it.
+    """
+    pending = sorted(arrivals)
+    queue: list[tuple[float, int]] = []
+    runners: list[dict] = []
+    waits: dict[int, float] = {}
+    timeline: list[dict] = []
+    next_arrival = 0
+    next_request_id = 0
+
+    def start_runner(at: float) -> dict:
+        runner = {
+            "id": f"sim-{len(runners):04d}",
+            "setup_start": at,
+            "ready_at": at + cold_start_s,
+            "inflight": [],
+            "last_activity": at + cold_start_s,
+            "terminated_at": None,
+        }
+        runners.append(runner)
+        return runner
+
+    for _ in range(min_concurrency):
+        start_runner(0.0)  # a min_concurrency runner still pays for SETUP
+
+    for step in range(_MAX_TICKS):
+        t = round(step * tick_s, 6)
+
+        while next_arrival < len(pending) and pending[next_arrival] <= t:
+            queue.append((pending[next_arrival], next_request_id))
+            next_request_id += 1
+            next_arrival += 1
+
+        alive = [r for r in runners if r["terminated_at"] is None]
+
+        for runner in alive:
+            done = [c for c in runner["inflight"] if c <= t]
+            if done:
+                runner["inflight"] = [c for c in runner["inflight"] if c > t]
+                runner["last_activity"] = max(runner["last_activity"], max(done))
+
+        for runner in alive:
+            while (
+                queue
+                and runner["ready_at"] <= t
+                and len(runner["inflight"]) < max_multiplexing
+            ):
+                arrived_at, request_id = queue.pop(0)
+                waits[request_id] = t - arrived_at
+                runner["inflight"].append(t + service_s)
+                runner["last_activity"] = max(runner["last_activity"], t)
+
+        in_flight = sum(len(r["inflight"]) for r in alive)
+        # scaling_delay: a queued request only counts toward the desired
+        # runner count once it has waited that long to be picked up.
+        aged = sum(1 for arrived_at, _ in queue if t - arrived_at >= scaling_delay)
+        want = desired_runners(
+            in_flight + aged,
+            max_multiplexing=max_multiplexing,
+            concurrency_buffer=concurrency_buffer,
+            concurrency_buffer_perc=concurrency_buffer_perc,
+            min_concurrency=min_concurrency,
+            max_concurrency=max_concurrency,
+        )
+        while len(alive) < want:
+            alive.append(start_runner(t))
+
+        for runner in alive:
+            if (
+                not runner["inflight"]
+                and runner["ready_at"] <= t
+                and (t - runner["last_activity"]) >= keep_alive
+                and len([r for r in alive if r["terminated_at"] is None]) > want
+            ):
+                runner["terminated_at"] = t
+
+        live = [r for r in runners if r["terminated_at"] is None]
+        timeline.append(
+            {
+                "t": t,
+                "setup": sum(1 for r in live if r["ready_at"] > t),
+                "running": sum(1 for r in live if r["inflight"]),
+                "idle": sum(1 for r in live if r["ready_at"] <= t and not r["inflight"]),
+                "queue_depth": len(queue),
+            }
+        )
+
+        # Settle when the traffic is gone AND every surviving runner has sat
+        # idle for keep_alive. `not live` alone is wrong: min_concurrency
+        # runners never terminate, so the loop would run to the guard.
+        drained = next_arrival >= len(pending) and not queue
+        settled = drained and not any(r["inflight"] for r in live)
+        if settled and all((t - r["last_activity"]) >= keep_alive for r in live):
+            break
+    else:  # pragma: no cover - the guard should never trip in practice
+        raise RuntimeError("simulation did not settle; check keep_alive/min_concurrency")
+
+    return SimResult(
+        timeline=timeline,
+        waits=[waits[i] for i in sorted(waits)],
+        windows=[
+            RunnerWindow(r["id"], r["setup_start"], r["last_activity"]) for r in runners
+        ],
+    )
