@@ -91,6 +91,17 @@ TICK_S = 0.1
 _MAX_TICKS = 2_000_000  # runaway guard; 0.1s ticks = ~55 hours of sim time
 
 
+def _grid(value: float) -> float:
+    """Quantize a derived timestamp to the tick clock's precision.
+
+    `t` is always round(step * tick_s, 6). Derived times must be rounded the
+    same way or float error makes a completion land one tick late - and
+    because the next completion is computed from that late value, the error
+    compounds instead of cancelling.
+    """
+    return round(value, 6)
+
+
 def arrival_schedule(pattern: str, *, requests: int, duration_s: float) -> list[float]:
     """Deterministic arrival times, in seconds from burst start.
 
@@ -159,18 +170,22 @@ def simulate(
     next_request_id = 0
 
     def start_runner(at: float) -> dict:
+        ready_at = _grid(at + cold_start_s)
         runner = {
             "id": f"sim-{len(runners):04d}",
             "setup_start": at,
-            "ready_at": at + cold_start_s,
+            "ready_at": ready_at,
             "inflight": [],
-            "last_activity": at + cold_start_s,
+            "last_activity": ready_at,
             "terminated_at": None,
         }
         runners.append(runner)
         return runner
 
-    for _ in range(min_concurrency):
+    prestart = min_concurrency
+    if max_concurrency is not None:
+        prestart = min(prestart, max_concurrency)
+    for _ in range(prestart):
         start_runner(0.0)  # a min_concurrency runner still pays for SETUP
 
     for step in range(_MAX_TICKS):
@@ -197,7 +212,7 @@ def simulate(
             ):
                 arrived_at, request_id = queue.pop(0)
                 waits[request_id] = t - arrived_at
-                runner["inflight"].append(t + service_s)
+                runner["inflight"].append(_grid(t + service_s))
                 runner["last_activity"] = max(runner["last_activity"], t)
 
         in_flight = sum(len(r["inflight"]) for r in alive)

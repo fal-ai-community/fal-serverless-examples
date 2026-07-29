@@ -162,6 +162,10 @@ def test_min_concurrency_removes_the_cold_start_penalty():
 
 
 def test_scaling_delay_defers_the_scale_up():
+    baseline = model.simulate(
+        [0.0], service_s=1.0, cold_start_s=0.0, keep_alive=0.0,
+        max_concurrency=1, scaling_delay=0.0,
+    )
     result = model.simulate(
         [0.0], service_s=1.0, cold_start_s=0.0, keep_alive=0.0,
         max_concurrency=1, scaling_delay=5.0,
@@ -169,6 +173,12 @@ def test_scaling_delay_defers_the_scale_up():
     # The queued request must age scaling_delay seconds before it counts
     # toward the desired runner count.
     assert result.waits[0] >= 5.0
+    # `waits[0] >= 5.0` alone would also pass if some unrelated bug
+    # inflated every wait in the simulation, delayed or not. Pin the
+    # delayed run's extra cost to roughly scaling_delay above a
+    # scaling_delay=0.0 baseline, so only the delay mechanism itself can
+    # satisfy it.
+    assert abs((result.waits[0] - baseline.waits[0]) - 5.0) < 0.2
 
 
 def test_keep_alive_keeps_the_second_burst_warm():
@@ -196,3 +206,49 @@ def test_timeline_states_are_disjoint_and_bounded():
         assert row["queue_depth"] >= 0
     assert result.timeline[0]["t"] == 0.0
     assert result.timeline[-1]["queue_depth"] == 0, "the queue must drain"
+    # The upper bound alone would pass for an all-zeros stub that never
+    # reports a live runner at all; pin down that runners actually show up.
+    assert any(row["setup"] + row["idle"] + row["running"] > 0 for row in result.timeline)
+
+
+def test_derived_timestamps_stay_on_the_tick_grid_under_sequential_load():
+    # Regression for un-rounded derived timestamps: `ready_at` (in
+    # start_runner) and a request's completion time (t + service_s) are
+    # compared against the rounded tick clock `t` without being rounded
+    # themselves. Float error (0.1 + 0.2 != 0.3) then makes a completion
+    # that should land exactly on a tick boundary get recognised one tick
+    # late - and since the next completion is computed from that already
+    # -late value, the error compounds rather than cancelling.
+    #
+    # service_s=0.2 is an exact multiple of the 0.1s tick, so a correctly
+    # quantized simulation reproduces the exact-arithmetic wait for every
+    # request (i * service_s, since all 20 requests arrive at t=0 and are
+    # served strictly one after another by a single runner) within a
+    # single tick, with no growth over the run. Integer-valued service_s
+    # can't expose this: only non-integer ticks-per-service ratios collide
+    # with float rounding.
+    n = 20
+    arrivals = [0.0] * n
+    result = model.simulate(
+        arrivals, service_s=0.2, cold_start_s=0.0, keep_alive=0.0,
+        max_concurrency=1,
+    )
+    tolerance = model.TICK_S + 1e-6
+    for i, wait in enumerate(result.waits):
+        expected = i * 0.2
+        assert abs(wait - expected) <= tolerance, (
+            f"request {i}: wait={wait} expected~{expected} "
+            f"(diff {wait - expected} exceeds one tick - drift is compounding)"
+        )
+
+
+def test_min_concurrency_prestart_never_exceeds_max_concurrency():
+    # simulate() pre-starts min_concurrency runners before the loop, but
+    # that pre-start must still respect the same max_concurrency ceiling
+    # that desired_runners() enforces once the loop is running.
+    result = model.simulate(
+        [0.0], service_s=1.0, cold_start_s=1.0, keep_alive=0.0,
+        min_concurrency=2, max_concurrency=1,
+    )
+    for row in result.timeline:
+        assert row["setup"] + row["idle"] + row["running"] <= 1, row
