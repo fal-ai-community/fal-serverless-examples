@@ -212,13 +212,22 @@ def test_timeline_states_are_disjoint_and_bounded():
 
 
 def test_derived_timestamps_stay_on_the_tick_grid_under_sequential_load():
-    # Regression for un-rounded derived timestamps: `ready_at` (in
-    # start_runner) and a request's completion time (t + service_s) are
-    # compared against the rounded tick clock `t` without being rounded
-    # themselves. Float error (0.1 + 0.2 != 0.3) then makes a completion
-    # that should land exactly on a tick boundary get recognised one tick
-    # late - and since the next completion is computed from that already
-    # -late value, the error compounds rather than cancelling.
+    # Regression for un-rounded derived completion timestamps: a request's
+    # completion time (t + service_s) is compared against the rounded tick
+    # clock `t` without being rounded itself. Float error (0.1 + 0.2 != 0.3)
+    # then makes a completion that should land exactly on a tick boundary
+    # get recognised one tick late - and since the next completion is
+    # computed from that already-late value, the error compounds rather
+    # than cancelling.
+    #
+    # NOTE: this test only covers the *completion-time* _grid call in
+    # simulate()'s dispatch loop. It cannot cover the other quantization
+    # site, `ready_at = _grid(at + cold_start_s)` in start_runner, because
+    # cold_start_s=0.0 here and every runner below is pre-started at
+    # at=0.0: `0.0 + x == x` exactly for any float x, so `at + cold_start_s`
+    # is an exact no-op regardless of quantization. See
+    # test_ready_at_stays_on_the_tick_grid_when_a_runner_starts_mid_loop
+    # for that site.
     #
     # service_s=0.2 is an exact multiple of the 0.1s tick, so a correctly
     # quantized simulation reproduces the exact-arithmetic wait for every
@@ -240,6 +249,52 @@ def test_derived_timestamps_stay_on_the_tick_grid_under_sequential_load():
             f"request {i}: wait={wait} expected~{expected} "
             f"(diff {wait - expected} exceeds one tick - drift is compounding)"
         )
+
+
+def test_ready_at_stays_on_the_tick_grid_when_a_runner_starts_mid_loop():
+    # Regression for the OTHER quantization site: `ready_at = _grid(at +
+    # cold_start_s)` in start_runner. The sequential-load test above can't
+    # exercise it: every runner it starts is pre-started at at=0.0, and
+    # 0.0 + x == x exactly for any float x, so no float error can ever
+    # arise there. Exposing this site requires a runner that starts
+    # mid-loop at a non-zero tick, with a non-integer cold_start_s, so that
+    # `at + cold_start_s` is a genuinely inexact sum.
+    #
+    # Two requests arrive at t=0.0 and t=0.1. service_s=5.0 is long enough
+    # that the first runner is still mid-request when request 1 arrives,
+    # so max_concurrency=2 forces a second runner to start at t=0.1 (a
+    # non-zero tick) rather than reusing the first. cold_start_s=0.2 is
+    # non-integer, and checked directly in the interpreter:
+    #   >>> 0.1 + 0.2
+    #   0.30000000000000004
+    # which is a hair ABOVE the tick grid value at that point (exactly
+    # 0.3, since t = round(step * tick_s, 6)). A correctly quantized
+    # ready_at (_grid(0.1 + 0.2) == 0.3) satisfies `ready_at <= t` right
+    # when t reaches 0.3, so request 1 - whose runner starts the instant
+    # it arrives - waits exactly cold_start_s. An un-quantized ready_at
+    # (0.30000000000000004) narrowly misses that same check at t=0.3, so
+    # the runner isn't recognised as ready until t=0.4 - one whole tick
+    # late, and request 1's wait grows to 0.3 instead of 0.2.
+    #
+    # Confirmed empirically against both variants of model.py: correctly
+    # quantized -> waits == [0.2, ~0.2]; ready_at revert only -> waits ==
+    # [0.2, ~0.3]; completion-time revert only -> waits == [0.2, ~0.2]
+    # (unaffected - this scenario isolates the ready_at site).
+    result = model.simulate(
+        [0.0, 0.1], service_s=5.0, cold_start_s=0.2, keep_alive=0.0,
+        max_concurrency=2,
+    )
+    assert len(result.waits) == 2
+    # A one-tick tolerance would defeat the point of this test: the bug's
+    # error IS exactly one tick (0.3 vs 0.2), so the check needs a tight
+    # epsilon - not tick-scale slack - to tell "correct" from "broken".
+    expected_wait = 0.2  # == cold_start_s; runner starts the instant the
+    # request arrives, and 0.1 + 0.2 lands exactly on a tick boundary.
+    assert abs(result.waits[1] - expected_wait) < 1e-6, (
+        f"wait={result.waits[1]} expected~{expected_wait} "
+        f"(diff {result.waits[1] - expected_wait} - ready_at is drifting "
+        "off the tick grid)"
+    )
 
 
 def test_min_concurrency_prestart_never_exceeds_max_concurrency():
