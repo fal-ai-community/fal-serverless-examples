@@ -227,3 +227,49 @@ def test_prepare_dataset_blank_sidecar_caption_is_missing(tmp_path):
     ds = shared.prepare_dataset(zp, tmp_path / "w2", default_caption="fallback")
     assert ds.items[0][1] == "fallback"
     assert ds.num_sidecar_captions == 0
+
+
+# ----------------------------------------------------- unit: trainer module
+
+def _load_module(name):
+    spec = importlib.util.spec_from_file_location(
+        f"tsl_{name}", Path(__file__).parent / f"{name}.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Allow the loaded modules to import shared without sys.path manipulation
+sys.modules.setdefault("shared", shared)
+
+
+def test_trainer_module_loads_with_expected_settings():
+    trainer = _load_module("app_trainer")
+    cls = trainer.KleinLoraTrainer
+    assert cls.machine_type == "GPU-H100"
+    assert cls.request_timeout == 7200
+    assert cls.skip_retry_conditions == ["timeout"]
+    assert cls.max_concurrency == 1
+    assert cls.host_kwargs["keep_alive"] == 0
+    assert cls.requirements == shared_requirements()
+
+
+def shared_requirements():
+    return [
+        "fal==1.78.2",
+        "hf-transfer==0.1.9",
+        "diffusers==0.39.0",
+        "transformers==5.3.0",
+        "torch==2.12.1",
+        "accelerate==1.14.0",
+        "peft==0.19.1",
+        "safetensors==0.8.0",
+        "pillow==11.3.0",
+    ]
+
+
+def test_trainer_preflight_input_has_smoke_example():
+    trainer = _load_module("app_trainer")
+    field = trainer.PreflightInput.model_fields["image_data_url"]
+    assert field.examples == [shared.DATASET_ZIP_URL]
