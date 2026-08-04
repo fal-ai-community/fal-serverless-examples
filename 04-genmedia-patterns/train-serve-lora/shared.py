@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # --- the published demo artifacts (see README "How the demo was made") ----
-HF_REPO = "fal/flux-2-klein-4b-paper-diorama-lora"
+# Interim home pending fal-org HF perms; moving to fal/<same name> is a
+# one-line change here (tracked in the PR description).
+HF_REPO = "rehan-fal/flux-2-klein-4b-paper-diorama-lora"
 DATASET_ZIP_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
 REFERENCE_ADAPTER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
 
