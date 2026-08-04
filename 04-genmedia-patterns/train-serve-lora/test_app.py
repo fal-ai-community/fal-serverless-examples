@@ -9,7 +9,6 @@ Two layers, one file (repo convention):
    trainer); the app_client fixture skips outside the harness.
 """
 import importlib.util
-import json
 import os
 import re
 import zipfile
@@ -62,14 +61,14 @@ def test_tmp_sibling_same_directory(tmp_path):
 # ---------------------------------------------------------- unit: lora gates
 
 def _write_lora_file(path, keys_shapes, corrupt=False, zeros=False):
-    import torch
-    from safetensors.torch import save_file
+    torch = pytest.importorskip("torch", reason="LoRA-gate tests need torch (installed in example/runner envs, not static CI)")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
 
     tensors = {}
     for key, shape in keys_shapes.items():
         t = torch.zeros(shape) if zeros else torch.randn(shape)
         tensors[key] = t
-    save_file(tensors, str(path))
+    safetensors_torch.save_file(tensors, str(path))
     if corrupt:
         data = path.read_bytes()
         path.write_bytes(data[: len(data) // 2])
