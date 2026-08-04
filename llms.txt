@@ -21,6 +21,7 @@
 - [00.3 media-in-media-out](00-getting-started/media-in-media-out/README.md): file plumbing on a CPU machine - URL inputs, bounded downloads cached on /data, CDN outputs with output_format -> content-type, per-file retention
 - [00.4 bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
 - [01.1 same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
+- [04.3 per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
 
 ## Docs
 
