@@ -339,9 +339,10 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 sigma = sigma.unsqueeze(-1)
             return sigma
 
-        # handle guidance - verbatim gate from the official script; klein has
-        # guidance_embeds=False so this stays None, but if the config ever flips,
-        # training must follow it rather than silently diverge from serving.
+        # handle guidance - the official script's config gate. klein-4B ships
+        # guidance_embeds: false (verified), so this stays None; the gate
+        # exists so a model variant that flips it fails loudly here rather
+        # than silently training a different conditioning path.
         if transformer.config.guidance_embeds:
             guidance = torch.full([1], 1.0, device=device)
             guidance = guidance.expand(1)
