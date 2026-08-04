@@ -164,6 +164,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         "peft==0.19.1",
         "safetensors==0.8.0",
         "pillow==11.3.0",
+        "numpy==1.26.4",
     ]
 
     def setup(self) -> None:
@@ -227,60 +228,61 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         t_start = time.monotonic()
 
         # ------------------------------------------------ 1. dataset (same head as /)
-        staging = Path(tempfile.mkdtemp(prefix="train-"))
-        zip_path = _fetch_dataset(request.image_data_url, staging / "dl")
-        ds = _prepare_or_422(zip_path, staging, request)
-        print(f"[train] dataset ok: {ds.num_images} images, "
-              f"{ds.num_sidecar_captions} sidecar captions, {len(ds.warnings)} warnings")
+        with tempfile.TemporaryDirectory(prefix="train-") as td:
+            staging = Path(td)
+            zip_path = _fetch_dataset(request.image_data_url, staging / "dl")
+            ds = _prepare_or_422(zip_path, staging, request)
+            print(f"[train] dataset ok: {ds.num_images} images, "
+                  f"{ds.num_sidecar_captions} sidecar captions, {len(ds.warnings)} warnings")
 
-        # ------------------------------------------------ 2. precompute (once)
-        # Text: encoded with the PIPELINE's inference default layers (9, 18, 27)
-        # - NOT the script's CLI default [10, 20, 30] - because the serving app
-        # re-encodes prompts with pipeline defaults and the LoRA must train
-        # against the embeddings it will be served with.
-        pipe.text_encoder.to(device)
-        pipe.vae.to(device)
-        embeds, text_ids_list = [], []
-        with torch.no_grad():
-            for _, caption in ds.items:
-                pe, ti = pipe.encode_prompt(prompt=caption, device=device)
-                embeds.append(pe)
-                text_ids_list.append(ti)
+            # ------------------------------------------------ 2. precompute (once)
+            # Text: encoded with the PIPELINE's inference default layers (9, 18, 27)
+            # - NOT the script's CLI default [10, 20, 30] - because the serving app
+            # re-encodes prompts with pipeline defaults and the LoRA must train
+            # against the embeddings it will be served with.
+            pipe.text_encoder.to(device)
+            pipe.vae.to(device)
+            embeds, text_ids_list = [], []
+            with torch.no_grad():
+                for _, caption in ds.items:
+                    pe, ti = pipe.encode_prompt(prompt=caption, device=device)
+                    embeds.append(pe)
+                    text_ids_list.append(ti)
 
-        # Images: min-edge resize + center crop to RESOLUTION (deterministic
-        # dataset prep; the tensor math below is the script's), then VAE
-        # encode -> patchify -> BatchNorm-normalize (klein has no
-        # scaling/shift factor; it normalizes with the VAE's BN stats).
-        bn_mean = pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(device)
-        bn_std = torch.sqrt(
-            pipe.vae.bn.running_var.view(1, -1, 1, 1) + pipe.vae.config.batch_norm_eps
-        ).to(device)
-        latents = []
-        with torch.no_grad():
-            for path, _ in ds.items:
-                img = PILImage.open(path)  # already RGB, EXIF-normalized
-                scale = RESOLUTION / min(img.size)
-                img = img.resize(
-                    (round(img.width * scale), round(img.height * scale)),
-                    PILImage.BILINEAR,
-                )
-                left = (img.width - RESOLUTION) // 2
-                top = (img.height - RESOLUTION) // 2
-                img = img.crop((left, top, left + RESOLUTION, top + RESOLUTION))
-                px = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
-                px = (px.permute(2, 0, 1) * 2 - 1).unsqueeze(0)
-                px = px.to(device, dtype=pipe.vae.dtype)
-                lat = pipe.vae.encode(px).latent_dist.mode()  # script uses mode()
-                lat = Flux2KleinPipeline._patchify_latents(lat)
-                lat = (lat - bn_mean) / bn_std
-                latents.append(lat)
-        # The single biggest VRAM/speed lever: encoders leave the GPU for the
-        # whole loop; only the transformer stays.
-        pipe.text_encoder.to("cpu")
-        pipe.vae.to("cpu")
-        free_memory()
-        print(f"[train] precompute done in {time.monotonic() - t_start:.0f}s "
-              f"({len(latents)} latents cached)")
+            # Images: min-edge resize + center crop to RESOLUTION (deterministic
+            # dataset prep; the tensor math below is the script's), then VAE
+            # encode -> patchify -> BatchNorm-normalize (klein has no
+            # scaling/shift factor; it normalizes with the VAE's BN stats).
+            bn_mean = pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(device)
+            bn_std = torch.sqrt(
+                pipe.vae.bn.running_var.view(1, -1, 1, 1) + pipe.vae.config.batch_norm_eps
+            ).to(device)
+            latents = []
+            with torch.no_grad():
+                for path, _ in ds.items:
+                    img = PILImage.open(path)  # already RGB, EXIF-normalized
+                    scale = RESOLUTION / min(img.size)
+                    img = img.resize(
+                        (round(img.width * scale), round(img.height * scale)),
+                        PILImage.BILINEAR,
+                    )
+                    left = (img.width - RESOLUTION) // 2
+                    top = (img.height - RESOLUTION) // 2
+                    img = img.crop((left, top, left + RESOLUTION, top + RESOLUTION))
+                    px = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
+                    px = (px.permute(2, 0, 1) * 2 - 1).unsqueeze(0)
+                    px = px.to(device, dtype=pipe.vae.dtype)
+                    lat = pipe.vae.encode(px).latent_dist.mode()  # script uses mode()
+                    lat = Flux2KleinPipeline._patchify_latents(lat)
+                    lat = (lat - bn_mean) / bn_std
+                    latents.append(lat)
+            # The single biggest VRAM/speed lever: encoders leave the GPU for the
+            # whole loop; only the transformer stays.
+            pipe.text_encoder.to("cpu")
+            pipe.vae.to("cpu")
+            free_memory()
+            print(f"[train] precompute done in {time.monotonic() - t_start:.0f}s "
+                  f"({len(latents)} latents cached)")
 
         # ------------------------------------------------ 3. LoRA on the transformer
         transformer = pipe.transformer
@@ -292,6 +294,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             "to_qkv_mlp_proj",
             *[f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)],
         ]
+        torch.manual_seed(TRAIN_SEED)  # covers LoRA gaussian init, dropout, timestep sampling
         transformer.add_adapter(
             LoraConfig(
                 r=RANK,
@@ -328,6 +331,15 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             while len(sigma.shape) < n_dim:
                 sigma = sigma.unsqueeze(-1)
             return sigma
+
+        # handle guidance - verbatim gate from the official script; klein has
+        # guidance_embeds=False so this stays None, but if the config ever flips,
+        # training must follow it rather than silently diverge from serving.
+        if transformer.config.guidance_embeds:
+            guidance = torch.full([1], 1.0, device=device)
+            guidance = guidance.expand(1)
+        else:
+            guidance = None
 
         # ------------------------------------------------ 4. the loop
         gen = torch.Generator(device=device).manual_seed(TRAIN_SEED)
@@ -366,7 +378,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 model_pred = transformer(
                     hidden_states=packed,
                     timestep=timesteps / 1000,
-                    guidance=None,  # klein: guidance_embeds=False
+                    guidance=guidance,
                     encoder_hidden_states=embeds[i],
                     txt_ids=text_ids_list[i],
                     img_ids=model_input_ids,
@@ -413,6 +425,9 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             shared.LORA_ROOT.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=shared.LORA_ROOT) as td:
                 # temp dir on /data itself => same filesystem => atomic rename
+                # No peft metadata is embedded; diffusers then infers lora_alpha == rank.
+                # That round-trips at scale 1.0 ONLY because RANK == LORA_ALPHA - if you
+                # change one, change both or embed metadata.
                 Flux2KleinPipeline.save_lora_weights(
                     save_directory=td, transformer_lora_layers=lora_layers
                 )
