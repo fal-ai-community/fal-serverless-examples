@@ -286,3 +286,8 @@ def test_server_module_loads_with_expected_settings():
     assert server.GenerateInput.model_fields["lora_name"].default == shared.DEMO_LORA
     scale = server.GenerateInput.model_fields["lora_scale"]
     assert scale.default == 1.0
+    assert cls.host_kwargs["keep_alive"] == 300
+    assert cls.startup_timeout == 1200
+    assert cls.app_auth == "private"
+    assert cls.app_files == ["shared.py"]
+    assert cls.max_multiplexing == 1

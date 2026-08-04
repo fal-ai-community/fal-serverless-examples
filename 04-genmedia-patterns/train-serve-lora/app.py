@@ -8,6 +8,8 @@ One resident adapter, swapped on demand - deliberately the 20-line version
 of 04.3's LRU fleet (see README "Next steps").
 """
 import random
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -80,6 +82,8 @@ class KleinLoraServer(fal.App, keep_alive=300):
     app_auth = "private"
     startup_timeout = 1200  # first boot: ~16 GB of weights + the demo adapter
     app_files = ["shared.py"]  # Import Code: same module the trainer ships
+    max_multiplexing = 1  # one-slot adapter state: concurrent requests must
+    # never interleave _load_adapter/set_adapters (correctness, not tuning)
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
@@ -118,23 +122,34 @@ class KleinLoraServer(fal.App, keep_alive=300):
         self._seeded: set[str] = set()
         demo_weights = shared.lora_weights_path(shared.DEMO_LORA)
         if not demo_weights.exists():
-            tmp = shared.tmp_sibling(demo_weights)
+            # Fetch into a private staging dir and validate BEFORE anything
+            # can land at the canonical path - a corrupt published adapter
+            # must never brick /data (every later boot would skip seeding,
+            # then fail validation, forever).
+            shared.LORA_ROOT.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(dir=str(shared.LORA_ROOT), prefix=".seed-"))
             try:
                 fetched = download_file(
                     shared.REFERENCE_ADAPTER_URL,
-                    tmp.parent,
+                    staging,
                     filesize_limit=shared.MAX_ADAPTER_MB,
                 )
+                shared.validate_safetensors_headers(Path(fetched))
+                shared.atomic_replace(Path(fetched), demo_weights)  # same fs: staging is under LORA_ROOT
             except DownloadError as exc:
                 raise RuntimeError(
                     f"could not seed the demo adapter from {shared.REFERENCE_ADAPTER_URL}: {exc}"
                 ) from exc
-            shared.validate_safetensors_headers(Path(fetched))
-            shared.atomic_replace(Path(fetched), demo_weights)
-            tmp.unlink(missing_ok=True)
+            except shared.ArtifactError as exc:
+                raise RuntimeError(f"published reference adapter failed validation: {exc}") from exc
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
             self._seeded.add(shared.DEMO_LORA)
 
-        self._load_adapter(shared.DEMO_LORA)
+        try:
+            self._load_adapter(shared.DEMO_LORA)
+        except FieldException as exc:
+            raise RuntimeError(f"demo adapter failed to load at boot: {exc.message}") from exc
         # Warmup THROUGH the adapter: proves the whole serving path at boot.
         self.pipe(
             prompt="warmup",
@@ -175,8 +190,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
             self.pipe.load_lora_weights(
                 str(path), adapter_name=adapter_id, use_safetensors=True
             )
-        except RuntimeError as exc:
-            if "size mismatch for" in str(exc):
+        except (RuntimeError, ValueError) as exc:
+            detail = str(exc)
+            if "size mismatch for" in detail or "Target modules" in detail:
                 # The diagnostic that answers most bad-LoRA support tickets.
                 raise FieldException(
                     field="lora_name",
@@ -187,7 +203,13 @@ class KleinLoraServer(fal.App, keep_alive=300):
                     ),
                     type="lora_incompatible",
                 ) from None
-            raise  # CUDA/OOM faults stay 5xx: retryable, not the caller's fault
+            if "Invalid LoRA checkpoint" in detail:
+                raise FieldException(
+                    field="lora_name",
+                    message="file is a valid safetensors but not a LoRA checkpoint",
+                    type="lora_invalid_format",
+                ) from None
+            raise  # anything else (incl. CUDA OOM) stays a retryable 5xx
         if adapter_id not in getattr(self.pipe.transformer, "peft_config", {}):
             # diffusers "loads" foreign-prefix files as a silent no-op; make it loud.
             raise FieldException(
@@ -195,9 +217,12 @@ class KleinLoraServer(fal.App, keep_alive=300):
                 message="file contains no FLUX.2 transformer LoRA keys",
                 type="lora_invalid_format",
             )
-        self._log_key_audit(path, adapter_id)
         self._resident = name
         self._adapter_id = adapter_id
+        try:
+            self._log_key_audit(path, adapter_id)
+        except Exception as exc:  # diagnostics must never fail a healthy request
+            print(f"[lora] key audit skipped: {exc}")
         return "seeded" if name in self._seeded else "disk"
 
     def _log_key_audit(self, path: Path, adapter_id: str) -> None:
