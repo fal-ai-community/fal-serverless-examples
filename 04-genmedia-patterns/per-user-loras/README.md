@@ -136,7 +136,15 @@ python fleet_demo.py --app <your-username>/per-user-loras --users 1000 --request
 fal apps scale per-user-loras --min-concurrency 0   # stop the always-on billing
 ```
 
-Two things to know before reading your numbers. First, the scheduler already reuses recently-released runners on its own, so small fleets have strong *implicit* stickiness even without hints — the delta hints buy grows with fleet size and cache pressure, and can be near zero on a 2–3 runner demo. Second, the regime where per-runner caches matter most is when your hot working set is **bigger than one runner's `MAX_RESIDENT_ADAPTERS` but fits the fleet's aggregate** — below that everything is warm everywhere; far above it, every cache thrashes no matter how requests route.
+One measured run for calibration (2026-08-04, 10-runner fleet, 1,000 requests per arm, fresh caches per arm, seed 47 — reproduce with the commands above; your traffic will differ):
+
+```
+                              baseline    with hints
+warm-adapter rate                46.2%         56.1%
+repeat-request stickiness        14.6%         22.0%    (random ≈ 16.7%)
+```
+
+Three things to know before reading your own numbers. First, hints are **best-effort**: the router can only steer a request when the preferred runner is free, so the lift is bounded by your headroom — at high utilization steering degrades gracefully toward normal placement. Second, small fleets hide the effect: with 2–3 runners, chance placement plus the scheduler's own reuse of recently-released runners already lands repeats warm often enough that hints add little you can measure — the delta grows with fleet size (our 3-runner runs measured none; the 10-runner run above did). Third, the regime where per-runner caches matter most is when your hot working set is **bigger than one runner's `MAX_RESIDENT_ADAPTERS` but fits the fleet's aggregate** — below that everything is warm everywhere; far above it, every cache thrashes no matter how requests route.
 
 ## Cost & tuning
 
