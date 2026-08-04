@@ -81,7 +81,7 @@ class KleinLoraServer(fal.App, keep_alive=300):
     machine_type = ["GPU-L40", "GPU-H100"]  # tried in order until capacity is found
     app_auth = "private"
     startup_timeout = 1200  # first boot: ~16 GB of weights + the demo adapter
-    app_files = ["shared.py"]  # Import Code: same module the trainer ships
+    local_python_modules = ["shared"]  # Import Code: same module the trainer ships
     max_multiplexing = 1  # one-slot adapter state: concurrent requests must
     # never interleave _load_adapter/set_adapters (correctness, not tuning)
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.

@@ -152,7 +152,10 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
     request_timeout = 7200     # account-level max; a 10k-step run needs it
     skip_retry_conditions = ["timeout"]
     max_concurrency = 1
-    app_files = ["shared.py"]  # Import Code: ship the shared module with the app
+    # Import Code: ship shared.py with the app. local_python_modules pickles
+    # the module by value - app_files ships the file but ephemeral `fal run`
+    # can't resolve the import at deserialization time (verified live).
+    local_python_modules = ["shared"]
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",

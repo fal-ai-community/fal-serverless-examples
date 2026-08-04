@@ -289,7 +289,7 @@ def test_server_module_loads_with_expected_settings():
     assert cls.host_kwargs["keep_alive"] == 300
     assert cls.startup_timeout == 1200
     assert cls.app_auth == "private"
-    assert cls.app_files == ["shared.py"]
+    assert cls.local_python_modules == ["shared"]
     assert cls.max_multiplexing == 1
 
 
