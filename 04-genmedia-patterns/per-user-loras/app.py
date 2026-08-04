@@ -164,6 +164,57 @@ def hint_for(user_id: str) -> str:
     return f"{HINT_PREFIX}{user_id}"
 
 
+_HF_REPO_RE = re.compile(r"^[\w][\w.-]*/[\w][\w.-]*$")
+_OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_alloc_failed")
+
+
+def validate_lora_source(source: str) -> str:
+    """Classify a lora_url as a direct HTTPS URL or an HF repo id, or 422."""
+    if _HF_REPO_RE.match(source):
+        return "hf_repo"
+    parsed = urlparse(source)
+    if parsed.scheme == "https" and parsed.hostname:
+        return "url"
+    if parsed.scheme == "http":
+        raise FieldException(
+            field="lora_url",
+            message="HTTP links are not supported for model weights. Use HTTPS.",
+            type="lora_download_failed",
+        )
+    raise FieldException(
+        field="lora_url",
+        message=f"Not a valid HTTPS URL or Hugging Face repo id (owner/repo): {source!r}",
+        type="lora_download_failed",
+    )
+
+
+def looks_like_safetensors(head: bytes, file_size: int) -> bool:
+    """Cheap validity gate: 8-byte little-endian header length, then JSON."""
+    if len(head) < 9:
+        return False
+    header_len = int.from_bytes(head[:8], "little")
+    return head[8:9] == b"{" and 0 < header_len <= file_size - 8
+
+
+def is_oom_error(exc: BaseException | None) -> bool:
+    """Walk the cause chain looking for GPU/host OOM. OOM must propagate as a
+    retryable failure - never be swallowed into a permanent 422."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if type(exc).__name__ == "OutOfMemoryError":
+            return True
+        message = str(exc).lower()
+        if any(marker in message for marker in _OOM_MARKERS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def synthetic_seed(user_id: str) -> int:
+    return int.from_bytes(hashlib.sha256(user_id.encode()).digest()[:4], "big") % (2**31)
+
+
 class PerUserLoras(fal.App, keep_alive=300):
     machine_type = ["GPU-L40", "GPU-H100"]  # tried in order until capacity is found
     app_auth = "private"
