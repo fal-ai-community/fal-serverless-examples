@@ -274,3 +274,15 @@ def test_trainer_preflight_input_has_smoke_example():
     trainer = _load_module("app_trainer")
     field = trainer.PreflightInput.model_fields["image_data_url"]
     assert field.examples == [shared.DATASET_ZIP_URL]
+
+
+# ------------------------------------------------------ unit: server module
+
+def test_server_module_loads_with_expected_settings():
+    server = _load_module("app")
+    cls = server.KleinLoraServer
+    assert cls.machine_type == ["GPU-L40", "GPU-H100"]
+    assert cls.requirements == shared_requirements()
+    assert server.GenerateInput.model_fields["lora_name"].default == shared.DEMO_LORA
+    scale = server.GenerateInput.model_fields["lora_scale"]
+    assert scale.default == 1.0
