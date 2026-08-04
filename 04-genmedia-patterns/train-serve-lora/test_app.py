@@ -11,6 +11,7 @@ Two layers, one file (repo convention):
 import importlib.util
 import os
 import re
+import sys
 import zipfile
 from pathlib import Path
 
@@ -20,6 +21,7 @@ _spec = importlib.util.spec_from_file_location(
     "tsl_shared", Path(__file__).parent / "shared.py"
 )
 shared = importlib.util.module_from_spec(_spec)
+sys.modules["tsl_shared"] = shared
 _spec.loader.exec_module(shared)
 
 VARIANT = os.environ.get("HARNESS_VARIANT", "app")
@@ -114,3 +116,104 @@ def test_assert_diffusers_keys_rejects_foreign_prefix(tmp_path):
         shared.assert_diffusers_lora_keys({"unet.down.0.lora_A.weight": ((16, 8), "F32")})
     # and accepts our own trainer's output shape
     shared.assert_diffusers_lora_keys({k: (v, "BF16") for k, v in GOOD_KEYS.items()})
+
+
+# ------------------------------------------------------- unit: dataset prep
+
+def _make_zip(tmp_path, entries):
+    """entries: {archive_name: bytes}"""
+    zp = tmp_path / "ds.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return zp
+
+
+def _png_bytes(w=1024, h=1024, color=(200, 30, 30)):
+    import io
+
+    from PIL import Image as PILImage
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_prepare_dataset_happy_path(tmp_path):
+    zp = _make_zip(tmp_path, {
+        "a.png": _png_bytes(),
+        "a.txt": b"a red square on a table",
+        "b.png": _png_bytes(color=(30, 30, 200)),
+    })
+    ds = shared.prepare_dataset(zp, tmp_path / "w", default_caption="a photo")
+    assert ds.num_images == 2
+    assert ds.num_sidecar_captions == 1
+    captions = dict((p.name, c) for p, c in ds.items)
+    assert captions["000.png"] == "a red square on a table"
+    assert captions["001.png"] == "a photo"
+    assert all(p.exists() for p, _ in ds.items)
+
+
+def test_prepare_dataset_prepends_trigger_phrase(tmp_path):
+    zp = _make_zip(tmp_path, {"a.png": _png_bytes(), "a.txt": b"a red square"})
+    ds = shared.prepare_dataset(zp, tmp_path / "w", trigger_phrase="pprdrma style,")
+    assert ds.items[0][1] == "pprdrma style, a red square"
+
+
+def test_prepare_dataset_missing_captions_names_files(tmp_path):
+    zp = _make_zip(tmp_path, {"a.png": _png_bytes(), "b.png": _png_bytes()})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w")
+    assert excinfo.value.code == "missing_captions"
+    assert "a.png" in excinfo.value.message
+
+
+def test_prepare_dataset_rejects_traversal(tmp_path):
+    zp = _make_zip(tmp_path, {"../evil.png": _png_bytes()})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w", default_caption="x")
+    assert excinfo.value.code == "invalid_archive"
+
+
+def test_prepare_dataset_rejects_no_images(tmp_path):
+    zp = _make_zip(tmp_path, {"notes.txt": b"hello"})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w", default_caption="x")
+    assert excinfo.value.code == "no_images_found"
+
+
+def test_prepare_dataset_rejects_non_zip(tmp_path):
+    fake = tmp_path / "page.zip"
+    fake.write_bytes(b"<!doctype html><html>expired presigned url</html>")
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(fake, tmp_path / "w", default_caption="x")
+    assert excinfo.value.code == "invalid_archive"
+
+
+def test_prepare_dataset_rejects_corrupt_image(tmp_path):
+    zp = _make_zip(tmp_path, {"a.png": _png_bytes()[:100], "a.txt": b"cap"})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w")
+    assert excinfo.value.code == "invalid_image"
+    assert "a.png" in excinfo.value.message
+
+
+def test_prepare_dataset_rejects_tiny_image_and_warns_small(tmp_path):
+    zp = _make_zip(tmp_path, {"tiny.png": _png_bytes(64, 64), "tiny.txt": b"c"})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w")
+    assert excinfo.value.code == "image_too_small"
+
+    zp2 = _make_zip(tmp_path, {"small.png": _png_bytes(512, 512), "small.txt": b"c"})
+    ds = shared.prepare_dataset(zp2, tmp_path / "w2")
+    assert any("1024" in w for w in ds.warnings)
+
+
+def test_prepare_dataset_skips_macosx_junk(tmp_path):
+    zp = _make_zip(tmp_path, {
+        "__MACOSX/._a.png": b"junk",
+        "a.png": _png_bytes(),
+        "a.txt": b"cap",
+    })
+    ds = shared.prepare_dataset(zp, tmp_path / "w")
+    assert ds.num_images == 1

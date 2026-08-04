@@ -139,3 +139,149 @@ def assert_diffusers_lora_keys(shapes: dict[str, tuple]) -> None:
             f"unexpected LoRA key layout (first offender: {bad[0]!r}); "
             "expected diffusers-native transformer.*.lora_A/B.weight keys"
         )
+
+
+@dataclass
+class PreparedDataset:
+    """What prepare_dataset returns: training-ready items + a preflight report."""
+
+    items: list[tuple[Path, str]]   # (processed RGB png path, final caption)
+    num_images: int
+    num_sidecar_captions: int
+    warnings: list[str]
+
+
+def _safe_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    """Zip safety: entry cap, zip-slip (traversal) rejection, declared-size
+    bomb gate, macOS junk filtering. Runs BEFORE any extraction."""
+    infos = [i for i in zf.infolist() if not i.filename.endswith("/")]
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise DatasetError(
+            "image_data_url",
+            f"archive has {len(infos)} entries; maximum is {MAX_ZIP_ENTRIES}",
+            "archive_too_many_files",
+        )
+    keep, total = [], 0
+    for info in infos:
+        parts = Path(info.filename).parts
+        if Path(info.filename).is_absolute() or ".." in parts:
+            raise DatasetError(
+                "image_data_url",
+                f"archive entry {info.filename!r} escapes the extraction directory",
+                "invalid_archive",
+            )
+        if any(p.lower() == "__macosx" for p in parts) or Path(info.filename).name.startswith("._"):
+            continue
+        total += info.file_size
+        if total > MAX_UNCOMPRESSED_MB * 1024 * 1024:
+            raise DatasetError(
+                "image_data_url",
+                f"archive declares more than {MAX_UNCOMPRESSED_MB} MB uncompressed",
+                "file_too_large",
+            )
+        keep.append(info)
+    return keep
+
+
+def prepare_dataset(
+    zip_path: Path,
+    work_dir: Path,
+    default_caption: str | None = None,
+    trigger_phrase: str | None = None,
+) -> PreparedDataset:
+    """The trainer's entire input path, shared verbatim by the preflight
+    endpoint: unzip safely, decode-check every image, normalize EXIF
+    orientation to RGB PNG, pair captions. Deterministic item order.
+    """
+    from PIL import Image as PILImage
+    from PIL import ImageOps
+
+    if not zipfile.is_zipfile(zip_path):
+        raise DatasetError(
+            "image_data_url",
+            "not a ZIP archive (an expired or HTML error page URL is the usual cause)",
+            "invalid_archive",
+        )
+
+    raw_dir = work_dir / "raw"
+    out_dir = work_dir / "processed"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        members = _safe_infolist(zf)
+        for info in members:
+            zf.extract(info, raw_dir)
+
+    extracted = [raw_dir / i.filename for i in members]
+    images = sorted(p for p in extracted if p.suffix.lower() in IMAGE_SUFFIXES)
+    captions = {
+        p.with_suffix("").name: p.read_text(encoding="utf-8", errors="replace").strip()
+        for p in extracted
+        if p.suffix.lower() == ".txt"
+    }
+
+    if not images:
+        raise DatasetError(
+            "image_data_url",
+            f"no images found in the archive (accepted: {', '.join(sorted(IMAGE_SUFFIXES))})",
+            "no_images_found",
+        )
+    if len(images) > MAX_IMAGES:
+        raise DatasetError(
+            "image_data_url",
+            f"{len(images)} images; maximum is {MAX_IMAGES} (style LoRAs want 10-40)",
+            "dataset_too_large",
+        )
+
+    missing = [p.name for p in images if p.with_suffix("").name not in captions]
+    if missing and default_caption is None:
+        shown = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+        raise DatasetError(
+            "default_caption",
+            f"{len(missing)} image(s) have no .txt caption ({shown}); "
+            "add sidecar captions or set default_caption",
+            "missing_captions",
+        )
+
+    items: list[tuple[Path, str]] = []
+    warnings: list[str] = []
+    small: list[str] = []
+    for idx, path in enumerate(images):
+        try:
+            with PILImage.open(path) as img:
+                img = ImageOps.exif_transpose(img).convert("RGB")
+                img.load()
+        except Exception as exc:
+            raise DatasetError(
+                "image_data_url",
+                f"could not decode {path.name!r}: {exc}",
+                "invalid_image",
+            ) from None
+        if min(img.size) < MIN_IMAGE_EDGE:
+            raise DatasetError(
+                "image_data_url",
+                f"{path.name!r} is {img.size[0]}x{img.size[1]}; "
+                f"minimum edge is {MIN_IMAGE_EDGE}px",
+                "image_too_small",
+            )
+        if min(img.size) < RECOMMENDED_EDGE:
+            small.append(path.name)
+        processed = out_dir / f"{idx:03d}.png"
+        img.save(processed, format="PNG")
+        caption = captions.get(path.with_suffix("").name) or default_caption
+        if trigger_phrase:
+            caption = f"{trigger_phrase} {caption}"
+        items.append((processed, caption))
+
+    if small:
+        warnings.append(
+            f"{len(small)} image(s) below {RECOMMENDED_EDGE}px shortest edge "
+            f"({', '.join(small[:5])}); BFL recommends >={RECOMMENDED_EDGE}px for style LoRAs"
+        )
+    return PreparedDataset(
+        items=items,
+        num_images=len(items),
+        num_sidecar_captions=len(images) - len(missing),
+        warnings=warnings,
+    )
