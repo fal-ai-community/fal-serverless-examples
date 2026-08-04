@@ -395,7 +395,37 @@ class PerUserLoras(fal.App, keep_alive=300):
         return path, True
 
     def _write_synthetic_adapter(self, user_id: str, dest: Path) -> None:
-        raise NotImplementedError  # Task 4
+        """A small, deterministic, structurally-real LoRA for this user.
+
+        Targets the attention projections of the transformer's double blocks
+        (module names introspected at runtime, so this tracks diffusers'
+        actual naming). lora_B is near-zero: outputs shift subtly per user,
+        never garbage. Every synthetic adapter shares one config, so the
+        whole synthetic fleet is structurally uniform.
+        """
+        import torch
+        from safetensors.torch import save_file
+
+        gen = torch.Generator(device="cpu").manual_seed(synthetic_seed(user_id))
+        state: dict[str, torch.Tensor] = {}
+        suffixes = (".attn.to_q", ".attn.to_k", ".attn.to_v", ".attn.to_out.0")
+        for name, module in self.pipe.transformer.named_modules():
+            if not name.endswith(suffixes) or not hasattr(module, "in_features"):
+                continue
+            r, n_in, n_out = SYNTHETIC_RANK, module.in_features, module.out_features
+            state[f"transformer.{name}.lora_A.weight"] = (
+                torch.randn((r, n_in), generator=gen, dtype=torch.float32) * 0.02
+            )
+            state[f"transformer.{name}.lora_B.weight"] = (
+                torch.randn((n_out, r), generator=gen, dtype=torch.float32) * 1e-3
+            )
+        if not state:
+            raise RuntimeError(
+                "no attention projections found to target - diffusers naming changed?"
+            )
+        tmp = dest.with_suffix(f".tmp-{os.getpid()}-{time.monotonic_ns()}")
+        save_file(state, str(tmp))
+        os.rename(tmp, dest)
 
     def _activate_adapter(self, user_id: str) -> tuple[float, str]:
         """GPU-LRU hit, else KV -> /data -> load_lora_weights -> insert+evict.
@@ -511,4 +541,33 @@ class PerUserLoras(fal.App, keep_alive=300):
 
     @fal.endpoint("/register")
     def register(self, request: RegisterInput, response: Response) -> RegisterOutput:
-        raise NotImplementedError  # Task 4
+        path = self._adapter_path(request.user_id)
+        if request.lora_url is None:
+            kind = "synthetic"
+            if not path.is_file():
+                self._write_synthetic_adapter(request.user_id, path)
+            record = {"kind": kind, "url": None, "scale": request.scale, "path": str(path)}
+        else:
+            kind = "registered"
+            source_kind = validate_lora_source(request.lora_url)
+            url = (
+                self._resolve_hf_repo(request.lora_url)
+                if source_kind == "hf_repo"
+                else request.lora_url
+            )
+            self._download_to(url, path)  # re-register replaces the file
+            record = {"kind": kind, "url": url, "scale": request.scale, "path": str(path)}
+        self._kv_put_user(request.user_id, record)
+        # Registration invalidates any older resident copy of this user.
+        with self._cache_lock:
+            if request.user_id in self._resident:
+                self._resident.pop(request.user_id)
+                self.pipe.delete_adapters(request.user_id)
+        hint = hint_for(request.user_id)
+        response.headers["x-fal-runner-hint"] = hint
+        return RegisterOutput(
+            user_id=request.user_id,
+            kind=kind,
+            adapter_bytes=path.stat().st_size,
+            hint=hint,
+        )
