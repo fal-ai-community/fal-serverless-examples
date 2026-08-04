@@ -370,7 +370,7 @@ def test_preflight_trigger_phrase_lands_in_captions(app_client):
 @trainer_only
 def test_preflight_rejects_html_page_as_archive(app_client):
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
-        app_client.run("/", {"image_data_url": "https://fal.ai"})
+        app_client.run("/", {"image_data_url": "https://example.com"})
     detail = assert_typed_422(excinfo, "image_data_url", "invalid_archive")
     assert "ZIP" in detail["msg"]
 
