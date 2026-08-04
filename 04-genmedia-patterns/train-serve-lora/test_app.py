@@ -291,3 +291,94 @@ def test_server_module_loads_with_expected_settings():
     assert cls.app_auth == "private"
     assert cls.app_files == ["shared.py"]
     assert cls.max_multiplexing == 1
+
+
+# ------------------------------------------------------------- live: helpers
+
+import httpx  # noqa: E402  (used only by live tests; harness env has it)
+
+server_only = pytest.mark.skipif(VARIANT != "app", reason="server variant only")
+trainer_only = pytest.mark.skipif(VARIANT != "app_trainer", reason="trainer variant only")
+
+
+def assert_typed_422(excinfo, field, type_):
+    response = excinfo.value.response
+    assert response.status_code == 422
+    detail = response.json()["detail"][0]
+    assert detail["loc"] == ["body", field]
+    assert detail["type"] == type_
+    return detail
+
+
+# -------------------------------------------------------------- live: server
+
+@server_only
+def test_generate_with_seeded_demo_adapter(app_client):
+    response = app_client.run(
+        "/",
+        {"prompt": "pprdrma style, a lighthouse on a rocky island", "seed": 7},
+    )
+    assert response["seed"] == 7
+    assert response["image"]["url"].startswith("https://")
+    assert response["serving"]["lora_name"] == "paper-diorama"
+    assert response["serving"]["adapter_source"] in {"cached", "disk", "seeded"}
+    assert set(response["timings"]) == {"lora", "inference"}
+
+
+@server_only
+def test_lora_scale_zero_still_generates(app_client):
+    response = app_client.run(
+        "/", {"prompt": "a lighthouse on a rocky island", "lora_scale": 0.0, "seed": 7}
+    )
+    assert response["image"]["url"].startswith("https://")
+
+
+@server_only
+def test_unknown_lora_name_is_typed_422(app_client):
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        app_client.run("/", {"prompt": "x", "lora_name": "does-not-exist"})
+    assert_typed_422(excinfo, "lora_name", "lora_not_found")
+
+
+@server_only
+def test_bad_slug_is_schema_422(app_client):
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        app_client.run("/", {"prompt": "x", "lora_name": "NOT A SLUG"})
+    assert excinfo.value.response.status_code == 422  # pydantic pattern, free
+
+
+# ------------------------------------------------------------- live: trainer
+
+@trainer_only
+def test_preflight_accepts_published_dataset(app_client):
+    response = app_client.run("/", {"image_data_url": shared.DATASET_ZIP_URL})
+    assert response["ready"] is True
+    assert response["num_images"] == 16
+    assert response["num_sidecar_captions"] == 16
+    assert response["example_caption"]  # non-empty
+
+
+@trainer_only
+def test_preflight_trigger_phrase_lands_in_captions(app_client):
+    response = app_client.run(
+        "/",
+        {"image_data_url": shared.DATASET_ZIP_URL, "trigger_phrase": "pprdrma style,"},
+    )
+    assert response["example_caption"].startswith("pprdrma style,")
+
+
+@trainer_only
+def test_preflight_rejects_html_page_as_archive(app_client):
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        app_client.run("/", {"image_data_url": "https://fal.ai"})
+    detail = assert_typed_422(excinfo, "image_data_url", "invalid_archive")
+    assert "ZIP" in detail["msg"]
+
+
+@trainer_only
+def test_preflight_rejects_unroutable_host(app_client):
+    with pytest.raises(httpx.HTTPStatusError) as excinfo:
+        app_client.run(
+            "/", {"image_data_url": "http://169.254.169.254/latest/meta-data/"}
+        )
+    assert_typed_422(excinfo, "image_data_url", "file_download_error")
