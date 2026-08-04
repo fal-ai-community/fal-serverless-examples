@@ -12,6 +12,7 @@ your own 00.2 deployment (e.g. <username>/first-image-api).
 """
 import argparse
 import io
+import time
 import zipfile
 from pathlib import Path
 
@@ -45,24 +46,48 @@ SUBJECTS = [
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
-    parser.add_argument("--out", default="paper-diorama-16.zip")
+    parser.add_argument(
+        "--endpoint",
+        default=DEFAULT_ENDPOINT,
+        help="fal endpoint id to generate with (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--out",
+        default="paper-diorama-16.zip",
+        help="output zip path (default: %(default)s)",
+    )
     args = parser.parse_args()
+
+    print(f"generating {len(SUBJECTS)} images via {args.endpoint} (paid API calls)")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
         for i, subject in enumerate(SUBJECTS):
-            result = fal_client.subscribe(
-                args.endpoint,
-                arguments={
-                    "prompt": subject + STYLE_SUFFIX,
-                    "image_size": {"width": 1024, "height": 1024},
-                    "num_inference_steps": 4,
-                    "seed": 1000 + i,
-                },
-            )
-            url = result["images"][0]["url"] if "images" in result else result["image"]["url"]
-            png = httpx.get(url, timeout=120).content
+            for attempt in range(3):
+                try:
+                    result = fal_client.subscribe(
+                        args.endpoint,
+                        arguments={
+                            "prompt": subject + STYLE_SUFFIX,
+                            "image_size": {"width": 1024, "height": 1024},
+                            "num_inference_steps": 4,
+                            "seed": 1000 + i,
+                        },
+                    )
+                    url = (
+                        result["images"][0]["url"]
+                        if "images" in result
+                        else result["image"]["url"]
+                    )
+                    resp = httpx.get(url, timeout=120)
+                    resp.raise_for_status()
+                    png = resp.content
+                    break
+                except Exception as exc:
+                    if attempt == 2:
+                        raise
+                    print(f"[retry] {subject!r} attempt {attempt + 1} failed: {exc}")
+                    time.sleep(5)
             zf.writestr(f"{i:03d}.png", png)
             zf.writestr(f"{i:03d}.txt", subject)
             print(f"[{i + 1}/{len(SUBJECTS)}] {subject}")
