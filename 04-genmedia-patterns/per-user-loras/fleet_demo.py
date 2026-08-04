@@ -1,0 +1,103 @@
+"""Fleet demo: register N synthetic users, drive hinted traffic, print the
+routing story. This is the empirical validation for hint-steered cache
+affinity at scale (SERV-1273).
+
+Usage:
+    pip install fal-client
+    python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200
+    python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200 --no-hints
+
+Requires FAL_KEY (or `fal auth login`). Scale the app to >=2 runners first to
+see affinity: fal apps scale per-user-loras --min-concurrency 2
+"""
+import argparse
+import collections
+import concurrent.futures as cf
+import random
+
+import fal_client
+
+PROMPTS = [
+    "a portrait in this user's signature style",
+    "a mountain village at golden hour",
+    "a robot playing chess",
+    "a bowl of ramen, studio lighting",
+]
+
+
+def register_users(app: str, n: int, workers: int) -> list[str]:
+    users = [f"load-u{i:05d}" for i in range(n)]
+
+    def _reg(uid: str) -> None:
+        fal_client.run(app, {"user_id": uid}, path="/register")
+
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        done = 0
+        for _ in pool.map(_reg, users):
+            done += 1
+            if done % 100 == 0:
+                print(f"registered {done}/{n}")
+    return users
+
+
+def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
+                  workers: int, seed: int) -> list[dict]:
+    rng = random.Random(seed)
+    # Skewed popularity: a few hot users, long tail - the realistic shape
+    # for consumer avatar products, and the shape hints help most.
+    weights = [1.0 / (rank + 1) for rank in range(len(users))]
+
+    def _one(i: int) -> dict:
+        uid = rng.choices(users, weights=weights, k=1)[0]
+        kwargs = {"hint": f"lora:{uid}"} if use_hints else {}
+        result = fal_client.run(
+            app,
+            {"user_id": uid, "prompt": rng.choice(PROMPTS),
+             "num_inference_steps": 1, "seed": i, "sync_mode": True},
+            **kwargs,
+        )
+        return result["serving"]
+
+    with cf.ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(_one, range(n_requests)))
+
+
+def report(servings: list[dict], use_hints: bool) -> None:
+    by_worker: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    total = collections.Counter()
+    for s in servings:
+        by_worker[s["worker_id"]][s["adapter_source"]] += 1
+        total[s["adapter_source"]] += 1
+    mode = "WITH hints" if use_hints else "WITHOUT hints (baseline)"
+    print(f"\n=== {mode}: {len(servings)} requests, {len(by_worker)} workers ===")
+    print(f"{'worker':<10} {'gpu-cache':>9} {'disk':>6} {'downloaded':>11}")
+    for wid, c in sorted(by_worker.items()):
+        print(f"{wid:<10} {c['gpu-cache']:>9} {c['disk']:>6} {c['downloaded']:>11}")
+    n = len(servings)
+    print(f"{'TOTAL':<10} {total['gpu-cache']:>9} {total['disk']:>6} {total['downloaded']:>11}")
+    print(f"warm-adapter rate: {total['gpu-cache'] / n:.1%}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--app", required=True, help="<username>/per-user-loras")
+    ap.add_argument("--users", type=int, default=1000)
+    ap.add_argument("--requests", type=int, default=200)
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--no-hints", action="store_true")
+    ap.add_argument("--skip-register", action="store_true",
+                    help="reuse users registered by a previous run")
+    args = ap.parse_args()
+
+    users = [f"load-u{i:05d}" for i in range(args.users)]
+    if not args.skip_register:
+        users = register_users(args.app, args.users, args.workers)
+    servings = drive_traffic(args.app, users, args.requests,
+                             use_hints=not args.no_hints,
+                             workers=args.workers, seed=args.seed)
+    report(servings, use_hints=not args.no_hints)
+
+
+if __name__ == "__main__":
+    main()
