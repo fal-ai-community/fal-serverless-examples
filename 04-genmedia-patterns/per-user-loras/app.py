@@ -234,7 +234,215 @@ class PerUserLoras(fal.App, keep_alive=300):
     ]
 
     def setup(self) -> None:
-        raise NotImplementedError  # Task 3
+        """Load -> seed featured users -> warmup THROUGH the LoRA path."""
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # before any HF download
+
+        import torch
+        from diffusers import Flux2KleinPipeline
+
+        # LOAD: base weights land in the account-wide /data HF cache, so only
+        # the first boot ever downloads from the Hub.
+        self.pipe = Flux2KleinPipeline.from_pretrained(
+            MODEL_ID, torch_dtype=torch.bfloat16
+        ).to("cuda")
+
+        # Serving state. _resident is the GPU adapter LRU *and* the exact set
+        # provide_hints() advertises - the LRU bound is the hint-list bound.
+        self._resident: OrderedDict[str, float] = OrderedDict()  # user_id -> scale
+        self._cache_lock = threading.Lock()
+        self._worker_id = hashlib.sha256(os.urandom(16)).hexdigest()[:8]
+        self.kv = KVStore(KV_DB_NAME)
+        ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
+
+        # SEED the featured users: idempotent - files persist on /data across
+        # runners and boots; KV writes are last-write-wins with fixed values.
+        for uid, meta in FEATURED_USERS.items():
+            path = self._adapter_path(uid)
+            if not path.is_file():
+                print(f"[setup] downloading featured adapter {uid}")
+                self._download_to(meta["url"], path)
+            self._kv_put_user(uid, {
+                "kind": "featured", "url": meta["url"], "scale": meta["scale"],
+                "path": str(path), "trigger": meta["trigger"],
+            })
+
+        # WARMUP through the full serving path: hint-miss -> disk load ->
+        # set_adapters -> one real generation. Validates LoRA serving at boot
+        # (a runner that can't serve adapters must never enter the pool).
+        scale, _ = self._activate_adapter("numzoo")
+        self.pipe.set_adapters(["numzoo"], adapter_weights=[scale])
+        self.pipe(
+            prompt="warmup",
+            height=1024,
+            width=1024,
+            num_inference_steps=1,
+            guidance_scale=1.0,
+        )
+        print(f"[setup] worker {self._worker_id} ready; resident={list(self._resident)}")
+
+    @staticmethod
+    def _adapter_path(user_id: str) -> Path:
+        return ADAPTER_DIR / f"{user_id}.safetensors"
+
+    def _kv_get_user(self, user_id: str) -> dict:
+        raw = self.kv.get(f"user:{user_id}")
+        if raw is None:
+            raise FieldException(
+                field="user_id",
+                message=f"User '{user_id}' is not registered. POST /register first.",
+                type="user_not_registered",
+            )
+        return json.loads(raw)
+
+    def _kv_put_user(self, user_id: str, record: dict) -> None:
+        # KV has no atomics: concurrent registration is last-write-wins,
+        # which is the right semantics for "re-register replaces".
+        self.kv.set(f"user:{user_id}", json.dumps(record))
+
+    def _download_to(self, url: str, dest: Path) -> None:
+        """Stream-download with a hard size cap; temp file + atomic rename so
+        concurrent runners never see partial files. (00.4 bulletproof-inputs
+        covers the fully hardened version of this gate.)"""
+        import httpx
+
+        tmp = dest.with_suffix(f".tmp-{os.getpid()}-{time.monotonic_ns()}")
+        try:
+            with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
+                r.raise_for_status()
+                declared = int(r.headers.get("content-length", 0))
+                if declared > MAX_LORA_BYTES:
+                    raise FieldException(
+                        field="lora_url",
+                        message=f"LoRA is {declared} bytes; the limit is {MAX_LORA_BYTES} (300 MB).",
+                        type="lora_too_large",
+                    )
+                written = 0
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_bytes(1024 * 1024):
+                        written += len(chunk)
+                        if written > MAX_LORA_BYTES:
+                            raise FieldException(
+                                field="lora_url",
+                                message=f"LoRA exceeds the {MAX_LORA_BYTES}-byte (300 MB) limit.",
+                                type="lora_too_large",
+                            )
+                        f.write(chunk)
+            with open(tmp, "rb") as f:
+                head = f.read(9)
+            if not looks_like_safetensors(head, tmp.stat().st_size):
+                raise FieldException(
+                    field="lora_url",
+                    message=(
+                        "Downloaded file is not a .safetensors file. If this is a "
+                        "model page URL, use the direct file download link."
+                    ),
+                    type="lora_invalid_format",
+                )
+            os.rename(tmp, dest)
+        except httpx.HTTPError as exc:
+            raise FieldException(
+                field="lora_url",
+                message=f"Failed to download LoRA from '{url}': {exc}",
+                type="lora_download_failed",
+            ) from exc
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _resolve_hf_repo(self, repo_id: str) -> str:
+        """owner/repo -> direct resolve URL of its single .safetensors file."""
+        from huggingface_hub import HfApi
+
+        try:
+            files = [
+                f for f in HfApi().list_repo_files(repo_id)
+                if f.endswith(".safetensors") and "comfy" not in f
+            ]
+        except Exception as exc:
+            raise FieldException(
+                field="lora_url",
+                message=f"Could not list Hugging Face repo '{repo_id}': {exc}",
+                type="lora_download_failed",
+            ) from exc
+        if len(files) != 1:
+            raise FieldException(
+                field="lora_url",
+                message=(
+                    f"Repo '{repo_id}' must contain exactly one non-comfy "
+                    f".safetensors file (found {len(files)}). Pass the direct file URL instead."
+                ),
+                type="lora_download_failed",
+            )
+        return f"https://huggingface.co/{repo_id}/resolve/main/{files[0]}"
+
+    def _ensure_adapter_file(self, user_id: str, record: dict) -> tuple[Path, bool]:
+        """Return (path, downloaded_now). Self-heals a missing /data file."""
+        path = Path(record["path"])
+        if path.is_file():
+            return path, False
+        if record["kind"] == "synthetic":
+            self._write_synthetic_adapter(user_id, path)
+        elif record.get("url"):
+            self._download_to(record["url"], path)
+        else:
+            raise FieldException(
+                field="user_id",
+                message=(
+                    f"Adapter file for '{user_id}' is missing and has no source URL. "
+                    "Re-register the user."
+                ),
+                type="user_not_registered",
+            )
+        return path, True
+
+    def _write_synthetic_adapter(self, user_id: str, dest: Path) -> None:
+        raise NotImplementedError  # Task 4
+
+    def _activate_adapter(self, user_id: str) -> tuple[float, str]:
+        """GPU-LRU hit, else KV -> /data -> load_lora_weights -> insert+evict.
+        Returns (scale, adapter_source)."""
+        with self._cache_lock:
+            if user_id in self._resident:
+                self._resident.move_to_end(user_id)
+                return self._resident[user_id], "gpu-cache"
+
+        record = self._kv_get_user(user_id)          # 422 if unknown
+        path, downloaded = self._ensure_adapter_file(user_id, record)
+
+        from safetensors.torch import load_file
+
+        state_dict = load_file(str(path), device="cpu")
+        with self._cache_lock:
+            if user_id in self._resident:            # raced another request
+                self._resident.move_to_end(user_id)
+                return self._resident[user_id], "gpu-cache"
+            try:
+                self.pipe.load_lora_weights(state_dict, adapter_name=user_id)
+            except Exception as exc:
+                if is_oom_error(exc):
+                    raise                             # retryable 5xx, never a 422
+                msg = str(exc)
+                if "size" in msg.lower() and "match" in msg.lower():
+                    msg = (
+                        "LoRA weights are incompatible with the current model. "
+                        "The LoRA was likely trained for a different model architecture or size."
+                    )
+                raise FieldException(
+                    field="user_id",
+                    message=f"Failed to load LoRA for '{user_id}'. {msg}",
+                    type="lora_incompatible",
+                ) from exc
+            self._resident[user_id] = float(record.get("scale", 1.0))
+            if len(self._resident) > MAX_RESIDENT_ADAPTERS:
+                evicted, _ = self._resident.popitem(last=False)
+                print(f"[lru] evicting adapter {evicted}")
+                self.pipe.delete_adapters(evicted)
+                import gc
+
+                import torch
+                gc.collect()
+                torch.cuda.empty_cache()
+            print(f"[lru] loaded adapter {user_id} (source={'downloaded' if downloaded else 'disk'})")
+            return self._resident[user_id], ("downloaded" if downloaded else "disk")
 
     def provide_hints(self) -> list[str]:
         # The middleware calls this on every response - including ones that
@@ -246,7 +454,60 @@ class PerUserLoras(fal.App, keep_alive=300):
 
     @fal.endpoint("/")
     def generate(self, request: Input, response: Response) -> Output:
-        raise NotImplementedError  # Task 3
+        import random
+
+        import torch
+
+        t0 = time.perf_counter()
+        scale, source = self._activate_adapter(request.user_id)
+        self.pipe.set_adapters([request.user_id], adapter_weights=[scale])
+        lora_s = time.perf_counter() - t0
+
+        size = get_image_size(request.image_size)
+        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        t1 = time.perf_counter()
+        try:
+            result = self.pipe(
+                prompt=request.prompt,
+                height=size.height,
+                width=size.width,
+                num_inference_steps=request.num_inference_steps,
+                guidance_scale=1.0,  # klein is guidance-distilled
+                generator=torch.Generator("cuda").manual_seed(seed),
+            )
+        except (RuntimeError, ValueError) as exc:
+            if is_oom_error(exc):
+                raise
+            msg = str(exc)
+            if "size" in msg.lower() and "match" in msg.lower():
+                raise FieldException(
+                    field="user_id",
+                    message=(
+                        "LoRA weights are incompatible with the current model. "
+                        "The LoRA was likely trained for a different model architecture or size."
+                    ),
+                    type="lora_incompatible",
+                ) from exc
+            raise
+        inference_s = time.perf_counter() - t1
+
+        hint = hint_for(request.user_id)
+        # Echo the hint so callers never compute it: capture this header and
+        # pass it back as hint= (X-Fal-Runner-Hint) on the next request.
+        response.headers["x-fal-runner-hint"] = hint
+
+        repository = "in_memory" if request.sync_mode else "fal_v3"
+        return Output(
+            image=Image.from_pil(result.images[0], repository=repository),
+            seed=seed,
+            timings={"lora": round(lora_s, 4), "inference": round(inference_s, 4)},
+            serving=ServingInfo(
+                worker_id=self._worker_id,
+                adapter_source=source,
+                hint=hint,
+                resident_adapters=len(self._resident),
+            ),
+        )
 
     @fal.endpoint("/register")
     def register(self, request: RegisterInput, response: Response) -> RegisterOutput:
