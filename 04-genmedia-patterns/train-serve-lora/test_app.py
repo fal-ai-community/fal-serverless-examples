@@ -217,3 +217,13 @@ def test_prepare_dataset_skips_macosx_junk(tmp_path):
     })
     ds = shared.prepare_dataset(zp, tmp_path / "w")
     assert ds.num_images == 1
+
+
+def test_prepare_dataset_blank_sidecar_caption_is_missing(tmp_path):
+    zp = _make_zip(tmp_path, {"a.png": _png_bytes(), "a.txt": b"   \n"})
+    with pytest.raises(shared.DatasetError) as excinfo:
+        shared.prepare_dataset(zp, tmp_path / "w")
+    assert excinfo.value.code == "missing_captions"
+    ds = shared.prepare_dataset(zp, tmp_path / "w2", default_caption="fallback")
+    assert ds.items[0][1] == "fallback"
+    assert ds.num_sidecar_captions == 0

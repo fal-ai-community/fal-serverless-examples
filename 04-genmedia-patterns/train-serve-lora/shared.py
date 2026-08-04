@@ -216,9 +216,10 @@ def prepare_dataset(
     extracted = [raw_dir / i.filename for i in members]
     images = sorted(p for p in extracted if p.suffix.lower() in IMAGE_SUFFIXES)
     captions = {
-        p.with_suffix("").name: p.read_text(encoding="utf-8", errors="replace").strip()
+        p.with_suffix("").name: text
         for p in extracted
         if p.suffix.lower() == ".txt"
+        if (text := p.read_text(encoding="utf-8", errors="replace").strip())
     }
 
     if not images:
