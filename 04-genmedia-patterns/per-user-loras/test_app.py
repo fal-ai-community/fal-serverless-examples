@@ -128,3 +128,101 @@ class TestSyntheticSeed:
         assert app_mod.synthetic_seed("u1") == app_mod.synthetic_seed("u1")
         assert app_mod.synthetic_seed("u1") != app_mod.synthetic_seed("u2")
         assert 0 <= app_mod.synthetic_seed("u1") < 2**31
+
+
+# ---------------------------------------------------------------------------
+# Integration tests - run by the harness against the live ephemeral deploy.
+# The app_client fixture skips every test below when HARNESS_APP_URL is unset.
+# ---------------------------------------------------------------------------
+import os  # noqa: E402
+
+import httpx  # noqa: E402
+
+
+def _direct_post(path: str, payload: dict) -> httpx.Response:
+    """Raw POST so header assertions are possible (app_client returns json only)."""
+    import fal.sdk
+
+    url = os.environ["HARNESS_APP_URL"].rstrip("/") + path
+    creds = fal.sdk.get_credentials()
+    return httpx.post(url, json=payload, headers=creds.to_headers(), timeout=120)
+
+
+class TestGenerate:
+    def test_featured_user_smoke(self, app_client):
+        result = app_client.run("/", {
+            "user_id": "numzoo",
+            "prompt": "NUMZOO a fox portrait, pastel colors, storybook style",
+            "seed": 42,
+        })
+        assert result["image"]["url"]
+        assert result["seed"] == 42
+        assert result["serving"]["hint"] == "lora:numzoo"
+        assert result["serving"]["adapter_source"] in ("gpu-cache", "disk", "downloaded")
+        assert "lora" in result["timings"] and "inference" in result["timings"]
+
+    def test_hint_echo_header(self, app_client):
+        resp = _direct_post("/", {
+            "user_id": "numzoo",
+            "prompt": "NUMZOO a lighthouse at dusk",
+            "seed": 7,
+        })
+        resp.raise_for_status()
+        assert resp.headers.get("x-fal-runner-hint") == "lora:numzoo"
+
+    def test_unregistered_user_is_typed_422(self, app_client):
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            app_client.run("/", {"user_id": "nobody-here", "prompt": "x", "seed": 1})
+        resp = excinfo.value.response
+        assert resp.status_code == 422
+        detail = resp.json()["detail"][0]
+        assert detail["type"] == "user_not_registered"
+        assert detail["loc"] == ["body", "user_id"]
+
+    def test_bad_user_id_pattern_is_422(self, app_client):
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            app_client.run("/", {"user_id": "NOT VALID!", "prompt": "x", "seed": 1})
+        assert excinfo.value.response.status_code == 422
+
+
+class TestRegisterFlow:
+    def test_synthetic_register_then_cache_transition(self, app_client):
+        reg = app_client.run("/register", {"user_id": "it-synth-1"})
+        assert reg["kind"] == "synthetic"
+        assert reg["hint"] == "lora:it-synth-1"
+        assert reg["adapter_bytes"] > 0
+
+        first = app_client.run("/", {
+            "user_id": "it-synth-1", "prompt": "a red bicycle", "seed": 5,
+        })
+        assert first["serving"]["adapter_source"] in ("disk", "downloaded")
+
+        second = app_client.run("/", {
+            "user_id": "it-synth-1", "prompt": "a blue bicycle", "seed": 6,
+        })
+        assert second["serving"]["adapter_source"] == "gpu-cache"
+        assert second["serving"]["worker_id"] == first["serving"]["worker_id"]
+
+    def test_register_real_hf_repo(self, app_client):
+        reg = app_client.run("/register", {
+            "user_id": "it-real-1",
+            "lora_url": "fal/flux-2-klein-4b-spritesheet-lora",
+            "scale": 1.0,
+        })
+        assert reg["kind"] == "registered"
+        gen = app_client.run("/", {
+            "user_id": "it-real-1",
+            "prompt": "2x2 sprite sheet of a walking robot",
+            "seed": 11,
+        })
+        assert gen["image"]["url"]
+
+    def test_register_bad_url_is_typed_422(self, app_client):
+        with pytest.raises(httpx.HTTPStatusError) as excinfo:
+            app_client.run("/register", {
+                "user_id": "it-bad-1",
+                "lora_url": "http://insecure.example.com/w.safetensors",
+            })
+        resp = excinfo.value.response
+        assert resp.status_code == 422
+        assert resp.json()["detail"][0]["type"] == "lora_download_failed"
