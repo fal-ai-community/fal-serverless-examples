@@ -14,6 +14,7 @@ import argparse
 import collections
 import concurrent.futures as cf
 import random
+import threading
 
 import fal_client
 
@@ -50,6 +51,14 @@ def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
     # toward 1.0 to model colder, flatter traffic.
     weights = [1.0 / (rank + 1) ** zipf for rank in range(len(users))]
 
+    # Repeat-request worker stickiness: for a user's Nth request, did it land
+    # on the same worker as their (N-1)th? This measures routing steering
+    # directly, independent of adapter-cache (LRU) state. Random placement
+    # gives ~1/num_workers; perfect affinity gives ~1.0.
+    last_worker: dict[str, str] = {}
+    stickiness = {"repeats": 0, "same_worker": 0}
+    stats_lock = threading.Lock()
+
     def _one(i: int) -> dict:
         uid = rng.choices(users, weights=weights, k=1)[0]
         kwargs = {"hint": f"lora:{uid}"} if use_hints else {}
@@ -57,14 +66,22 @@ def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
                      "num_inference_steps": 1, "seed": i, "sync_mode": True}
         # subscribe() = queue path (production default); run() = sync path.
         call = fal_client.subscribe if use_queue else fal_client.run
-        result = call(app, arguments, **kwargs)
-        return result["serving"]
+        serving = call(app, arguments, **kwargs)["serving"]
+        with stats_lock:
+            prev = last_worker.get(uid)
+            if prev is not None:
+                stickiness["repeats"] += 1
+                if prev == serving["worker_id"]:
+                    stickiness["same_worker"] += 1
+            last_worker[uid] = serving["worker_id"]
+        return serving
 
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(_one, range(n_requests)))
+        servings = list(pool.map(_one, range(n_requests)))
+    return servings, stickiness
 
 
-def report(servings: list[dict], use_hints: bool) -> None:
+def report(servings: list[dict], use_hints: bool, stickiness: dict | None = None) -> None:
     by_worker: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
     total = collections.Counter()
     for s in servings:
@@ -78,6 +95,12 @@ def report(servings: list[dict], use_hints: bool) -> None:
     n = len(servings)
     print(f"{'TOTAL':<10} {total['gpu-cache']:>9} {total['disk']:>6} {total['downloaded']:>11}")
     print(f"warm-adapter rate: {total['gpu-cache'] / n:.1%}")
+    if stickiness and stickiness["repeats"]:
+        rate = stickiness["same_worker"] / stickiness["repeats"]
+        rand = 1.0 / max(len(by_worker), 1)
+        print(f"repeat-request worker stickiness: {rate:.1%} "
+              f"({stickiness['same_worker']}/{stickiness['repeats']} repeats; "
+              f"random ≈ {rand:.1%}, perfect affinity ≈ 100%)")
 
 
 def main() -> None:
@@ -99,11 +122,11 @@ def main() -> None:
     users = [f"load-u{i:05d}" for i in range(args.users)]
     if not args.skip_register:
         users = register_users(args.app, args.users, args.workers)
-    servings = drive_traffic(args.app, users, args.requests,
-                             use_hints=not args.no_hints,
-                             workers=args.workers, seed=args.seed,
-                             zipf=args.zipf, use_queue=args.queue)
-    report(servings, use_hints=not args.no_hints)
+    servings, stickiness = drive_traffic(args.app, users, args.requests,
+                                         use_hints=not args.no_hints,
+                                         workers=args.workers, seed=args.seed,
+                                         zipf=args.zipf, use_queue=args.queue)
+    report(servings, use_hints=not args.no_hints, stickiness=stickiness)
 
 
 if __name__ == "__main__":
