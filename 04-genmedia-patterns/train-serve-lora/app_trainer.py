@@ -120,6 +120,11 @@ def _fetch_dataset(url: str, work_dir: Path) -> Path:
         return download_file(url, work_dir, filesize_limit=shared.MAX_ZIP_MB)
     except DownloadError as exc:
         detail = str(exc)
+        # The SDK reports a declared-Content-Length overflow with "over the
+        # limit" in the message, but rewrites a mid-stream overflow (absent or
+        # dishonest Content-Length) to a generic "Failed to download ..." -
+        # that path surfaces as file_download_error; the cap is stated in the
+        # message either way.
         code = "file_too_large" if ("exceed" in detail or "limit" in detail) else "file_download_error"
         raise FieldException(
             field="image_data_url",
