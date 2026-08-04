@@ -215,6 +215,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         from diffusers import Flux2KleinPipeline
         from diffusers.optimization import get_scheduler
         from diffusers.training_utils import (
+            cast_training_params,
             compute_density_for_timestep_sampling,
             compute_loss_weighting_for_sd3,
             free_memory,
@@ -304,6 +305,12 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 target_modules=target_modules,
             )
         )
+        # Owner-approved deviation from the script's bf16 path: LoRA master
+        # weights train in fp32 (the script itself does this for fp16, and
+        # kohya/ai-toolkit/fal's own trainers keep trainable weights fp32).
+        # In bf16, AdamW's ~5e-5 steps round away against lora_A's ~0.0625
+        # init magnitude (bf16 ULP there is ~2.4e-4) - silent degradation.
+        cast_training_params([transformer], dtype=torch.float32)
         transformer.enable_gradient_checkpointing()
         transformer.train()
         lora_params = [p for p in transformer.parameters() if p.requires_grad]
