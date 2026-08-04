@@ -266,7 +266,7 @@ def shared_requirements():
         "peft==0.19.1",
         "safetensors==0.8.0",
         "pillow==11.3.0",
-        "numpy==1.26.4",
+        "numpy==2.4.0",
     ]
 
 
