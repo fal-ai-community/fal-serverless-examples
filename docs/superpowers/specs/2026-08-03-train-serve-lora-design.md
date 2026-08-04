@@ -55,7 +55,7 @@ Input (echoes the hosted klein trainer's public surface; same names and bounds):
 | `default_caption` | `str \| None` | used where a sidecar caption is missing |
 | `lora_name` | `str`, required | `^[a-z0-9][a-z0-9_-]{0,39}$` — becomes the `/data` path; same slug discipline as 04.3's `user_id` |
 
-Fixed internals as commented constants (the product's hidden defaults): `RANK=16`, `ALPHA=16`, `DROPOUT=0.05`, AdamW + cosine schedule + 100 warmup steps, `BATCH_SIZE=1`, `RESOLUTION=1024`, bf16, gradient checkpointing, seed 42. Params mean what they say — no silent rescaling of steps or lr.
+Fixed internals as commented constants: `RANK=16`, `ALPHA=16`, `DROPOUT=0.05`, AdamW + constant-after-warmup schedule (100 warmup steps), `BATCH_SIZE=1`, `RESOLUTION=1024`, bf16 weights with fp32 LoRA master weights, gradient checkpointing, seed 42. LoRA targets use the official README's fal-trainer-equivalent list (attention + feed-forward + context projections, plus single-block attention outputs) — the script's attention-only default trains adapters too weak to express a style at `lora_scale` 1.0 (validated empirically during the 2026-08-04 run; cosine decay had the same weakening effect, hence constant-with-warmup). Params mean what they say — no silent rescaling of steps or lr.
 
 Output: `lora_file: File` (CDN upload — portable; drop-in for 04.3 `/register`), `data_path: str` (`/data/loras/<lora_name>/pytorch_lora_weights.safetensors`), `config: dict` (echo of the public inputs incl. trigger phrase), `steps: int`. Progress via `print()` every 25 steps (queue logs); README warns that first-step silence is compilation, not a hang, and points to 03.1 for real streaming.
 

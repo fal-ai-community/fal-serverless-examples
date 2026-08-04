@@ -97,7 +97,7 @@ class TrainInput(PreflightInput):
         default=5e-5,
         ge=1e-6,
         le=1e-3,
-        description="AdamW learning rate (cosine schedule, 100 warmup steps).",
+        description="AdamW learning rate (constant after 100 warmup steps).",
     )
 
 
@@ -291,13 +291,22 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         # ------------------------------------------------ 3. LoRA on the transformer
         transformer = pipe.transformer
         transformer.requires_grad_(False)
-        # Verbatim from the script: attention modules in double blocks, fused
-        # qkv+mlp projection + attention out in single blocks. range(24) is
-        # the 9B count; peft ignores names that don't exist in the 4B (20).
-        target_modules = ["to_k", "to_q", "to_v", "to_out.0"] + [
-            "to_qkv_mlp_proj",
-            *[f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)],
-        ]
+        # The official script's README documents this wider list as the
+        # fal-trainer-equivalent targets (--lora_layers in README_flux2.md):
+        # attention + feed-forward + context projections. The script's bare
+        # default (attention-only) trains adapters too weak to express a
+        # style at lora_scale 1.0 - validated empirically on this example.
+        # Single-block attention outputs (plain `attn.to_out` Linears) are
+        # added per-index; range(24) is the 9B count and peft ignores names
+        # that don't exist in the 4B (20).
+        target_modules = [
+            "attn.to_k", "attn.to_q", "attn.to_v", "attn.to_out.0",
+            "attn.to_qkv_mlp_proj",
+            "attn.add_k_proj", "attn.add_q_proj", "attn.add_v_proj",
+            "attn.to_add_out",
+            "ff.linear_in", "ff.linear_out",
+            "ff_context.linear_in", "ff_context.linear_out",
+        ] + [f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)]
         torch.manual_seed(TRAIN_SEED)  # covers LoRA gaussian init, dropout, timestep sampling
         transformer.add_adapter(
             LoraConfig(
@@ -324,8 +333,11 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             weight_decay=1e-4,
             eps=1e-8,
         )
+        # The official README recipe holds lr constant after warmup; cosine
+        # (fal's product default) decays to ~0 and wastes the final third of
+        # a style run - validated empirically on this example.
         lr_sched = get_scheduler(
-            "cosine",
+            "constant_with_warmup",
             optimizer=optimizer,
             num_warmup_steps=LR_WARMUP_STEPS,
             num_training_steps=request.steps,
