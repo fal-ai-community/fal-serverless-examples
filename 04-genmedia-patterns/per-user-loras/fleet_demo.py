@@ -41,21 +41,23 @@ def register_users(app: str, n: int, workers: int) -> list[str]:
 
 
 def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
-                  workers: int, seed: int) -> list[dict]:
+                  workers: int, seed: int, zipf: float,
+                  use_queue: bool = False) -> list[dict]:
     rng = random.Random(seed)
-    # Skewed popularity: a few hot users, long tail - the realistic shape
-    # for consumer avatar products, and the shape hints help most.
-    weights = [1.0 / (rank + 1) for rank in range(len(users))]
+    # Zipf-skewed popularity: a few hot users, long tail. Within a keep_alive
+    # window real avatar traffic is concentrated (active users iterate in
+    # edit-generate loops), so the default exponent leans hot; lower --zipf
+    # toward 1.0 to model colder, flatter traffic.
+    weights = [1.0 / (rank + 1) ** zipf for rank in range(len(users))]
 
     def _one(i: int) -> dict:
         uid = rng.choices(users, weights=weights, k=1)[0]
         kwargs = {"hint": f"lora:{uid}"} if use_hints else {}
-        result = fal_client.run(
-            app,
-            {"user_id": uid, "prompt": rng.choice(PROMPTS),
-             "num_inference_steps": 1, "seed": i, "sync_mode": True},
-            **kwargs,
-        )
+        arguments = {"user_id": uid, "prompt": rng.choice(PROMPTS),
+                     "num_inference_steps": 1, "seed": i, "sync_mode": True}
+        # subscribe() = queue path (production default); run() = sync path.
+        call = fal_client.subscribe if use_queue else fal_client.run
+        result = call(app, arguments, **kwargs)
         return result["serving"]
 
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -85,7 +87,11 @@ def main() -> None:
     ap.add_argument("--requests", type=int, default=200)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--zipf", type=float, default=1.3,
+                    help="traffic skew exponent; 1.0 = flat-ish long tail")
     ap.add_argument("--no-hints", action="store_true")
+    ap.add_argument("--queue", action="store_true",
+                    help="drive via the queue API (subscribe) instead of sync run")
     ap.add_argument("--skip-register", action="store_true",
                     help="reuse users registered by a previous run")
     args = ap.parse_args()
@@ -95,7 +101,8 @@ def main() -> None:
         users = register_users(args.app, args.users, args.workers)
     servings = drive_traffic(args.app, users, args.requests,
                              use_hints=not args.no_hints,
-                             workers=args.workers, seed=args.seed)
+                             workers=args.workers, seed=args.seed,
+                             zipf=args.zipf, use_queue=args.queue)
     report(servings, use_hints=not args.no_hints)
 
 

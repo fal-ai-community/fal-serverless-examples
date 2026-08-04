@@ -1,6 +1,6 @@
 # Serve thousands of per-user LoRAs with routing hints
 
-Your product trains one LoRA per user — an avatar style, a brand look, a fine-tuned identity for every paying customer. Serving them naively means either a deployment per user (thousands of cold fleets) or reloading adapters on every request (one slow fleet). This example runs **one warm FLUX.2 [klein] 4B fleet for the whole user base**: adapters live on `/data`, a KV store maps user → adapter, each runner keeps a small GPU LRU of loaded adapters — and [fal routing hints](https://fal.ai/docs/documentation/serverless/optimize-routing-behavior) make the fleet **self-organize**, steering each user's repeat traffic to runners that already have their adapter hot. A hint is pure affinity: any runner can serve any user; a miss just pays the adapter load instead of failing.
+Your product trains one LoRA per user — an avatar style, a brand look, a fine-tuned identity for every paying customer. Serving them naively means either a deployment per user (thousands of cold fleets) or reloading adapters on every request (one slow fleet). This example runs **one warm FLUX.2 [klein] 4B fleet for the whole user base**: adapters live on `/data`, a KV store maps user → adapter, each runner keeps a small GPU LRU of loaded adapters — and each runner advertises its currently-hot users via [fal routing hints](https://fal.ai/docs/documentation/serverless/optimize-routing-behavior) so the router can prefer a runner that already has the adapter loaded. A hint is pure, best-effort affinity: any runner can serve any user; a hinted miss just pays the adapter load instead of failing. How much lift affinity adds on top of the scheduler's own runner reuse depends on your fleet size, cache pressure, and traffic shape — this example ships the measurement tool (`fleet_demo.py`) so you can answer that for your own workload instead of trusting anyone's benchmark.
 
 > Catalog slot `04.3` ([SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306)). Base model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — Apache-2.0 and ungated. The eight featured demo users below are real community/fal LoRAs, each license-verified (Apache-2.0/MIT); the "thousands" come from synthetic adapters the app generates on demand.
 
@@ -10,19 +10,35 @@ Every response tells you *how* it was served — the routing story is observable
 
 ```json
 {
-  "image": { "url": "https://v3.fal.media/files/b/…/output.png", "width": 1024, "height": 1024 },
+  "image": {
+    "url": "https://v3b.fal.media/files/b/…/output.png",
+    "content_type": "image/png",
+    "width": 1024,
+    "height": 1024
+  },
   "seed": 42,
-  "timings": { "lora": 0.0021, "inference": 1.94 },
+  "timings": { "lora": 0.0049, "inference": 1.4024 },
   "serving": {
-    "worker_id": "3fa4b1c2",
+    "worker_id": "ca5704b4",
     "adapter_source": "gpu-cache",
     "hint": "lora:numzoo",
-    "resident_adapters": 8
+    "resident_adapters": 1
   }
 }
 ```
 
-<!-- TASK8: replace JSON above with a real captured response; add the 2x4 featured-user image grid here -->
+One warm worker cycling through all eight featured users (real run, one request each — warm hit is free, cold loads cost roughly their file size):
+
+```
+numzoo       source=gpu-cache  lora=0.00s inf=1.40s   # warmup had it loaded
+yarn-art     source=disk       lora=0.35s inf=1.39s
+baroque      source=disk       lora=0.35s inf=1.41s
+koni-anime   source=disk       lora=2.93s inf=1.40s   # the 185 MB rank-64 one
+wild-africa  source=disk       lora=0.25s inf=1.41s
+mikkoani     source=disk       lora=0.33s inf=1.41s
+spritesheet  source=disk       lora=0.30s inf=1.39s
+liqglass     source=disk       lora=0.20s inf=1.35s   # 12 MB rank-8
+```
 
 Eight featured users, eight visibly different styles from one warm fleet — and they deliberately span all four LoRA key-format families (ai-toolkit, kohya, fal-trainer raw-PEFT, diffusers-native), all loaded by the same code path:
 
@@ -111,16 +127,16 @@ curl -X POST https://queue.fal.run/<your-username>/per-user-loras \
   -d '{"user_id": "numzoo", "prompt": "NUMZOO a fox portrait, pastel colors"}'
 ```
 
-**See the fleet self-organize.** Scale to two runners, register a synthetic fleet, and drive skewed traffic with and without hints:
+**Measure affinity on your own traffic.** `fleet_demo.py` registers a synthetic fleet (a thousand users in a few minutes — each `/register` without a URL generates a small deterministic adapter server-side), drives Zipf-skewed traffic through the queue, and prints a per-worker warm/cold table — run it with and without hints and compare:
 
 ```bash
 fal apps scale per-user-loras --min-concurrency 2
-python fleet_demo.py --app <your-username>/per-user-loras --users 1000 --requests 200
-python fleet_demo.py --app <your-username>/per-user-loras --users 1000 --requests 200 --no-hints --skip-register
+python fleet_demo.py --app <your-username>/per-user-loras --users 1000 --requests 300 --queue
+python fleet_demo.py --app <your-username>/per-user-loras --users 1000 --requests 300 --queue --no-hints --skip-register
 fal apps scale per-user-loras --min-concurrency 0   # stop the always-on billing
 ```
 
-<!-- TASK8: paste the two real fleet_demo tables here, with a "your numbers will vary" note -->
+Two things to know before reading your numbers. First, the scheduler already reuses recently-released runners on its own, so small fleets have strong *implicit* stickiness even without hints — the delta hints buy grows with fleet size and cache pressure, and can be near zero on a 2–3 runner demo. Second, the regime where per-runner caches matter most is when your hot working set is **bigger than one runner's `MAX_RESIDENT_ADAPTERS` but fits the fleet's aggregate** — below that everything is warm everywhere; far above it, every cache thrashes no matter how requests route.
 
 ## Cost & tuning
 
