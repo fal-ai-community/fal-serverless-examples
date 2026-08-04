@@ -81,7 +81,9 @@ class Input(BaseModel):
             "latin-1 and comma-free - hint strings ride an HTTP header."
         ),
         examples=["numzoo"],
-        ui={"hint": True},
+        # ui.hint marks the field whose value doubles as the routing hint
+        # (the platform playground reads this from the OpenAPI schema).
+        json_schema_extra={"ui": {"hint": True}},
     )
     prompt: str = Field(
         description="What to generate. Include the user's trigger word if their LoRA has one.",
