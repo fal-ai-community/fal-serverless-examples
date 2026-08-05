@@ -253,6 +253,7 @@ def test_trainer_module_loads_with_expected_settings():
     assert cls.max_concurrency == 1
     assert cls.host_kwargs["keep_alive"] == 0
     assert cls.requirements == shared_requirements()
+    assert cls.local_python_modules == ["shared"]
 
 
 def shared_requirements():

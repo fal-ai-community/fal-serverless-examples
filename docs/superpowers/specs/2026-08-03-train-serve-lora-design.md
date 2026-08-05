@@ -1,7 +1,7 @@
 # Design: 04.4 — Train a LoRA → serve it
 
 **Catalog slot** `04.4` · [SERV-1312](https://linear.app/features-and-labels/issue/SERV-1312) · Folder: `04-genmedia-patterns/train-serve-lora/`
-**Status**: approved design, pre-implementation. Working doc for the branch; drop or keep at PR time (owner's call).
+**Status**: as-built (2026-08-04). Implemented, live-validated (3 training runs; final recipe 1800 steps @ 1e-4), CI deploy-check green. This spec was amended in-branch where reality overruled it; the example folder is authoritative.
 **Scope retarget (owner decision, 2026-08-03)**: the ticket predates 04.3's model choice and says "closes the WAN training loop." Retargeted to **FLUX.2-klein-4B** so the serve side genuinely reuses 04.3's pattern, the trained adapter feeds 04.3's `/register`, and the tier tells one coherent story. The old WAN training docs page gets superseded in the fal-docs phase; a scope-note comment goes on SERV-1312.
 
 ## Problem & story
@@ -32,7 +32,7 @@ Platform features taught, per the ticket: Persistent Storage · Import Code · A
 └── README.md
 ```
 
-Both apps ship `shared.py` via `app_files=["shared.py"]` — the documented Import Code mechanism this entry teaches. Both declare the **same** pinned `requirements` list so one `requirements.txt` mirrors both: `fal==1.78.2`, `diffusers==0.39.0`, `transformers==5.3.0`, `torch==2.12.1`, `accelerate==1.14.0`, `peft` (exact pin at build), `safetensors`, `hf-transfer==0.1.9`. No bitsandbytes: only LoRA params train, so optimizer state is tiny and plain AdamW suffices.
+Both apps ship `shared.py` via `local_python_modules=["shared"]` — the documented Import Code mechanism this entry teaches (app_files fails to resolve the import at deserialization time on ephemeral `fal run` — verified live; both are documented Import Code mechanisms). Both declare the **same** pinned `requirements` list so one `requirements.txt` mirrors both: `fal==1.78.2`, `diffusers==0.39.0`, `transformers==5.3.0`, `torch==2.12.1`, `accelerate==1.14.0`, `peft==0.19.1`, `safetensors==0.8.0`, `pillow==11.3.0`, `numpy==2.4.0`, `hf-transfer==0.1.9`. No bitsandbytes: only LoRA params train, so optimizer state is tiny and plain AdamW suffices.
 
 ## Trainer app (`app_trainer.py`)
 
@@ -40,7 +40,7 @@ Both apps ship `shared.py` via `app_files=["shared.py"]` — the documented Impo
 
 ### `POST /` — dataset preflight (CI-smoked)
 
-Runs the exact validation head of `/train`, no GPU work, and returns `PreflightReport{num_images, num_captioned, warnings: list[str], ready: bool}`. Validation: HTTPS-only download with the size cap enforced on **streamed bytes** (not just Content-Length), reject `text/html` responses (expired presigned URLs), zip-slip-safe unpack (reject path traversal and symlinks; skip `__MACOSX`/`._*`), full PIL decode of every image (catches truncation), EXIF orientation normalize, min dimensions, caption pairing (`img.txt` sidecars; `default_caption` fallback; missing-caption errors list the exact files). Input: `image_data_url` (with `examples=[<the published demo ZIP>]` for the harness), `default_caption`, `trigger_phrase`. An honest README note: hosted fal trainers validate inline at the head of the training request — this split exists so CI can exercise the input path without paying for a train.
+Runs the exact validation head of `/train`, no GPU work, and returns `PreflightReport{num_images, num_sidecar_captions, example_caption, warnings: list[str], ready: bool}`. Validation: SDK-guarded download (SSRF-safe client, streamed size cap), not-a-ZIP rejection (catches expired-URL HTML pages), zip-slip-safe unpack (path-traversal rejection; symlink entries extract as plain files; skip `__MACOSX`/`._*`), full PIL decode of every image (catches truncation), EXIF orientation normalize, min dimensions, caption pairing (`img.txt` sidecars; `default_caption` fallback; missing-caption errors list the exact files). Input: `image_data_url` (with `examples=[<the published demo ZIP>]` for the harness), `default_caption`, `trigger_phrase`. An honest README note: hosted fal trainers validate inline at the head of the training request — this split exists so CI can exercise the input path without paying for a train.
 
 ### `POST /train` — the real thing (manually validated, not CI-run)
 
@@ -57,7 +57,7 @@ Input (echoes the hosted klein trainer's public surface; same names and bounds):
 
 Fixed internals as commented constants: `RANK=16`, `ALPHA=16`, `DROPOUT=0.05`, AdamW + constant-after-warmup schedule (100 warmup steps), `BATCH_SIZE=1`, `RESOLUTION=1024`, bf16 weights with fp32 LoRA master weights, gradient checkpointing, seed 42. LoRA targets use the official README's fal-trainer-equivalent list (attention + feed-forward + context projections, plus single-block attention outputs) — the script's attention-only default trains adapters too weak to express a style at `lora_scale` 1.0 (validated empirically during the 2026-08-04 run; cosine decay had the same weakening effect, hence constant-with-warmup). Params mean what they say — no silent rescaling of steps or lr.
 
-Output: `lora_file: File` (CDN upload — portable; drop-in for 04.3 `/register`), `data_path: str` (`/data/loras/<lora_name>/pytorch_lora_weights.safetensors`), `config: dict` (echo of the public inputs incl. trigger phrase), `steps: int`. Progress via `print()` every 25 steps (queue logs); README warns that first-step silence is compilation, not a hang, and points to 03.1 for real streaming.
+Output: `lora_file: File` (CDN upload — portable; drop-in for 04.3 `/register`), `data_path: str` (`/data/loras/<lora_name>/pytorch_lora_weights.safetensors`), `steps: int`, `final_loss: float` (mean loss over the last 25 steps), `config: dict` (echo of the public inputs incl. trigger phrase). Progress via `print()` every 25 steps (queue logs); README warns that first-step silence is compilation, not a hang, and points to 03.1 for real streaming.
 
 ### Training core (~120-line loop, in-app)
 

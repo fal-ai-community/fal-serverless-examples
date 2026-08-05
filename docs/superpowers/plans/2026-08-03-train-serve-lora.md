@@ -1,5 +1,9 @@
 # 04.4 Train-Serve-LoRA Implementation Plan
 
+> **Historical planning artifact.** Execution deviated where reality disagreed
+> (import mechanism, LoRA targets, lr schedule, demo recipe). The example
+> folder and the spec are the source of truth for what shipped.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build catalog entry 04.4 (`04-genmedia-patterns/train-serve-lora/`, SERV-1312): a trainer app that fine-tunes a FLUX.2-klein-base-4B LoRA in-app and hands it to a single-adapter serving app via `/data`.

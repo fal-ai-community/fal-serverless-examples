@@ -47,6 +47,7 @@ handle = fal_client.submit("<username>/klein-lora-trainer", path="/train",
         "trigger_phrase": "mystyle style,",
         "lora_name": "my-style",
         "steps": 1800,  # BFL's style band is 750-1500; the demo used 1800 @ 1e-4
+        "learning_rate": 1e-4,
     })
 for event in handle.iter_events(with_logs=True):
     print(event)
