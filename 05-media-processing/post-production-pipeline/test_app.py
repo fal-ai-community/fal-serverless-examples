@@ -221,3 +221,69 @@ def test_garbage_captions_are_refused_before_encoding(app_client):
             {"video_url": SAMPLE, "captions_srt": "this is not a subtitle file"},
         )
     assert_typed_422(excinfo, "captions_srt", "invalid_media")
+
+
+# --- webhook receiver: signature verification (client-side dep) ------------
+# The receiver is product-backend reference code, not part of the app image;
+# its `cryptography` dep is not in requirements.txt, so skip when absent.
+
+crypto = pytest.importorskip("cryptography")
+
+
+def _receiver_module():
+    spec = importlib.util.spec_from_file_location(
+        "postprod_receiver", Path(__file__).parent / "webhook_receiver.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _signed_delivery(timestamp: int | None = None):
+    """Forge a delivery exactly the way fal's dispatcher signs one."""
+    import hashlib as _hashlib
+    import time as _time
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    body = json.dumps(
+        {"request_id": "req-1", "gateway_request_id": "req-1",
+         "status": "OK", "error": None, "payload": {"renditions": []}},
+        sort_keys=True,
+    ).encode()
+    ts = str(timestamp if timestamp is not None else int(_time.time()))
+    message = "\n".join(
+        ["req-1", "user-1", ts, _hashlib.sha256(body).hexdigest()]
+    ).encode()
+    headers = {
+        "x-fal-webhook-request-id": "req-1",
+        "x-fal-webhook-user-id": "user-1",
+        "x-fal-webhook-timestamp": ts,
+        "x-fal-webhook-signature": private.sign(message).hex(),
+    }
+    return headers, body, [private.public_key()]
+
+
+def test_receiver_accepts_a_correctly_signed_delivery():
+    receiver = _receiver_module()
+    headers, body, keys = _signed_delivery()
+    ok, reason = receiver.verify(headers, body, keys)
+    assert ok, reason
+
+
+def test_receiver_rejects_tampered_bodies_and_stale_timestamps():
+    receiver = _receiver_module()
+
+    headers, body, keys = _signed_delivery()
+    ok, reason = receiver.verify(headers, body + b" ", keys)
+    assert not ok and "signature" in reason
+
+    stale_headers, stale_body, stale_keys = _signed_delivery(timestamp=1_000_000)
+    ok, reason = receiver.verify(stale_headers, stale_body, stale_keys)
+    assert not ok and "timestamp" in reason
+
+    missing = dict(headers)
+    del missing["x-fal-webhook-signature"]
+    ok, reason = receiver.verify(missing, body, keys)
+    assert not ok and "header" in reason
