@@ -40,12 +40,16 @@ _jwks_cache: dict = {"keys": None, "fetched_at": 0.0}
 def public_keys() -> list[Ed25519PublicKey]:
     now = time.time()
     if _jwks_cache["keys"] is None or now - _jwks_cache["fetched_at"] > JWKS_TTL_S:
-        jwks = httpx.get(JWKS_URL, timeout=10).json()
+        response = httpx.get(JWKS_URL, timeout=10)
+        response.raise_for_status()
+        jwks = response.json()
         keys = []
         for entry in jwks.get("keys", []):
             x = entry["x"]
             raw = base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
             keys.append(Ed25519PublicKey.from_public_bytes(raw))
+        if not keys:
+            raise RuntimeError("JWKS returned no keys - refusing to cache an empty key set")
         _jwks_cache.update(keys=keys, fetched_at=now)
     return _jwks_cache["keys"]
 
@@ -63,8 +67,8 @@ def verify(headers: dict[str, str], body: bytes, keys: list[Ed25519PublicKey]) -
         return False, "signature is not valid hex"
     try:
         skew = abs(time.time() - int(timestamp))
-    except ValueError:
-        return False, "timestamp is not an integer"
+    except (ValueError, OverflowError):
+        return False, "timestamp is not a plausible unix time"
     if skew > TIMESTAMP_LEEWAY_S:
         return False, f"timestamp outside +/-{TIMESTAMP_LEEWAY_S}s (skew {skew:.0f}s)"
     message = "\n".join(
@@ -92,10 +96,13 @@ class Receiver(BaseHTTPRequestHandler):
             return
         event = json.loads(body)
         request_id = event.get("request_id", "?")
-        replay = " (duplicate delivery - fal retries until it sees a 2xx)" \
-            if request_id in self.seen else ""
+        if request_id in self.seen:
+            print(f"VERIFIED status={event.get('status')} request_id={request_id} "
+                  "(duplicate delivery - fal retries until it sees a 2xx; already processed, acking again)")
+            self._respond(200, {"ok": True, "duplicate": True})
+            return
         self.seen.add(request_id)
-        print(f"VERIFIED status={event.get('status')} request_id={request_id}{replay}")
+        print(f"VERIFIED status={event.get('status')} request_id={request_id}")
         if event.get("status") == "OK":
             for rendition in (event.get("payload") or {}).get("renditions", []):
                 print(f"  {rendition['label']}: {rendition['video']['url']}")

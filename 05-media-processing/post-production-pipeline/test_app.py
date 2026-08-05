@@ -227,7 +227,10 @@ def test_garbage_captions_are_refused_before_encoding(app_client):
 # The receiver is product-backend reference code, not part of the app image;
 # its `cryptography` dep is not in requirements.txt, so skip when absent.
 
-crypto = pytest.importorskip("cryptography")
+requires_crypto = pytest.mark.skipif(
+    importlib.util.find_spec("cryptography") is None,
+    reason="cryptography not installed (client-side dep, not part of the app image)",
+)
 
 
 def _receiver_module():
@@ -265,6 +268,7 @@ def _signed_delivery(timestamp: int | None = None):
     return headers, body, [private.public_key()]
 
 
+@requires_crypto
 def test_receiver_accepts_a_correctly_signed_delivery():
     receiver = _receiver_module()
     headers, body, keys = _signed_delivery()
@@ -272,6 +276,7 @@ def test_receiver_accepts_a_correctly_signed_delivery():
     assert ok, reason
 
 
+@requires_crypto
 def test_receiver_rejects_tampered_bodies_and_stale_timestamps():
     receiver = _receiver_module()
 
@@ -287,3 +292,10 @@ def test_receiver_rejects_tampered_bodies_and_stale_timestamps():
     del missing["x-fal-webhook-signature"]
     ok, reason = receiver.verify(missing, body, keys)
     assert not ok and "header" in reason
+
+    # A validly-signed delivery only counts if a TRUSTED key signed it.
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    headers2, body2, _ = _signed_delivery()
+    stranger_keys = [Ed25519PrivateKey.generate().public_key()]
+    ok, reason = receiver.verify(headers2, body2, stranger_keys)
+    assert not ok and "signature" in reason
