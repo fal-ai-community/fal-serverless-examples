@@ -48,7 +48,7 @@ The playground gives `video_url` a drag-and-drop upload widget; the defaults enc
 
 **Captions are validated before you pay for encoding.** SRT comes inline (`captions_srt`) or by URL (`captions_url`, at most one); the app converts it to WebVTT first — a malformed file fails as a fast typed 422 (`invalid_media`) before any rendition is encoded — then soft-muxes it into every MP4 as a selectable track.
 
-**Outputs are typed toolkit objects on the fal CDN.** `Video`/`Image`/`File` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from `v3.fal.media`; retention follows your account's media lifecycle, and per-request retention is available via the `x-fal-object-lifecycle-preference` header (see [00.3 media-in-media-out](../../00-getting-started/media-in-media-out/)).
+**Outputs are typed toolkit objects on the fal CDN.** `Video`/`Image`/`File` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from fal's CDN (`v3.fal.media` / `v3b.fal.media` shards); retention follows your account's media lifecycle, and per-request retention is available via the `x-fal-object-lifecycle-preference` header (see [00.3 media-in-media-out](../../00-getting-started/media-in-media-out/)).
 
 ## Deploy
 
