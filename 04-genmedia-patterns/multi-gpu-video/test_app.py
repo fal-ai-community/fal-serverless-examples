@@ -37,7 +37,7 @@ def test_defaults_are_the_ci_smoke_config():
     i = Input(prompt="x")
     assert i.resolution == "480p"
     assert i.num_frames == 33
-    assert i.num_inference_steps == 8
+    assert i.num_inference_steps == 6
 
 
 # ---- live test (harness only) ----
@@ -49,7 +49,7 @@ def test_generate_smoke(app_client):
             "prompt": "a red panda napping on a mossy branch, soft light",
             "resolution": "480p",
             "num_frames": 33,
-            "num_inference_steps": 8,
+            "num_inference_steps": 6,
             "seed": 7,
         },
     )

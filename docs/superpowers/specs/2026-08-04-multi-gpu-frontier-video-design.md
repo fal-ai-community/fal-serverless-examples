@@ -84,9 +84,17 @@ LTX-class text-to-video walkthrough (**04.2**) · SSE preview streaming (**03.1*
 | Numbers | One stamped measured table | 02.2 precedent; only claims backed by a real run |
 | Spec fate | Committed on branch, owner decides at PR time | 04.3 precedent (dropped) vs 04.4 precedent (status-line caveat) |
 
+## Spike outcome (2026-08-04, ephemeral 4×H100 deploy, 6 sequential invokes, no NCCL issues)
+
+- **Verdict: approach A CONFIRMED** — diffusers-native context parallelism runs the A14B dual-transformer (incl. the expert boundary switch) under DistributedRunner with no patches.
+- Strategy: **offload** (`enable_model_cpu_offload`) · diffusers pin: **0.39.0** · peak VRAM ≈ 27–30 GB/rank at every config (huge headroom; `resident` never needed).
+- Smoke config: **480p × 33f × 6 steps ≈ 81 s warm** (33f/8st was 95–120 s — too tight for the 120 s CI smoke; 25f bought nothing: fixed offload-transfer overhead dominates).
+- 720p × 81f × 27 steps: **270 s**, 29.5 GB peak — production config validated.
+- Setup: snapshot_download **994 s** (first boot only; /data cache now warm), runner.start **462 s** (4 ranks reading fp32 shards), first-request autotune ≈ 200 s absorbed by the in-setup warmup. ⚠️ Watch item: total setup may brush the harness's 600 s health wait — measure in the deploy-check; mitigations if tripped: one-time bf16 pre-conversion on /data (halves worker load) or raising `HARNESS_STARTUP_TIMEOUT` in check.yml (owner call).
+
 ## Landing checklist
 
-- Spike deploy first (gate) — record outcome + chosen diffusers pin here and in the Linear scope comment
+- ~~Spike deploy first (gate)~~ ✅ done, outcome above
 - Tier README slot-table row → folder link; `llms.txt` line; root README tier count if stated
 - Linear: SERV-1316 → In Progress + scope-note comment (model, 4×H100, sequence-parallel decision, source lives in this repo superseding fal-demos per CONTEXT.md)
 - Pre-warm `/data` HF cache from dev deploys before any CI deploy-check runs

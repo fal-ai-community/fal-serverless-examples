@@ -56,11 +56,11 @@ class Input(BaseModel):
         examples=[33],
     )
     num_inference_steps: int = Field(
-        default=8,
+        default=6,
         ge=2,
         le=40,
-        description="Denoising steps. 8 is a fast preview; WAN's native quality default is 27.",
-        examples=[8],
+        description="Denoising steps. 6 is a fast preview; WAN's native quality default is 27.",
+        examples=[6],
     )
     guidance_scale: float = Field(
         default=3.5,
