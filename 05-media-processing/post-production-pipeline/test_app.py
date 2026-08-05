@@ -106,6 +106,24 @@ def test_rendition_cmd_toggles_audio_and_captions():
     assert "+faststart" in joined  # streaming-readiness is unconditional
 
 
+def test_run_ffmpeg_error_taxonomy_and_remaining_cmd_builders():
+    # User-input failures become typed 422s; infra failures stay 500s.
+    with pytest.raises(FieldException) as excinfo:
+        app_module.run_ffmpeg(["false"], error_field="captions_srt")
+    assert excinfo.value.field == "captions_srt"
+    assert excinfo.value.type == "invalid_media"
+    with pytest.raises(RuntimeError):
+        app_module.run_ffmpeg(["false"])
+
+    thumb = app_module.build_thumbnail_cmd(Path("in.mp4"), 2.5, 1280, Path("t.jpg"))
+    assert thumb[thumb.index("-vf") + 1] == "scale=1280:-2"
+    assert thumb[thumb.index("-ss") + 1] == "2.500"
+    assert "-frames:v" in thumb
+
+    vtt = app_module.build_vtt_cmd(Path("c.srt"), Path("c.vtt"))
+    assert vtt[-2:] == ["c.srt", "c.vtt"]
+
+
 # --- live tests: against a real ephemeral deploy (harness/check.py) --------
 
 def assert_typed_422(exc_info, field: str, type_: str):
@@ -169,6 +187,7 @@ def test_audio_source_transcodes_and_never_upscales(app_client):
         {"video_url": AUDIO_SAMPLE, "ladder": [2160, 360], "thumbnail_count": 1},
     )
     assert [r["label"] for r in response["renditions"]] == ["360p"]
+    assert len(response["thumbnails"]) == 1
     report = fetch(response["report"]["url"]).json()
     assert report["source"]["has_audio"] is True
     assert report["ladder"]["skipped_no_upscale"] == ["2160p (source is 720p)"]

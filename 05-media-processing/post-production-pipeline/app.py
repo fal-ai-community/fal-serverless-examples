@@ -292,12 +292,27 @@ class PostProductionPipeline(fal.App, keep_alive=60):
 
     @fal.endpoint("/")
     def process(self, request: Input) -> Output:
+        # CAPTIONS (pure check) - validated first, before any network I/O:
+        # "both fields set" is a fast 422, not one paid for with a 300 MB
+        # download. The actual SRT materialization stays below, inside the
+        # tempdir block, since it needs a place to write/download to.
+        caption_source = select_captions(request.captions_srt, request.captions_url)
+        caption_field = "captions_srt" if caption_source == "inline" else "captions_url"
+
         # SOURCE - bounded, SSRF-guarded download (both built into
         # download_file), cached on /data keyed by URL hash: a repeat request
         # skips the transfer across workers, deploys, and CI runs.
         t0 = time.monotonic()
         cache_dir = CACHE_ROOT / hashlib.sha256(request.video_url.encode()).hexdigest()[:16]
-        cached = next(cache_dir.glob("*"), None) if cache_dir.is_dir() else None
+        cached = None
+        if cache_dir.is_dir():
+            # download_file stages ".fal_download.tmp.*" scratch files in the
+            # same dir and renames them into place at the end - never treat
+            # one as a hit.
+            cached = next(
+                (p for p in cache_dir.iterdir() if not p.name.startswith(".fal_download.tmp")),
+                None,
+            )
         if cached is not None:
             source = cached
         else:
@@ -320,10 +335,9 @@ class PostProductionPipeline(fal.App, keep_alive=60):
         with tempfile.TemporaryDirectory(prefix="postprod-") as tmp:
             workdir = Path(tmp)
 
-            # CAPTIONS - validate cheaply (SRT -> WebVTT) BEFORE spending
-            # encode time, so a bad caption file is a fast typed 422.
-            caption_source = select_captions(request.captions_srt, request.captions_url)
-            caption_field = "captions_srt" if caption_source == "inline" else "captions_url"
+            # CAPTIONS - materialize + convert (SRT -> WebVTT) BEFORE spending
+            # encode time, so a bad caption file is a fast typed 422. Which
+            # field to blame (caption_field) was already decided above.
             srt_path = vtt_path = None
             if caption_source == "inline":
                 srt_path = workdir / "captions.srt"
