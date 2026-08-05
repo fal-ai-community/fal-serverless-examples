@@ -1,6 +1,6 @@
 """Shared, GPU-free helpers for the train-serve-lora example (04.4).
 
-Imported by BOTH apps and shipped to each runner via `app_files` — the
+Imported by BOTH apps and shipped to each runner via `local_python_modules` — the
 "Import Code" mechanism this example teaches (docs: import-code). Everything
 here runs on CPU with stdlib + Pillow + safetensors, so the unit tests in
 test_app.py exercise the exact code the runners execute, for free.

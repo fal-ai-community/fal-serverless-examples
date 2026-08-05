@@ -40,7 +40,7 @@ print(fal_client.run("<username>/klein-lora-trainer", arguments={
     "trigger_phrase": "mystyle style,",
 }))
 
-# 2. train - submit to the queue and poll; a full run takes a few minutes
+# 2. train - submit to the queue and poll for progress; runs take several minutes
 handle = fal_client.submit("<username>/klein-lora-trainer", path="/train",
     arguments={
         "image_data_url": "https://.../your-style.zip",
@@ -80,7 +80,7 @@ ZIP of images ──▶ app_trainer.py /train ──▶ /data/loras/<name>/ ─�
   training must not be silently re-run and re-billed), `max_concurrency=1`.
 - **`/data` is the handoff** — mounted account-wide across all your apps
   ([persistent storage](https://docs.fal.ai/serverless/development/use-persistent-storage)).
-  The trainer writes to a temp file *on /data* and `os.rename`s it into
+  The trainer writes to a temp file *on /data* and `os.replace`s it into
   place: readers see the old file or the new one, never a partial write.
   The training response returns only after the rename — job completion IS
   the readiness signal.
@@ -115,9 +115,10 @@ demo adapter *is* that run's output).
 
 - **Training cost is `steps × seconds-per-step` on your `machine_type`** — see
   [pricing](https://fal.ai/pricing). Two cheap levers while you iterate:
-  `RESOLUTION = 512` (a constant in `app_trainer.py`) roughly quarters
-  per-step work, and `machine_type = "GPU-L40"` trades speed for a lower
-  rate (klein-4B LoRA training fits comfortably in 48 GB).
+  `RESOLUTION` is `1024` in `app_trainer.py` — dropping it to `512` roughly
+  quarters per-step work — and `machine_type` is `"GPU-H100"` — `"GPU-L40"`
+  also fits klein-4B LoRA training comfortably and trades speed for a lower
+  rate.
 - **Steps**: BFL's guidance for style LoRAs is 750–1500; the demo adapter
   used 1800 to push the style fully to `lora_scale` 1.0 (see "How the demo
   was made"). Below ~500 expect drift, not style.
