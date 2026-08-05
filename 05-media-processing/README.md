@@ -6,7 +6,7 @@ Example folders land here as their tickets complete. Every example follows the l
 
 | Slot | Example | Readiness | Ticket |
 |---|---|---|---|
-| `05.1` | Post-production pipeline (transcode ladder, thumbnails, captions; ffmpeg on CPU machines + queue + webhooks) | `net-new` | [SERV-1282](https://linear.app/features-and-labels/issue/SERV-1282) |
+| `05.1` | Post-production pipeline (transcode ladder, thumbnails, captions; ffmpeg on CPU machines + queue + webhooks) — [`post-production-pipeline/`](post-production-pipeline/) | `net-new` | [SERV-1282](https://linear.app/features-and-labels/issue/SERV-1282) |
 | `05.2` | LOD processor for 3D assets (GPU-generate → CPU-refine, packaged glTF) | `net-new` | [SERV-1288](https://linear.app/features-and-labels/issue/SERV-1288) |
 | `05.3` | Image variant factory (AVIF/WebP/resize ladders to CDN) | `net-new` · blocked: [SERV-1275](https://linear.app/features-and-labels/issue/SERV-1275) (CDN retention confirmation) | [SERV-1296](https://linear.app/features-and-labels/issue/SERV-1296) |
 | `05.4` | Audio finishing (loudness normalization, waveform peaks) | `net-new` | [SERV-1301](https://linear.app/features-and-labels/issue/SERV-1301) |
