@@ -22,7 +22,7 @@ A generated video isn't a shippable video. Every genmedia product ends up buildi
 
 *Real output from a registered deploy (`rehan/post-production-pipeline`) — see the validation transcript in Deploy below.*
 
-Every rendition is an H.264/AAC MP4 with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work.
+Every rendition is an H.264 MP4 (AAC audio when the source has one) with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work.
 
 ## Run it
 
@@ -129,6 +129,7 @@ Also verified against the same deploy: a second identical submit got a **new** `
 - **Ladder width ↔ vCPUs.** Rungs encode in parallel, so wall-clock ≈ the slowest rung — until the rungs starve each other for cores. `report.toolchain.vcpus` tells you what the machine actually has; if `encode_wall` approaches the *sum* of `encode_ms` values, the ladder is core-bound: use a bigger machine or fewer rungs.
 - **`keep_alive=60`** keeps the worker warm for a minute after each job — post-production traffic is bursty (a batch of generations finishes, a batch of transcodes follows), and a warm worker skips the container cold start for the rest of the batch. Raise it if your queue is steadily busy; it bills like any other runner second.
 - **The queue is free capacity management.** Submitting via `queue.fal.run` instead of a synchronous call means bursts wait in line instead of timing out, and webhook delivery means no client holds a connection open for a minute-long job.
+- **The `/data` cache is append-only.** Every distinct source URL keeps up to 300 MB on [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage) forever, and a hard-killed download can strand a `.fal_download.tmp.*` partial next to it (the app never treats those as cache hits, but nothing deletes them either). When self-hosting, add a cleanup policy — a cron that prunes by mtime is plenty.
 
 ## Next steps
 

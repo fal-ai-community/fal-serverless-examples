@@ -45,7 +45,7 @@
 - [ ] **Step 1: Create the venv and verify the toolchain**
 
 ```bash
-cd /home/relic/fal-serverless-examples/.claude/worktrees/post-production-pipeline-example-3bf0b8
+cd <repo-root>
 which python3.11 || sudo apt-get install -y python3.11 python3.11-venv  # or: uv venv --python 3.11 .venv
 python3.11 -m venv .venv
 .venv/bin/pip install -r harness/requirements.txt

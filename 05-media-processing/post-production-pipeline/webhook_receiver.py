@@ -125,7 +125,7 @@ class Receiver(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8321)
     args = parser.parse_args()
     print(f"listening on http://localhost:{args.port} - POST path can be anything")

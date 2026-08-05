@@ -37,7 +37,7 @@ DEFAULT_VIDEO = (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--app", required=True, help="owner/app-name of your deploy")
     parser.add_argument("--video-url", default=DEFAULT_VIDEO)
     parser.add_argument("--ladder", default="1080,720,480", help="comma-separated rung heights")
