@@ -9,16 +9,18 @@ A generated video isn't a shippable video. Every genmedia product ends up buildi
 ```json
 {
   "renditions": [
-    { "label": "1080p", "video": { "url": "https://v3.fal.media/files/…/….mp4", "content_type": "video/mp4" },
-      "width": 1920, "height": 1080, "size_bytes": 2264861, "encode_ms": 3861 },
-    { "label": "720p",  "video": { "url": "…" }, "width": 1280, "height": 720, "size_bytes": 1113713, "encode_ms": 2405 },
-    { "label": "480p",  "video": { "url": "…" }, "width": 854,  "height": 480, "size_bytes": 561120,  "encode_ms": 1633 }
+    { "label": "1080p", "video": { "url": "https://v3b.fal.media/files/b/0aa50f61/f56bxDiIBd_mQREZl9C4b_….mp4", "content_type": "video/mp4" },
+      "width": 1920, "height": 1080, "size_bytes": 2008643, "encode_ms": 1092 },
+    { "label": "720p",  "video": { "url": "https://v3b.fal.media/files/b/0aa50f61/TZWp4jGh6-TIAqCJo0Y1e_….mp4" }, "width": 1280, "height": 720, "size_bytes": 967744, "encode_ms": 781 },
+    { "label": "480p",  "video": { "url": "https://v3b.fal.media/files/b/0aa50f72/hJil0DJ-NvF0HWeMOJzVA_….mp4" }, "width": 854,  "height": 480, "size_bytes": 525707, "encode_ms": 579 }
   ],
-  "thumbnails": [ { "url": "https://v3.fal.media/files/…/…_thumb_00.jpg", "content_type": "image/jpeg" } ],
-  "captions_vtt": { "url": "https://v3.fal.media/files/…/captions.vtt", "content_type": "text/vtt" },
-  "report": { "url": "https://v3.fal.media/files/…/report.json", "content_type": "application/json" }
+  "thumbnails": [ { "url": "https://v3b.fal.media/files/b/0aa50f72/NIpPIey7MPWjb6uo7ma2Z_….jpg", "content_type": "image/jpeg" } ],
+  "captions_vtt": { "url": "https://v3b.fal.media/files/b/0aa50f61/HTF8mp_nSNKWU4sId7nwt_captions.vtt", "content_type": "text/vtt" },
+  "report": { "url": "https://v3b.fal.media/files/b/0aa50f61/Efmd1dZZ7zKC_V1mfeoZY_report.json", "content_type": "application/json" }
 }
 ```
+
+*Real output from a registered deploy (`rehan/post-production-pipeline`) — see the validation transcript in Deploy below.*
 
 Every rendition is an H.264/AAC MP4 with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work.
 
@@ -83,8 +85,43 @@ python client.py --app <your-username>/post-production-pipeline \
 
 Webhook deliveries are signed (Ed25519 over the request id, user id, timestamp, and the SHA-256 of the raw body — keys at `rest.fal.ai/.well-known/jwks.json`); `webhook_receiver.py` rejects anything that doesn't verify, checks timestamp freshness, and dedupes retries by `request_id`. Statuses are `IN_QUEUE → IN_PROGRESS → COMPLETED` — there is no `FAILED` status; failures arrive as `COMPLETED` with `error`/`error_type`, and the result URL returns the error body with a non-2xx code.
 
-<!-- VALIDATION TRANSCRIPT (Task 7): replace this comment with the real
-     client.py + webhook_receiver.py output from the validated deployment. -->
+Validated end-to-end against the registered deploy (`rehan/post-production-pipeline`) — client output on top, the receiver's independently-verified signature check below it:
+
+```text
+$ export FAL_KEY=<key_id>:<key_secret>
+$ python client.py --app rehan/post-production-pipeline \
+    --srt-file demo-captions.srt \
+    --webhook https://<tunnel-host>/fal-webhook
+queued: request_id=019fcfa8-8987-7370-8180-30514acb2d36
+fal will POST the result to https://<tunnel-host>/fal-webhook (signed; see webhook_receiver.py)
+polling too, as the fallback a real backend keeps:
+  status: IN_QUEUE (queue position 0)
+  status: IN_PROGRESS
+  [app] INFO:     172.17.0.1:55870 - "POST / HTTP/1.1" 200 OK
+  status: COMPLETED
+{
+  "renditions": [
+    { "label": "1080p", "video": { "url": "https://v3b.fal.media/files/b/0aa50f61/f56bxDiIBd_mQREZl9C4b_….mp4" }, "width": 1920, "height": 1080, "size_bytes": 2008643, "encode_ms": 1092 },
+    { "label": "720p",  "video": { "url": "https://v3b.fal.media/files/b/0aa50f61/TZWp4jGh6-TIAqCJo0Y1e_….mp4" }, "width": 1280, "height": 720,  "size_bytes": 967744,  "encode_ms": 781 },
+    { "label": "480p",  "video": { "url": "https://v3b.fal.media/files/b/0aa50f72/hJil0DJ-NvF0HWeMOJzVA_….mp4" }, "width": 854,  "height": 480,  "size_bytes": 525707,  "encode_ms": 579 }
+  ],
+  "thumbnails": [ … 3 entries … ],
+  "captions_vtt": { "url": "https://v3b.fal.media/files/b/0aa50f61/HTF8mp_nSNKWU4sId7nwt_captions.vtt" },
+  "report": { "url": "https://v3b.fal.media/files/b/0aa50f61/Efmd1dZZ7zKC_V1mfeoZY_report.json" }
+}
+```
+
+```text
+$ python webhook_receiver.py --port 8321
+listening on http://localhost:8321 - POST path can be anything
+expose it, e.g.: cloudflared tunnel --url http://localhost:8321
+VERIFIED status=OK request_id=019fcfa8-8987-7370-8180-30514acb2d36
+  1080p: https://v3b.fal.media/files/b/0aa50f61/f56bxDiIBd_mQREZl9C4b_….mp4
+  720p: https://v3b.fal.media/files/b/0aa50f61/TZWp4jGh6-TIAqCJo0Y1e_….mp4
+  480p: https://v3b.fal.media/files/b/0aa50f72/hJil0DJ-NvF0HWeMOJzVA_….mp4
+```
+
+Also verified against the same deploy: a second identical submit got a **new** `request_id` (`019fcfa9-ef6b-…`) and the receiver logged it as a fresh `VERIFIED` line, not a duplicate (dedupe is per-`request_id`, and this was a different request); its `report.json` showed `"cache_hit": true` with `timings_ms.download` of 48ms, since the source was already on `/data` from the first run. A hand-forged delivery (`curl -X POST localhost:8321 -d '{}'`) was rejected: `REJECTED: missing header 'x-fal-webhook-request-id'` and HTTP 401.
 
 ## Cost & tuning
 
