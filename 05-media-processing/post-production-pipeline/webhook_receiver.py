@@ -101,7 +101,6 @@ class Receiver(BaseHTTPRequestHandler):
                   "(duplicate delivery - fal retries until it sees a 2xx; already processed, acking again)")
             self._respond(200, {"ok": True, "duplicate": True})
             return
-        self.seen.add(request_id)
         print(f"VERIFIED status={event.get('status')} request_id={request_id}")
         if event.get("status") == "OK":
             for rendition in (event.get("payload") or {}).get("renditions", []):
@@ -109,6 +108,8 @@ class Receiver(BaseHTTPRequestHandler):
         else:
             print(f"  error: {event.get('error')}")
             print(f"  payload: {json.dumps(event.get('payload'))[:300]}")
+        # mark only after successful processing - a crash must let fal's retry re-process
+        self.seen.add(request_id)
         self._respond(200, {"ok": True})
 
     def _respond(self, code: int, body: dict) -> None:
