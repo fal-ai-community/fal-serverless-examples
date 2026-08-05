@@ -70,7 +70,7 @@ Tier README table gets the slot ↔ folder mapping.
 
 ## Client & webhook verification
 
-- `client.py` — raw `httpx` on purpose (the exact URLs/headers for private apps are the doc gap being verified): `POST https://queue.fal.run/{owner}/{app}/?fal_webhook=<url>` with `Authorization: Key $FAL_KEY`; poll `.../requests/{id}/status`; fetch result; print a readable transcript. Flags: `--video-url`, `--srt-file` (local file → inline `captions_srt`), `--ladder`, `--webhook`. README notes the `fal_client` equivalence.
+- `client.py` — raw `httpx` on purpose (the exact URLs/headers for private apps are the doc gap being verified): `POST https://queue.fal.run/{owner}/{app}?fal_webhook=<url-encoded>` (no trailing slash — verified against fal-js/fal_client source) with `Authorization: Key $FAL_KEY`; poll `.../requests/{id}/status?logs=1`; fetch result at `.../requests/{id}`; print a readable transcript. Flags: `--video-url`, `--srt-file` (local file → inline `captions_srt`), `--ladder`, `--webhook`. README notes the `fal_client` equivalence.
 - `webhook_receiver.py` — stdlib `http.server` + `cryptography`: verify fal's ED25519 webhook signature against the published JWKS, check timestamp freshness, reject tampered payloads, print verified completions. README includes a `cloudflared` tunnel one-liner for a laptop demo.
 - Client-script deps (`httpx`, `cryptography`) are documented in the scripts' headers/README, not in `requirements.txt` (that file mirrors the app image only).
 
@@ -90,11 +90,11 @@ The ~10 s sample keeps every run inside the 120 s smoke window; `/data` caching 
 
 Problem ("every genmedia product builds this by hand") → output first (response JSON + thumbnail) → run it → how it works (five stages, never-upscale, faststart, container rationale) → deploy (queue + webhook transcript) → cost & tuning (CPU machine sizing XS/S/M/L, billable-unit metering, keep_alive math, ladder-width ↔ vCPU tradeoff — inlined here because the Optimizing Costs concept page doesn't exist yet) → next steps (05.3 image variants, 06.2 queue-into-backend, HLS as the natural extension).
 
-## Open items (resolve during implementation)
+## Open items — all resolved 2026-08-04 (research workflow, verified from source)
 
-1. **Sample clip hosting (CI-critical).** CI downloads the sample every run. Preferred: a ~10 s, 1080p, CC-licensed clip (e.g. Big Buck Bunny cut) on the fal-controlled `storage.googleapis.com/falserverless` bucket — needs Rehan/fal to upload, or scout the bucket for an existing suitable asset. Interim fallback: test-videos.co.uk URL (flagged as a CI-stability risk, swap before merge if possible).
-2. **Webhook signature details.** Confirm exact signed-message construction + JWKS URL from fal docs/source before writing `webhook_receiver.py`; the verified receiver is the deliverable, so this must come from source, not memory.
-3. ~~`fal.toolkit.Video` availability~~ — resolved: present in fal 1.78.2.
+1. ~~Sample clip hosting~~ — resolved with fal-controlled assets only: primary sample `https://storage.googleapis.com/falserverless/example_outputs/pika/pika_i2v_v22_output.mp4` (verified 1920×1080 H.264, 5.04 s, 2.4 MB, no audio track); audio-path test sample `https://storage.googleapis.com/falserverless/example_outputs/bytedance/seedance_2/output.mp4` (verified 1280×720 H.264 + AAC, 12.04 s, 15.4 MB). CI depends on no third-party hosts.
+2. ~~Webhook signature details~~ — resolved from fal's production signer (isolate-cloud `task_dispatcher.py::create_webhook_signature`, byte-identical Rust port, docs and web-app verifier agree): Ed25519 detached signature (hex, 128 chars) over UTF-8 of `"{request_id}\n{user_id}\n{timestamp}\n{sha256(raw_body).hexdigest()}"`; headers `X-Fal-Webhook-Request-Id/-User-Id/-Timestamp/-Signature`; JWKS `https://rest.fal.ai/.well-known/jwks.json` (Ed25519 `x` base64url, cache ≤24 h); ±300 s timestamp leeway; deliveries retry until a 2xx → receivers must be idempotent per `request_id`.
+3. ~~`fal.toolkit.Video` availability~~ — resolved: present in fal 1.78.2 (`Video(File)`; `from_path` inherits from `File`; content type must be passed explicitly — `from_path` never guesses).
 
 ## DoD mapping (SERV-1282)
 
