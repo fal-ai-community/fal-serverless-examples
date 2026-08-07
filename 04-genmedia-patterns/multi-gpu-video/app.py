@@ -26,6 +26,12 @@ MODEL_ID = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 MODEL_REVISION = "5be7df9619b54f4e2667b2755bc6a756675b5cd7"
 NUM_GPUS = 4
 
+# The HF repo stores fp32 (~126 GB). Each of the 4 workers reads the full
+# weights (sequence parallelism replicates them), so we convert to bf16 once
+# on /data and every later boot reads half the bytes. /data persists
+# account-wide across machines and deploys.
+CONVERTED_DIR = "/data/models/wan22-t2v-a14b-bf16"
+
 # WAN generates at 16 fps; sizes are (height, width).
 RESOLUTIONS: dict[str, tuple[int, int]] = {
     "480p": (480, 832),
@@ -105,10 +111,8 @@ class WanWorker(DistributedWorker):
         from diffusers import ContextParallelConfig, WanPipeline
 
         # Every rank loads the full pipeline (sequence parallelism shards the
-        # sequence, not the weights) from the /data HF cache the app warmed.
-        pipe = WanPipeline.from_pretrained(
-            MODEL_ID, revision=MODEL_REVISION, torch_dtype=torch.bfloat16
-        )
+        # sequence, not the weights) from the bf16 copy setup() prepared.
+        pipe = WanPipeline.from_pretrained(CONVERTED_DIR, torch_dtype=torch.bfloat16)
 
         # Ulysses attention across the runner's process group: each denoising
         # step's sequence is split over world_size ranks.
@@ -160,7 +164,9 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     machine_type = "GPU-H100"
     num_gpus = NUM_GPUS  # class attribute, not a class kwarg
     app_auth = "private"
-    startup_timeout = 1800  # first-ever boot downloads ~120 GB into /data
+    # First-ever boot on an account downloads ~126 GB AND converts to bf16
+    # (~35 min total); every boot after that loads the converted copy (~8 min).
+    startup_timeout = 3600
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
@@ -176,25 +182,42 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     ]
 
     async def setup(self) -> None:
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-        from huggingface_hub import snapshot_download
+        from pathlib import Path
 
-        # Download once from the parent so the 4 workers don't race the Hub;
-        # they load from the account-wide /data cache.
-        snapshot_download(MODEL_ID, revision=MODEL_REVISION)
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
+        # One-time on this account: download the fp32 repo and store a bf16
+        # copy on /data (half the bytes -> half the load time for all 4
+        # workers on every subsequent boot).
+        if not Path(CONVERTED_DIR, ".complete").exists():
+            import torch
+            from diffusers import WanPipeline
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(MODEL_ID, revision=MODEL_REVISION)
+            pipe = WanPipeline.from_pretrained(
+                MODEL_ID, revision=MODEL_REVISION, torch_dtype=torch.bfloat16
+            )
+            tmp_dir = CONVERTED_DIR + ".tmp"
+            pipe.save_pretrained(tmp_dir, safe_serialization=True)
+            del pipe
+            os.rename(tmp_dir, CONVERTED_DIR)  # rename keeps readers atomic
+            Path(CONVERTED_DIR, ".complete").touch()
 
         self.runner = DistributedRunner(worker_cls=WanWorker, world_size=NUM_GPUS)
         await self.runner.start(timeout=1800)
 
         # Warm up the whole distributed path before the first request: worker
-        # errors surface as an "error" key, not an exception.
+        # errors surface as an "error" key, not an exception. Warming at the
+        # default request shape (33 frames @ 480p) matters - attention kernels
+        # autotune per shape, and a cold shape adds ~40 s to the first request.
         warmup = await self.runner.invoke(
             {
                 "prompt": "warmup",
                 "negative_prompt": "",
                 "height": 480,
                 "width": 832,
-                "num_frames": 9,
+                "num_frames": 33,
                 "num_inference_steps": 2,
                 "guidance_scale": 3.5,
                 "guidance_scale_2": 4.0,
