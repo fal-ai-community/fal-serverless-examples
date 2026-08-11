@@ -10,10 +10,11 @@ Two things go wrong when you put a frontier video model behind an API. The weigh
 
 <!-- OUTPUT FIRST: show the result before any code — image/video/audio sample or response JSON. -->
 
+<!-- Uncomment once the asset lands - recorded in Task 9 from the registered deploy at 1024x576x97f:
 ![viewer.html during one generation: tiny-VAE previews sharpening step by step, then the finished clip](viewer-demo.gif)
-<!-- recorded in Task 9 from the registered deploy at 1024x576x97f -->
+-->
 
-That is [`viewer.html`](viewer.html) against the deployed app: each preview is a complete little mp4 of every frame in the clip, decoded from the half-finished latents while the model is still denoising them. The last swap is the real thing — full VAE, full resolution, with audio.
+[`viewer.html`](viewer.html), pointed at the deployed app, shows the generation as it happens: each preview is a complete little mp4 of every frame in the clip, decoded from the half-finished latents while the model is still denoising them. The last swap is the real thing — full VAE, full resolution, with audio.
 
 The plain endpoint is an ordinary typed JSON API. Request:
 
