@@ -73,6 +73,56 @@ def test_module_top_level_is_import_light():
     assert top_level_imports <= {"sys", "types", "__future__"}, top_level_imports
 
 
+def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
+    """diffusers' get_class_obj_and_candidates() strips the 'FlashPack' prefix
+    before resolving class names (pipeline_loading_utils.py, diffusers 0.39).
+    Verify the registration loop registers each class under both the full name
+    and the bare name without the prefix, so either resolution path works."""
+    import ast
+
+    source = (HERE / "wan_flashpack.py").read_text()
+    tree = ast.parse(source)
+
+    # Find the for loop that registers classes with both names
+    found_dual_registration = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.For):
+            # Look for a loop with setattr calls for dual registration
+            has_full_name_setattr = False
+            has_removeprefix_setattr = False
+
+            for item in ast.walk(node):
+                if isinstance(item, ast.Call):
+                    # Check for setattr(mod, cls_obj.__name__, cls_obj)
+                    if (
+                        isinstance(item.func, ast.Name)
+                        and item.func.id == "setattr"
+                        and len(item.args) >= 3
+                    ):
+                        # Check if second arg accesses __name__
+                        second_arg = item.args[1]
+                        if isinstance(second_arg, ast.Attribute):
+                            if second_arg.attr == "__name__":
+                                has_full_name_setattr = True
+
+                        # Check for removeprefix call in second arg
+                        if (
+                            isinstance(second_arg, ast.Call)
+                            and isinstance(second_arg.func, ast.Attribute)
+                            and second_arg.func.attr == "removeprefix"
+                            and second_arg.func.value.attr == "__name__"
+                        ):
+                            has_removeprefix_setattr = True
+
+            if has_full_name_setattr and has_removeprefix_setattr:
+                found_dual_registration = True
+                break
+
+    assert (
+        found_dual_registration
+    ), "Registration loop must use setattr twice for each class: once with __name__ and once with removeprefix('FlashPack')"
+
+
 # --------------------------- live tests (harness) ---------------------------
 # The harness deploys each app*.py and runs this whole file against it with
 # HARNESS_APP_URL + HARNESS_VARIANT set; app_client skips otherwise.

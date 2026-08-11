@@ -95,11 +95,21 @@ def get_classes() -> dict[str, type]:
                 expand_timesteps=expand_timesteps,
             )
 
-    _CLASSES.update(
-        FlashPackWanTransformer3DModel=FlashPackWanTransformer3DModel,
-        FlashPackAutoencoderKLWan=FlashPackAutoencoderKLWan,
-        FlashPackUMT5EncoderModel=FlashPackUMT5EncoderModel,
-        FlashPackWanPipeline=FlashPackWanPipeline,
-    )
-    _publish_classes(__name__, _CLASSES)
+    # diffusers' get_class_obj_and_candidates() strips a "FlashPack" prefix
+    # from the class names recorded in model_index.json before resolving
+    # them against this module (pipeline_loading_utils.py, diffusers 0.39):
+    # "FlashPackUMT5EncoderModel" is looked up here as "UMT5EncoderModel".
+    # Register every class under both names so either resolution path lands
+    # on the mixin subclass.
+    mod = sys.modules[__name__]
+    for cls_obj in (
+        FlashPackWanTransformer3DModel,
+        FlashPackAutoencoderKLWan,
+        FlashPackUMT5EncoderModel,
+        FlashPackWanPipeline,
+    ):
+        setattr(mod, cls_obj.__name__, cls_obj)
+        setattr(mod, cls_obj.__name__.removeprefix("FlashPack"), cls_obj)
+        _CLASSES[cls_obj.__name__] = cls_obj
+
     return _CLASSES
