@@ -1,0 +1,61 @@
+<!doctype html>
+<!-- Demo viewer for the /stream endpoint. DEMO ONLY: pasting a FAL key into a
+     browser page is fine on your machine, never in a shipped frontend - proxy
+     through your backend instead. -->
+<meta charset="utf-8">
+<title>large-video-model - live preview</title>
+<style>
+  body { font: 15px system-ui; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  input, button, textarea { font: inherit; padding: .5rem; }
+  #row { display: flex; gap: .5rem; margin-bottom: .5rem; } #row > * { flex: 1; }
+  video { width: 100%; background: #000; border-radius: 8px; min-height: 320px; }
+  #status { color: #666; margin: .5rem 0; font-variant-numeric: tabular-nums; }
+  progress { width: 100%; }
+</style>
+<h1>Watch it generate</h1>
+<div id="row">
+  <input id="app" placeholder="app URL, e.g. https://fal.run/you/large-video-model">
+  <input id="key" placeholder="FAL key (demo only!)" type="password">
+</div>
+<textarea id="prompt" rows="2">a red fox trotting through fresh snow at golden hour</textarea>
+<div id="row"><button id="go">Generate</button></div>
+<progress id="bar" value="0" max="1" hidden></progress>
+<div id="status">idle</div>
+<video id="v" autoplay muted loop playsinline></video>
+<script>
+const $ = id => document.getElementById(id);
+$("go").onclick = async () => {
+  const status = $("status"), bar = $("bar"), video = $("v");
+  bar.hidden = false; bar.value = 0; status.textContent = "requesting...";
+  const res = await fetch($("app").value.replace(/\/$/, "") + "/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Key " + $("key").value },
+    body: JSON.stringify({ prompt: $("prompt").value }),
+  });
+  if (!res.ok) { status.textContent = "HTTP " + res.status + ": " + await res.text(); return; }
+  const reader = res.body.getReader(), decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n"); buffer = parts.pop();
+    for (const part of parts) {
+      const line = part.split("\n").find(l => l.startsWith("data: "));
+      if (!line) continue;
+      const ev = JSON.parse(line.slice(6));
+      if (ev.type === "preview") {
+        bar.value = ev.progress;
+        status.textContent = `step ${ev.step + 1}/${ev.total_steps} - live tiny-VAE preview`;
+        video.src = ev.video;              // data:video/mp4;base64,... - swaps in place
+      } else if (ev.type === "result") {
+        bar.value = 1; video.src = ev.video.url; video.muted = false; video.loop = false;
+        status.textContent = `done - seed ${ev.seed} (final has audio)`;
+      } else if (ev.type === "error") {
+        bar.hidden = true;
+        status.textContent = `failed (${ev.status_code}): ${ev.detail}`;
+      }
+    }
+  }
+};
+</script>
