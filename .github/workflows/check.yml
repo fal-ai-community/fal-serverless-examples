@@ -64,7 +64,7 @@ jobs:
     if: vars.DEPLOY_CHECKS_ENABLED == 'true'
     needs: static
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120  # video-scale examples (02.1+) boot for many minutes
     environment: deploy-check
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -83,4 +83,7 @@ jobs:
         env:
           FAL_KEY: ${{ secrets.FAL_KEY }}
           EXAMPLE: ${{ inputs.example }} # via env, never interpolated into the script
+          # WAN-scale setup() (download+pack or full compile) exceeds the 600s
+          # default; healthy apps return early, so this only delays failures.
+          HARNESS_STARTUP_TIMEOUT: "2700"
         run: python harness/check.py --example "$EXAMPLE"
