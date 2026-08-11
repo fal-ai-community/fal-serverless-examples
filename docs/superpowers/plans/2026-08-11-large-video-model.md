@@ -680,6 +680,7 @@ git commit -m "feat(02.3): LTX-2.3 22B distilled invoke endpoint, deploy-checked
 **Interfaces:**
 - Consumes: `App._generate(request, preview_cb)`, `self.tiny_vae` (Task 4), `TAEHV.decode_video` (Task 3).
 - Produces: `/stream` SSE endpoint; event schema `{"type": "preview", "step", "total_steps", "progress", "video", "width", "height", "frames"}` and `{"type": "result", "video": {...}, "seed", "timings"}`.
+- **Amendment (Task 5 review, 2026-08-11):** on mid-generation or upload failure the terminal event is `{"type": "error", "detail": str, "status_code": int}` (422 for the AppException/OOM path, else 500) instead of the result — never a preview, so `x-fal-sse-last-event-as-body` consumers always get a typed terminal event. Tasks 6/7 clients and the Task 8 README event table must handle all three event types. `preview_every` values 3-4 yield fewer than 2 previews on the fixed 8-step schedule — document, don't advertise.
 
 - [ ] **Step 1: Extend the test first**
 
