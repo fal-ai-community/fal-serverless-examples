@@ -7,6 +7,7 @@ Catalog slot 02.3 (SERV-1303). The three lessons:
 """
 import asyncio
 import json
+import shutil
 import time
 import traceback
 from pathlib import Path
@@ -40,7 +41,9 @@ class _PreviewSession:
     A single decode worker drains it; the SSE generator drains `events`.
     """
 
-    def __init__(self, app: "App", height: int, width: int, num_frames: int, every: int):
+    def __init__(
+        self, app: "LargeVideoModel", height: int, width: int, num_frames: int, every: int
+    ):
         import queue as _queue
         import threading
 
@@ -181,7 +184,8 @@ class Output(BaseModel):
     timings: dict[str, float] = Field(description="Server-side stage timings, seconds.")
 
 
-class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idle H200 bills
+# keep_alive=300: 5 min, because video sessions come in bursts and an idle H200 bills.
+class LargeVideoModel(fal.App, keep_alive=300):
     machine_type = "GPU-H200"  # ~70 GB resident bf16 weights - see README "GPU sizing"
     app_auth = "private"
     startup_timeout = 1800  # first-ever boot downloads ~88 GB to /data (spike: 392 s cold)
@@ -274,8 +278,11 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
         timings["generate_s"] = round(time.time() - t0, 1)
 
         t0 = time.time()
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-            out_path = tmp.name
+        # A whole directory per request so the file itself can be called
+        # output.mp4: fal derives the response's `file_name` from the path, and
+        # "tmp8f3k1z.mp4" is not a name any caller wants to see. Both endpoints
+        # rmtree the parent once the upload is done.
+        out_path = str(Path(tempfile.mkdtemp(prefix="ltx2-")) / "output.mp4")
         waveform = audio[0]
         if not torch.is_tensor(waveform):
             waveform = torch.from_numpy(waveform)
@@ -292,7 +299,17 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
     @fal.endpoint("/")
     def run(self, request: Input) -> Output:
         path, seed, timings = self._generate(request, preview_cb=None)
-        return Output(video=File.from_path(path), seed=seed, timings=timings)
+        try:
+            # content_type is not sniffed from the suffix - File.from_path
+            # defaults to application/octet-stream, which makes browsers
+            # download the clip instead of playing it.
+            return Output(
+                video=File.from_path(path, content_type="video/mp4"),
+                seed=seed,
+                timings=timings,
+            )
+        finally:
+            shutil.rmtree(Path(path).parent, ignore_errors=True)
 
     @fal.endpoint("/stream")
     async def stream(self, request: Input) -> StreamingResponse:
@@ -327,9 +344,16 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
                     # and this coroutine owns the event loop (SSE flushes, /health)
                     # meanwhile. Everything that can fail - generation, upload,
                     # serialization - is inside this try; only the yield is outside.
-                    final = Output(
-                        video=await File.from_path_async(path), seed=seed, timings=timings
-                    )
+                    try:
+                        final = Output(
+                            video=await File.from_path_async(
+                                path, content_type="video/mp4"
+                            ),
+                            seed=seed,
+                            timings=timings,
+                        )
+                    finally:
+                        shutil.rmtree(Path(path).parent, ignore_errors=True)
                     result = json.dumps(
                         {"type": "result", **json.loads(final.model_dump_json())}
                     )

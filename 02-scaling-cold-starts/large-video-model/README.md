@@ -2,7 +2,7 @@
 
 <!-- Section order is the quality bar (design doc S4-A). Keep it. -->
 
-Two things go wrong when you put a frontier video model behind an API. The weights are bigger than most GPUs and take minutes to reach the machine, so your first request pays for all of it. And even once the model is warm, generation is a long silence — the caller stares at a spinner while seventy gigabytes of weights do their work. This example serves **LTX-2.3 Distilled** on a single H200 and takes both seriously: `loader.py` turns ~88 GB of weights into a warm boot of well under a minute, the GPU choice is arithmetic rather than a guess, and `/stream` sends a playable video of the *in-progress* generation after every denoising step.
+Two things go wrong when you put a frontier video model behind an API. The weights are bigger than most GPUs and take minutes to reach the machine, so your first request pays for all of it. And even once the model is warm, generation is a long silence — the caller stares at a spinner while seventy gigabytes of weights do their work. This example serves **LTX-2.3 Distilled** on a single H200 and takes both seriously: `loader.py` gets ~88 GB of weights onto the GPU in about 40 s once they are cached — with the slow tail measured and written down rather than hidden — the GPU choice is arithmetic rather than a guess, and `/stream` sends a playable video of the *in-progress* generation after every denoising step.
 
 > Catalog slot `02.3` ([SERV-1303](https://linear.app/features-and-labels/issue/SERV-1303)). Model: [`diffusers/LTX-2.3-Distilled-Diffusers`](https://huggingface.co/diffusers/LTX-2.3-Distilled-Diffusers) — a 22B-parameter DiT plus a 12B text encoder, **ungated**, so nothing here needs a Hugging Face token. It is **not** Apache-2.0; read [Licensing](#licensing) before you ship it.
 
@@ -10,9 +10,9 @@ Two things go wrong when you put a frontier video model behind an API. The weigh
 
 <!-- OUTPUT FIRST: show the result before any code — image/video/audio sample or response JSON. -->
 
-<!-- Uncomment once the asset lands - recorded in Task 9 from the registered deploy at 1024x576x97f:
-![viewer.html during one generation: tiny-VAE previews sharpening step by step, then the finished clip](viewer-demo.gif)
--->
+![Six tiny-VAE previews from one 1024x576, 97-frame generation, sharpening step by step, followed by the finished clip](viewer-demo.gif)
+
+*One request to `/stream` at 1024×576 × 97 frames. Every frame above came off the wire: the six `preview` events in order — each a complete little mp4 of the whole clip, decoded from half-finished latents — then the `result` video from the full VAE. Nothing is staged; the whole request took 10.5 s, and the first preview landed 3.4 s in.*
 
 [`viewer.html`](viewer.html), pointed at the deployed app, shows the generation as it happens: each preview is a complete little mp4 of every frame in the clip, decoded from the half-finished latents while the model is still denoising them. The last swap is the real thing — full VAE, full resolution, with audio.
 
@@ -32,16 +32,17 @@ Response:
 ```json
 {
   "video": {
-    "url": "https://v3.fal.media/files/b/…/output.mp4",
+    "url": "https://v3b.fal.media/files/b/…/output.mp4",
     "content_type": "video/mp4",
-    "file_name": "output.mp4"
+    "file_name": "output.mp4",
+    "file_size": 311365
   },
   "seed": 42,
-  "timings": { "generate_s": 2.5, "encode_s": 0.9 }
+  "timings": { "generate_s": 2.9, "encode_s": 1.0 }
 }
 ```
 
-`seed` is echoed back whether you supplied it or not, and `timings` carries the server-side stage breakdown — `generate_s` for the denoise loop, `encode_s` for the mp4 + audio mux.
+`seed` is echoed back whether you supplied it or not, and `timings` carries the server-side stage breakdown — `generate_s` for the denoise loop, `encode_s` for the mp4 + audio mux. The `content_type` is set explicitly: `File.from_path` defaults to `application/octet-stream`, which makes a browser download the clip rather than play it.
 
 ## Run it
 
@@ -110,7 +111,7 @@ A raw latent at step 3 of 8 looks like noise, so streaming it would be pointless
 
 **The encode runs on a worker thread.** The surprise is that the tiny VAE is not the expensive part: muxing those frames to mp4 through x264 costs **0.15–0.20 s** of CPU, four to six times the decode. So `on_step_end` never blocks the denoise loop — it stores the newest `x0` under a lock, dropping any predecessor that has not been decoded yet (latest-wins), and returns. One worker thread drains that slot, renders, and pushes an event onto a queue; the async SSE generator drains the queue and writes it to the wire. When generation ends, the generator freezes the queue and drains it once more, so a preview that was still encoding at the finish line still reaches the client — and nothing ever arrives after the terminal event.
 
-At the default `preview_every=1` you get **6 preview events**, steps 1 through 6: step 0 has no predecessor to extrapolate from, and the last step is left to the real result. Each event is a self-contained `data:video/mp4;base64,…` string, **38–259 KB** depending on the prompt, so a client can assign it straight to `video.src`.
+At the default `preview_every=1` you get **6 preview events**, steps 1 through 6: step 0 has no predecessor to extrapolate from, and the last step is left to the real result. Each event is a self-contained `data:video/mp4;base64,…` string — **41–172 KB** at the 768×512 smoke shape, **94–243 KB** at 1024×576×97f, climbing step by step as the picture sharpens and stops compressing so kindly — so a client can assign it straight to `video.src`.
 
 The final video is not a preview: it comes out of the full VAE at full resolution, with audio from the vocoder, and is uploaded to the fal CDN.
 
@@ -155,7 +156,7 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 
 ## Cost & tuning
 
-**Measured 2026-08-11, `GPU-H200`, ephemeral deploy-check.** One run, one machine, one region — treat the download row as the most variable number here.
+**Measured 2026-08-11 on `GPU-H200`.** The generate and warm-boot rows come from the registered deploy (`<owner>/large-video-model`) and the repo's ephemeral deploy-checks, all on one afternoon; the cold-boot breakdown and the VRAM peaks come from instrumented spike runs at the same shapes, because a first-ever 88 GB download only happens once per account. One region, a handful of runs — read the ranges, not the digits.
 
 | Stage | Measured |
 |---|---|
@@ -164,20 +165,28 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 | — page-cache pre-read | 5.5 s |
 | — `LTX2Pipeline.from_pretrained(...).to("cuda")` | 21.3 s |
 | — tiny-VAE load | 0.4 s |
-| **Warm boot** — `/data` already populated (the fetch becomes a ~1 s `local_files_only` lookup) | **~35–50 s** |
-| Warm generate — 768×512, 57 frames, 8 steps, via `/` | 2.5 s |
-| Warm generate — same shape via `/stream`, previews on | 2.7–3.4 s |
-| Warm generate — 1024×576, 97 frames | 15.1 s |
-| HTTP round trip — 768×512, 57 frames, `/` (generate + mux + CDN upload) | ~5 s |
+| **Warm boot** — `/data` already populated, through to serving traffic | **42 / 42 / 48 / 62 / 99 / 299 s** over six boots |
+| — `fetch_model()`, now a `local_files_only` lookup | 0.0–1.2 s |
+| — page-cache pre-read | 3.9–221.5 s |
+| — `from_pretrained(...).to("cuda")` + tiny VAE | 20.7–83.7 s |
+| — `setup()` warmup generation | 8.3–42.4 s |
+| Warm generate — 768×512, 57 frames, 8 steps, via `/` | 2.6–3.2 s |
+| Warm generate — same shape via `/stream`, previews on | 3.1–4.2 s |
+| Warm generate — 1024×576, 97 frames, via `/stream` | 7.0–7.7 s (10.5–12.4 s to the `result` event) |
+| Warm generate — 1024×576, 121 frames (the largest shape the API accepts) | 7.7 s + 2.8 s mux |
+| HTTP round trip — 768×512, 57 frames, `/` (generate + mux + CDN upload) | 5.9–6.6 s |
+| First request after scale-to-zero — machine allocation + warm boot + generate | 281 s, once (175 s waiting for an H200, 99 s boot, 7 s work) |
 | VRAM — weights resident / peak at 768×512×57f / peak at 1024×576×97f | 65.9 / 68.5 / 71.9 GB of 139.8 GB |
 
-`setup()` then runs one warmup generation at the smoke shape before the worker serves traffic, so the first real request pays no autotune tax — add roughly the warm-generate row to either boot figure.
+**The warm boot is the number that moves.** The fetch collapses to nothing once `/data` holds the snapshot, but the two stages after it depend on how hot that region's `/data` chunk cache is for the node you happen to land on. Our slowest boot spent 221 s in the page-cache pre-read; the next-slowest sailed through the pre-read in 6 s and then spent 84 s inside `from_pretrained` instead. It is the same 88 GB arriving over the same pipe either way — the pre-read does not *add* the time so much as move it somewhere you can see it. Size `startup_timeout` for the bad node, not the good one.
+
+`setup()` then runs one warmup generation at the smoke shape before the worker serves traffic, so the first real request pays no autotune tax — that warmup is the last row of the boot breakdown, already included in the totals above.
 
 - **You pay for every second the H200 is alive**, warm or idle; see [fal pricing](https://fal.ai/pricing). That is the lens for every knob below.
-- **`keep_alive=300`.** Five minutes. Video work arrives in bursts — a person iterating on a prompt sends ten requests in ten minutes — and re-warming means paying the boot row again. Shorten it for genuinely sporadic traffic; the autoscaling math (and when `min_concurrency` beats a long `keep_alive`) is 02.2's subject.
-- **`startup_timeout=1800`** covers exactly one boot in the app's lifetime. Measured cold boot is 392 s; the margin is for a slow day, not for the normal case.
+- **`keep_alive=300`.** Five minutes. Video work arrives in bursts — a person iterating on a prompt sends ten requests in ten minutes — and re-warming means paying the boot row again. Shorten it for genuinely sporadic traffic; the autoscaling math (and when `min_concurrency` beats a long `keep_alive`) is [02.2](../tune-autoscaling/)'s subject.
+- **`startup_timeout=1800`** covers exactly one boot in the app's lifetime. Measured cold boot is 392 s and the slowest *warm* boot we saw was 299 s — the margin is for the unlucky node, not for the normal case.
 - **`preview_every`.** The distilled schedule is a fixed 8 steps, so this knob is coarser than it looks: `1` → 6 previews, `2` → 3, `3` → 2, `4` → 1. Anything above `2` undersells the feature. Previews cost the denoise loop almost nothing (the decode and encode run on the worker thread), so raising it saves bandwidth, not GPU time.
-- **Shape.** `1024x576` at 97 frames is the shape worth demoing: 15.1 s of generation is long enough for the previews to tell a story, where the 768×512 smoke shape is over almost before it starts. `num_frames` is snapped down to the model's 8k+1 grid by `snap_frames()`, so callers never get a 422 for asking for 60 frames.
+- **Shape.** `1024x576` at 97 frames is the shape worth demoing — ~11 s from request to final video, with six previews landing between 3.4 s and 6.8 s, where the 768×512 smoke shape is over almost before it starts. 121 frames at the same width costs the same 7.7 s of denoising and one more second of muxing, so the top of the accepted envelope is not a cliff. `num_frames` is snapped down to the model's 8k+1 grid by `snap_frames()`, so callers never get a 422 for asking for 60 frames.
 - **Oversized requests fail safely.** A CUDA OOM becomes a typed 422 (`fal.exceptions.AppException`), deliberately *not* a 503 — a 503 tells the platform to restart the runner, throwing away 88 GB of warm weights over one bad request.
 - **Untested direction:** an fp8 or otherwise quantized DiT would cut the largest line in the sizing table and could open up smaller, cheaper machine types. We did not measure it, so this example makes no claim about it.
 
@@ -191,7 +200,7 @@ The weights are **not** Apache-2.0 — unlike the FLUX.2 [klein] 4B in 00.2, you
 
 ## Next steps
 
-- **02.2 — autoscaling for bursty traffic**: the `keep_alive` / `min_concurrency` / concurrency math behind the one-line rationale above, on a model that is cheap to be wrong about.
+- [**02.2 — autoscaling for bursty traffic**](../tune-autoscaling/): the `keep_alive` / `min_concurrency` / concurrency math behind the one-line rationale above, on a model that is cheap to be wrong about.
 - **03.1 — stream progressive results with SSE**: the same streaming pattern applied to image generation, where the previews are frames rather than clips.
-- **04.5 — multi-GPU inference on a frontier video model**: what to do when the sizing table above runs out of single-GPU options.
+- [**04.5 — multi-GPU inference on a frontier video model**](../../04-genmedia-patterns/multi-gpu-video/): what to do when the sizing table above runs out of single-GPU options.
 - Concept docs: [parallel file loading](https://fal.ai/docs/documentation/serverless/optimizations/parallel-file-loading) · [machine types](https://fal.ai/docs/documentation/deployment/machine-types) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)

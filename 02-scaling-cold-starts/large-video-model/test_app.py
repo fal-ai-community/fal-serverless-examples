@@ -13,6 +13,10 @@ import httpx
 def test_invoke_contract(app_client):
     response = app_client.run("/", {"prompt": "a red fox trotting through fresh snow at golden hour"})
     assert response["video"]["url"].startswith("https://")
+    # The README documents this exact shape; File.from_path would otherwise
+    # hand back application/octet-stream and the temp file's random name.
+    assert response["video"]["content_type"] == "video/mp4"
+    assert response["video"]["file_name"] == "output.mp4"
     assert isinstance(response["seed"], int)
     assert response["timings"]["generate_s"] > 0
 
