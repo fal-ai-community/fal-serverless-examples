@@ -35,24 +35,31 @@ USER_ID_RE = re.compile(USER_ID_PATTERN)
 
 # Real, license-verified klein-4B LoRAs (Apache-2.0 / MIT), spanning all four
 # key-format families diffusers 0.39 loads: ai-toolkit, kohya, raw-PEFT
-# (fal-trainer output), diffusers-native. The demo's "thousands" come from
-# synthetic registrations; these eight are the visually-distinct featured users.
+# (fal-trainer output), diffusers-native. The five klein-style-fleet entries
+# were trained with example 04.4's recipe - its output URL is exactly what
+# /register accepts. The demo's "thousands" come from synthetic registrations;
+# these eight are the visually-distinct featured users.
+_FLEET = "https://huggingface.co/rehan-fal/klein-style-fleet/resolve/main"
 FEATURED_USERS: dict[str, dict] = {
-    "numzoo": {
-        "url": "https://huggingface.co/goumsss/numzoo-flux2-klein-lora/resolve/main/numzoo_klein.safetensors",
-        "scale": 1.0, "trigger": "NUMZOO",
+    "ukiyo-e": {
+        "url": f"{_FLEET}/ukiyo-e/pytorch_lora_weights.safetensors",
+        "scale": 1.0, "trigger": "ukiyo-e woodblock print",
     },
-    "yarn-art": {
-        "url": "https://huggingface.co/Barath/flux2-klein-yarn-art-lora/resolve/main/klein4b_yarn_art_lora_v1.safetensors",
-        "scale": 1.0, "trigger": "Y4RN_ART",
+    "stained-glass": {
+        "url": f"{_FLEET}/stained-glass/pytorch_lora_weights.safetensors",
+        "scale": 1.0, "trigger": "stained glass window",
     },
-    "baroque": {
-        "url": "https://huggingface.co/noema-art/dutchbaroqueflux-klein/resolve/main/dutchbaroqueflux_klein.safetensors",
-        "scale": 1.0, "trigger": "dutchbaroque",
+    "claymation": {
+        "url": f"{_FLEET}/claymation/pytorch_lora_weights.safetensors",
+        "scale": 1.0, "trigger": "claymation stop-motion",
     },
-    "koni-anime": {
-        "url": "https://huggingface.co/Sawata97/flux2_4b_koni_animestyle/resolve/main/Flux_klein_4b_anime_Koni.safetensors",
-        "scale": 1.0, "trigger": "anime_style",
+    "neon-noir": {
+        "url": f"{_FLEET}/neon-noir/pytorch_lora_weights.safetensors",
+        "scale": 1.0, "trigger": "neon noir",
+    },
+    "blueprint": {
+        "url": f"{_FLEET}/blueprint/pytorch_lora_weights.safetensors",
+        "scale": 1.0, "trigger": "architectural blueprint",
     },
     "wild-africa": {
         "url": "https://huggingface.co/zfrsgtcu/flux-wild-africa/resolve/main/African_Documentary_V2.safetensors",
@@ -66,10 +73,6 @@ FEATURED_USERS: dict[str, dict] = {
         "url": "https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora/resolve/main/flux-spritesheet-lora.safetensors",
         "scale": 1.0, "trigger": "2x2 sprite sheet",
     },
-    "liqglass": {
-        "url": "https://huggingface.co/Andy-ML-And-AI/LIQGLASS/resolve/main/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "LIQGLASS",
-    },
 }
 
 
@@ -80,14 +83,14 @@ class Input(BaseModel):
             "Which user's LoRA to apply. The pattern keeps hints short, "
             "latin-1 and comma-free - hint strings ride an HTTP header."
         ),
-        examples=["numzoo"],
+        examples=["ukiyo-e"],
         # ui.hint marks the field whose value doubles as the routing hint
         # (the platform playground reads this from the OpenAPI schema).
         json_schema_extra={"ui": {"hint": True}},
     )
     prompt: str = Field(
         description="What to generate. Include the user's trigger word if their LoRA has one.",
-        examples=["NUMZOO a fox portrait, pastel colors, storybook style"],
+        examples=["ukiyo-e woodblock print of a red fox in a forest clearing"],
     )
     image_size: ImageSizeInput = Field(
         default="square_hd",
@@ -271,8 +274,8 @@ class PerUserLoras(fal.App, keep_alive=300):
         # WARMUP through the full serving path: hint-miss -> disk load ->
         # set_adapters -> one real generation. Validates LoRA serving at boot
         # (a runner that can't serve adapters must never enter the pool).
-        scale, _ = self._activate_adapter("numzoo")
-        self.pipe.set_adapters(["numzoo"], adapter_weights=[scale])
+        scale, _ = self._activate_adapter("ukiyo-e")
+        self.pipe.set_adapters(["ukiyo-e"], adapter_weights=[scale])
         self.pipe(
             prompt="warmup",
             height=1024,

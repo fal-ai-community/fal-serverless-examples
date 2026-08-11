@@ -2,7 +2,7 @@
 
 Your product trains one LoRA per user — an avatar style, a brand look, a fine-tuned identity for every paying customer. Serving them naively means either a deployment per user (thousands of cold fleets) or reloading adapters on every request (one slow fleet). This example runs **one warm FLUX.2 [klein] 4B fleet for the whole user base**: adapters live on `/data`, a KV store maps user → adapter, each runner keeps a small GPU LRU of loaded adapters — and each runner advertises its currently-hot users via [fal routing hints](https://fal.ai/docs/documentation/serverless/optimize-routing-behavior) so the router can prefer a runner that already has the adapter loaded. A hint is pure, best-effort affinity: any runner can serve any user; a hinted miss just pays the adapter load instead of failing. How much lift affinity adds on top of the scheduler's own runner reuse depends on your fleet size, cache pressure, and traffic shape — this example ships the measurement tool (`fleet_demo.py`) so you can answer that for your own workload instead of trusting anyone's benchmark.
 
-> Catalog slot `04.3` ([SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306)). Base model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — Apache-2.0 and ungated. The eight featured demo users below are real community/fal LoRAs, each license-verified (Apache-2.0/MIT); the "thousands" come from synthetic adapters the app generates on demand.
+> Catalog slot `04.3` ([SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306)). Base model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — Apache-2.0 and ungated. The eight featured demo users below are real, license-verified LoRAs (Apache-2.0/MIT): five were trained with [example 04.4's recipe](../train-serve-lora/) — the train→serve loop this example completes — and three are community/fal adapters kept deliberately, so the fleet spans all four LoRA key-format families. The "thousands" come from synthetic adapters the app generates on demand.
 
 ## What you get
 
@@ -17,41 +17,41 @@ Every response tells you *how* it was served — the routing story is observable
     "height": 1024
   },
   "seed": 42,
-  "timings": { "lora": 0.0049, "inference": 1.4024 },
+  "timings": { "lora": 0.0035, "inference": 1.4128 },
   "serving": {
-    "worker_id": "ca5704b4",
+    "worker_id": "d0d81d71",
     "adapter_source": "gpu-cache",
-    "hint": "lora:numzoo",
+    "hint": "lora:ukiyo-e",
     "resident_adapters": 1
   }
 }
 ```
 
-One warm worker cycling through all eight featured users (real run, one request each — warm hit is free, cold loads cost roughly their file size):
+One warm worker cycling through all eight featured users (real run, one request each — warm hit is free, a cold load costs a disk read):
 
 ```
-numzoo       source=gpu-cache  lora=0.00s inf=1.40s   # warmup had it loaded
-yarn-art     source=disk       lora=0.35s inf=1.39s
-baroque      source=disk       lora=0.35s inf=1.41s
-koni-anime   source=disk       lora=2.93s inf=1.40s   # the 185 MB rank-64 one
-wild-africa  source=disk       lora=0.25s inf=1.41s
-mikkoani     source=disk       lora=0.33s inf=1.41s
-spritesheet  source=disk       lora=0.30s inf=1.39s
-liqglass     source=disk       lora=0.20s inf=1.35s   # 12 MB rank-8
+ukiyo-e        source=gpu-cache  lora=0.00s inf=1.41s   # warmup had it loaded
+stained-glass  source=disk       lora=0.65s inf=1.41s
+claymation     source=disk       lora=0.33s inf=1.42s
+neon-noir      source=disk       lora=0.32s inf=1.42s
+blueprint      source=disk       lora=0.34s inf=1.42s
+wild-africa    source=disk       lora=1.48s inf=1.43s
+mikkoani       source=disk       lora=1.52s inf=1.42s
+spritesheet    source=disk       lora=1.45s inf=1.40s
 ```
 
 Eight featured users, eight visibly different styles from one warm fleet — and they deliberately span all four LoRA key-format families (ai-toolkit, kohya, fal-trainer raw-PEFT, diffusers-native), all loaded by the same code path:
 
 | `user_id` | Adapter | License | Size | Format family |
 |---|---|---|---|---|
-| `numzoo` | [goumsss/numzoo-flux2-klein-lora](https://huggingface.co/goumsss/numzoo-flux2-klein-lora) | Apache-2.0 | 92 MB | ai-toolkit |
-| `yarn-art` | [Barath/flux2-klein-yarn-art-lora](https://huggingface.co/Barath/flux2-klein-yarn-art-lora) | Apache-2.0 | 92 MB | ai-toolkit |
-| `baroque` | [noema-art/dutchbaroqueflux-klein](https://huggingface.co/noema-art/dutchbaroqueflux-klein) | Apache-2.0 | 92 MB | ai-toolkit |
-| `koni-anime` | [Sawata97/flux2_4b_koni_animestyle](https://huggingface.co/Sawata97/flux2_4b_koni_animestyle) | Apache-2.0 | 185 MB | ai-toolkit |
+| `ukiyo-e` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/ukiyo-e) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `stained-glass` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/stained-glass) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `claymation` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/claymation) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `neon-noir` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/neon-noir) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `blueprint` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/blueprint) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
 | `wild-africa` | [zfrsgtcu/flux-wild-africa](https://huggingface.co/zfrsgtcu/flux-wild-africa) | MIT | 46 MB | ai-toolkit |
 | `mikkoani` | [mikkoph/mikkoani-klein4b](https://huggingface.co/mikkoph/mikkoani-klein4b) | Apache-2.0 | 92 MB | kohya |
 | `spritesheet` | [fal/flux-2-klein-4b-spritesheet-lora](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora) | Apache-2.0 | 76 MB | raw-PEFT (fal trainer) |
-| `liqglass` | [Andy-ML-And-AI/LIQGLASS](https://huggingface.co/Andy-ML-And-AI/LIQGLASS) | Apache-2.0 | 12 MB | diffusers-native |
 
 ## Run it
 
@@ -61,7 +61,7 @@ fal auth login
 fal run app.py        # ephemeral app on a real GPU; prints playground + API URLs
 ```
 
-The first-ever run downloads the base model (~16 GB) plus the eight featured adapters (~700 MB) into your account's `/data` cache; every run after that boots from cache. Try `user_id: numzoo` in the playground, then switch to `yarn-art` with the same prompt.
+The first-ever run downloads the base model (~16 GB) plus the eight featured adapters (~650 MB) into your account's `/data` cache; every run after that boots from cache. Try `user_id: ukiyo-e` in the playground, then switch to `stained-glass` with the same prompt.
 
 ## How it works
 
@@ -93,15 +93,15 @@ import fal_client
 # First request for this user: no hint yet - lands anywhere.
 result = fal_client.subscribe(
     "<your-username>/per-user-loras",
-    arguments={"user_id": "numzoo", "prompt": "NUMZOO a fox portrait, pastel colors"},
+    arguments={"user_id": "ukiyo-e", "prompt": "ukiyo-e woodblock print of a red fox"},
 )
-hint = result["serving"]["hint"]          # "lora:numzoo" (also in the response header)
+hint = result["serving"]["hint"]          # "lora:ukiyo-e" (also in the response header)
 
 # Repeat traffic: send the hint - the router now prefers runners
 # already advertising this user's adapter.
 result = fal_client.subscribe(
     "<your-username>/per-user-loras",
-    arguments={"user_id": "numzoo", "prompt": "NUMZOO a lighthouse at dusk"},
+    arguments={"user_id": "ukiyo-e", "prompt": "ukiyo-e woodblock print of a lighthouse at dusk"},
     hint=hint,
 )
 print(result["serving"]["adapter_source"])  # "gpu-cache" on a hint hit
@@ -113,8 +113,8 @@ print(result["serving"]["adapter_source"])  # "gpu-cache" on a hint hit
 import { fal } from "@fal-ai/client";
 
 const { request_id } = await fal.queue.submit("<your-username>/per-user-loras", {
-  input: { user_id: "numzoo", prompt: "NUMZOO a fox portrait, pastel colors" },
-  hint: "lora:numzoo",
+  input: { user_id: "ukiyo-e", prompt: "ukiyo-e woodblock print of a red fox" },
+  hint: "lora:ukiyo-e",
 });
 ```
 
@@ -123,8 +123,8 @@ const { request_id } = await fal.queue.submit("<your-username>/per-user-loras", 
 ```bash
 curl -X POST https://queue.fal.run/<your-username>/per-user-loras \
   -H "Authorization: Key $FAL_KEY" -H "Content-Type: application/json" \
-  -H "X-Fal-Runner-Hint: lora:numzoo" \
-  -d '{"user_id": "numzoo", "prompt": "NUMZOO a fox portrait, pastel colors"}'
+  -H "X-Fal-Runner-Hint: lora:ukiyo-e" \
+  -d '{"user_id": "ukiyo-e", "prompt": "ukiyo-e woodblock print of a red fox"}'
 ```
 
 **Measure affinity on your own traffic.** `fleet_demo.py` registers a synthetic fleet (a thousand users in a few minutes — each `/register` without a URL generates a small deterministic adapter server-side), drives Zipf-skewed traffic through the queue, and prints a per-worker warm/cold table — run it with and without hints and compare:

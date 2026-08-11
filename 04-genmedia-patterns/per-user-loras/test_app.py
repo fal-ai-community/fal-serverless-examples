@@ -19,7 +19,7 @@ _spec.loader.exec_module(app_mod)
 
 class TestHintFor:
     def test_prefix_and_value(self):
-        assert app_mod.hint_for("numzoo") == "lora:numzoo"
+        assert app_mod.hint_for("ukiyo-e") == "lora:ukiyo-e"
 
     def test_latin1_comma_free_and_bounded(self):
         h = app_mod.hint_for("a" * 40)
@@ -28,7 +28,7 @@ class TestHintFor:
 
 
 class TestUserIdPattern:
-    @pytest.mark.parametrize("ok", ["numzoo", "yarn-art", "u_001", "a"])
+    @pytest.mark.parametrize("ok", ["ukiyo-e", "yarn-art", "u_001", "a"])
     def test_valid(self, ok):
         assert app_mod.USER_ID_RE.match(ok)
 
@@ -151,24 +151,24 @@ def _direct_post(path: str, payload: dict) -> httpx.Response:
 class TestGenerate:
     def test_featured_user_smoke(self, app_client):
         result = app_client.run("/", {
-            "user_id": "numzoo",
-            "prompt": "NUMZOO a fox portrait, pastel colors, storybook style",
+            "user_id": "ukiyo-e",
+            "prompt": "ukiyo-e woodblock print of a red fox in a forest clearing",
             "seed": 42,
         })
         assert result["image"]["url"]
         assert result["seed"] == 42
-        assert result["serving"]["hint"] == "lora:numzoo"
+        assert result["serving"]["hint"] == "lora:ukiyo-e"
         assert result["serving"]["adapter_source"] in ("gpu-cache", "disk", "downloaded")
         assert "lora" in result["timings"] and "inference" in result["timings"]
 
     def test_hint_echo_header(self, app_client):
         resp = _direct_post("/", {
-            "user_id": "numzoo",
-            "prompt": "NUMZOO a lighthouse at dusk",
+            "user_id": "ukiyo-e",
+            "prompt": "ukiyo-e woodblock print of a lighthouse at dusk",
             "seed": 7,
         })
         resp.raise_for_status()
-        assert resp.headers.get("x-fal-runner-hint") == "lora:numzoo"
+        assert resp.headers.get("x-fal-runner-hint") == "lora:ukiyo-e"
 
     def test_unregistered_user_is_typed_422(self, app_client):
         with pytest.raises(httpx.HTTPStatusError) as excinfo:
