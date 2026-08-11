@@ -873,3 +873,79 @@ def test_warm_requests_are_not_flagged_cold(app_client):
     # be False. If the harness ever stops smoking first, this flips.
     response = app_client.run("/", {"prompt": PROMPT})
     assert response["was_cold"] is False
+
+
+_burst_spec = importlib.util.spec_from_file_location(
+    "autoscale_burst", Path(__file__).parent / "burst.py"
+)
+burst = importlib.util.module_from_spec(_burst_spec)
+_burst_spec.loader.exec_module(burst)
+
+
+APPS_DOCUMENT = {
+    "apps": [
+        {"alias": "something-else", "machine_types": ["GPU-A100"], "keep_alive": 60,
+         "min_concurrency": 0, "max_concurrency": 2, "concurrency_buffer": 0,
+         "concurrency_buffer_perc": 0, "scaling_delay": 0, "max_multiplexing": 1},
+        {"alias": "tune-autoscaling", "machine_types": ["GPU-H100"], "keep_alive": 300,
+         "min_concurrency": 0, "max_concurrency": 4, "concurrency_buffer": 0,
+         "concurrency_buffer_perc": 0, "scaling_delay": 0, "max_multiplexing": 1},
+    ]
+}
+
+
+def test_select_app_config_finds_the_alias():
+    config = burst.select_app_config(APPS_DOCUMENT, "someone/tune-autoscaling")
+    assert config["keep_alive"] == 300
+    assert config["max_concurrency"] == 4
+
+
+def test_select_app_config_rejects_an_unknown_app():
+    import pytest
+
+    with pytest.raises(ValueError, match="not deployed"):
+        burst.select_app_config(APPS_DOCUMENT, "someone/nope")
+
+
+def test_assert_machine_accepts_the_pinned_machine():
+    burst.assert_machine({"machine_types": ["GPU-H100"]})
+
+
+def test_assert_machine_rejects_a_fallback_or_wrong_machine():
+    import pytest
+
+    # A wrong machine would silently price the burst at the wrong rate.
+    with pytest.raises(RuntimeError, match="GPU-H100"):
+        burst.assert_machine({"machine_types": ["GPU-L40"]})
+    # A fallback list means the machine actually used is not knowable here.
+    with pytest.raises(RuntimeError, match="GPU-H100"):
+        burst.assert_machine({"machine_types": ["GPU-L40", "GPU-H100"]})
+
+
+def test_build_trace_round_trips_through_the_model():
+    """The single most important test here: producer and consumer agree.
+
+    build_trace writes trace@1; model.calibrate reads it. If these ever
+    drift, every chart silently rests on a misread field.
+    """
+    records = [
+        {"id": 0, "arrived_s": 0.0, "completed_s": 32.0, "status": 200,
+         "served_by": "r-aaa", "was_cold": True, "setup_duration_s": 30.0},
+        {"id": 1, "arrived_s": 0.0, "completed_s": 36.0, "status": 200,
+         "served_by": "r-aaa", "was_cold": False, "setup_duration_s": 30.0},
+    ]
+    trace = burst.build_trace(
+        app="someone/tune-autoscaling",
+        config=APPS_DOCUMENT["apps"][1],
+        pattern="spike", requests=2, duration_s=0.0, concurrency=2,
+        records=records, usd_per_second=model.USD_PER_SECOND,
+        recorded_at="2026-07-28T14:03:11Z",
+    )
+    assert trace["schema"] == model.TRACE_SCHEMA
+    assert trace["machine_type"] == "GPU-H100"
+    assert trace["scale_config"]["keep_alive"] == 300
+    calibration = model.calibrate(trace)  # must not raise
+    assert calibration.cold_start_s == 30.0
+    # r-aaa completed at 32.0 then 36.0 back-to-back: service time is 4s
+    assert calibration.service_s == 4.0
+    assert calibration.observed_runners == 1
