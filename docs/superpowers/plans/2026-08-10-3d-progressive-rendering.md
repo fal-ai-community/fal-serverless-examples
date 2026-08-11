@@ -809,7 +809,9 @@ class SAM3DStreamApp(
 
         # Mirrors the official notebook/inference.py `Inference` wrapper
         # (that helper is not part of the pip-installed package).
-        config_path = WEIGHTS_DIR / "checkpoints" / "pipeline.yaml"
+        # FAL_PERSISTENT_DIR is not a real pathlib.Path - OmegaConf.load
+        # rejects it with "Unexpected file type" (spike finding).
+        config_path = Path(str(WEIGHTS_DIR)) / "checkpoints" / "pipeline.yaml"
         config = OmegaConf.load(config_path)
         config.rendering_engine = "pytorch3d"
         config.compile_model = False
@@ -985,7 +987,13 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
     with pipeline.device:
         emit({"type": "status", "stage": "preprocessing", "progress": 0.03,
               "message": "Preparing pipeline inputs"})
-        ss_input = pipeline.preprocess_image(rgba, pipeline.ss_preprocessor)
+        # InferencePipelinePointMap conditions stage 1 on a MoGe depth
+        # pointmap - without it the condition embedder KeyErrors on
+        # 'pointmap' (spike finding). Stage 2 does not take it.
+        pointmap_dict = pipeline.compute_pointmap(rgba, None)
+        ss_input = pipeline.preprocess_image(
+            rgba, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
+        )
         slat_input = pipeline.preprocess_image(rgba, pipeline.slat_preprocessor)
         torch.manual_seed(seed)
 
