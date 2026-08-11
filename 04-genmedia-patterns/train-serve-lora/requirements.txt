@@ -1,0 +1,10 @@
+fal==1.78.2
+hf-transfer==0.1.9
+diffusers==0.39.0
+transformers==5.3.0
+torch==2.12.1
+accelerate==1.14.0
+peft==0.19.1
+safetensors==0.8.0
+pillow==11.3.0
+numpy==2.4.0
