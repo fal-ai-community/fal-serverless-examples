@@ -323,6 +323,54 @@ def test_min_concurrency_prestart_never_exceeds_max_concurrency():
         assert row["setup"] + row["idle"] + row["running"] <= 1, row
 
 
+def test_prewarmed_runner_is_never_torn_down_even_when_it_goes_idle_first():
+    # min_concurrency=1 prestarts one runner, already warm at t=0. Two
+    # simultaneous requests need a second runner too, which cold-starts
+    # alongside it. The prewarmed runner finishes its request and goes idle
+    # WHILE the demand runner it spawned alongside it is still cold-starting
+    # - at which point the fleet (2 runners) is already above the
+    # min_concurrency=1 floor, so a scale-down decision has to be made
+    # between them.
+    #
+    # The prewarmed runner holds the floor and must never be the one picked:
+    # it is not idle-and-disposable, it IS the floor, and tearing it down
+    # would hand the floor's identity to the runner the autoscaler spun up
+    # for this burst. Before the fix, the scale-down loop picked survivors
+    # by iteration order and momentary idle timing - ignoring the
+    # `prewarmed` flag entirely - so the ORIGINAL floor runner was torn down
+    # here instead, and the demand runner inherited "still alive at the end"
+    # (and with it, the always-on floor's cost) under the wrong flag.
+    #
+    # A third, much later request (t=10, well after the loser would have
+    # been reaped either way) is included deliberately: whichever runner is
+    # genuinely still alive picks it up warm and does a bit more real work,
+    # which is what breaks a coincidental tie in last_completion_s that a
+    # simpler two-request version of this scenario has (both runners can
+    # otherwise end up extended/truncated to the exact same timestamp,
+    # because the settle condition ties end_t to whichever runner is
+    # reaped last regardless of identity).
+    keep_alive = 1.0
+    result = model.simulate(
+        [0.0, 0.0, 10.0], service_s=1.0, cold_start_s=5.0, keep_alive=keep_alive,
+        min_concurrency=1, max_concurrency=2,
+    )
+    assert result.waits[2] == 0.0, "the third request must be served warm by the survivor"
+    prewarmed = [w for w in result.windows if w.prewarmed]
+    assert len(prewarmed) == 1, "min_concurrency=1 prestarts exactly one floor runner"
+
+    # The window still alive at the end of the simulation is the one with
+    # the latest last_completion_s - a window that was torn down stops
+    # accumulating activity at that point, while a survivor keeps going
+    # (and, per simulate()'s window-building loop, is extended to
+    # end_t - keep_alive if nothing else keeps it busier than that).
+    survivor = max(result.windows, key=lambda w: w.last_completion_s)
+    assert survivor.prewarmed, (
+        "the runner still alive at the end of the simulation must be the "
+        "prewarmed one - it holds the min_concurrency floor - not the "
+        "runner spun up to handle this burst"
+    )
+
+
 def synthetic_trace(**overrides):
     """A hand-built trace with known-good arithmetic, for the model's readers.
 
@@ -524,13 +572,20 @@ def test_sweep_covers_the_default_grid_and_flags_the_measured_point():
 
 
 def test_sweep_points_carry_every_documented_key():
+    # 13 keys. hourly_usd was dropped: at the default horizon it was always
+    # identical to cost_usd (cost_usd * 3600 / horizon_s == cost_usd when
+    # horizon_s == 3600), a redundant field once cost became horizon-scoped.
+    # horizon_s is recorded once, alongside the points, in the frontier
+    # document - see build_frontier() - so the normalisation stays
+    # recoverable without shipping a duplicate per-point field.
     point = model.sweep(model.calibrate(synthetic_trace()))[0]
     assert set(point) == {
         "keep_alive", "min_concurrency", "concurrency_buffer",
         "concurrency_buffer_perc", "max_concurrency", "max_multiplexing",
-        "p50_wait_s", "p95_wait_s", "billable_s", "cost_usd", "hourly_usd",
+        "p50_wait_s", "p95_wait_s", "billable_s", "cost_usd",
         "peak_runners", "validated", "measured",
     }
+    assert len(point) == 13
 
 
 def test_warm_configs_cost_more_and_wait_less():
@@ -657,6 +712,27 @@ def test_horizon_scales_the_always_on_floor():
     )
 
 
+def test_cost_usd_is_recomputable_from_the_reported_billable_s():
+    # billable_s is rounded to 3dp and cost_usd to 6dp independently of each
+    # other; if cost_usd were computed from the UNROUNDED total instead of
+    # the rounded billable_s a reader is actually shown, hand-multiplying
+    # billable_s * rate would mismatch the printed cost_usd in the last
+    # decimal about a quarter of the time. cost_usd must be derived from the
+    # exact (already-rounded) billable_s each point reports, so the printed
+    # numbers are self-consistent and checkable by hand.
+    #
+    # At the default bursts_per_hour=1.0 and horizon_s=3600.0, demand_s is
+    # already an exact integer number of seconds (billable_seconds rounds up
+    # to whole-second granularity, and bursts_in_horizon collapses to 1.0),
+    # so rounding billable_s to 3dp never loses anything there and can't
+    # expose this bug. A fractional bursts_per_hour makes demand_s genuinely
+    # fractional, which is what actually exercises the rounding order.
+    calibration = model.calibrate(synthetic_trace())
+    rate = 0.00095
+    for point in model.sweep(calibration, usd_per_second=rate, bursts_per_hour=2 / 3):
+        assert point["cost_usd"] == round(point["billable_s"] * rate, 6)
+
+
 def test_points_beyond_the_measured_envelope_are_flagged_unvalidated():
     # The synthetic trace observed 2 runners. A config that needs more than
     # that is an extrapolation, not a validated prediction.
@@ -701,10 +777,57 @@ def test_cli_writes_a_frontier_file(tmp_path):
     out_path = tmp_path / "frontier.json"
     trace_path.write_text(json.dumps(synthetic_trace()))
     exit_code = model.main([
-        "--calibrate", str(trace_path), "--sweep",
+        "--calibrate", str(trace_path),
         "--rate", "0.001", "--out", str(out_path),
     ])
     assert exit_code == 0
     written = json.loads(out_path.read_text())
     assert written["rate_usd_per_second"] == 0.001
     assert out_path.read_text().endswith("\n")
+
+
+def test_sweep_flag_no_longer_exists():
+    # Sweeping is the only mode main() has ever run - args.sweep was never
+    # read - so the flag communicated a choice that didn't exist. It has
+    # been removed outright rather than kept as a no-op.
+    import pytest
+
+    with pytest.raises(SystemExit):
+        model.main(["--calibrate", "irrelevant.json", "--sweep"])
+
+
+def test_main_reports_a_missing_trace_file_without_a_traceback(tmp_path, capsys):
+    missing = tmp_path / "does-not-exist.json"
+    exit_code = model.main(["--calibrate", str(missing)])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == "", "no partial output once loading has failed"
+    lines = captured.err.strip("\n").splitlines()
+    assert len(lines) == 1, f"expected one clean error line, got: {captured.err!r}"
+    assert str(missing) in lines[0]
+
+
+def test_main_reports_malformed_json_without_a_traceback(tmp_path, capsys):
+    bad = tmp_path / "trace.json"
+    bad.write_text("{not valid json")
+    exit_code = model.main(["--calibrate", str(bad)])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.strip("\n").splitlines()
+    assert len(lines) == 1, f"expected one clean error line, got: {captured.err!r}"
+    assert str(bad) in lines[0]
+
+
+def test_main_reports_a_wrong_schema_trace_without_a_traceback(tmp_path, capsys):
+    import json
+
+    wrong = tmp_path / "trace.json"
+    wrong.write_text(json.dumps(synthetic_trace(schema="something/else@9")))
+    exit_code = model.main(["--calibrate", str(wrong)])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.strip("\n").splitlines()
+    assert len(lines) == 1, f"expected one clean error line, got: {captured.err!r}"
+    assert str(wrong) in lines[0]

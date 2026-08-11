@@ -249,6 +249,15 @@ def simulate(
             alive.append(start_runner(t))
 
         for runner in alive:
+            if runner["prewarmed"]:
+                # A prewarmed runner holds the min_concurrency floor and is
+                # alive around the clock - it is not idle-and-disposable, it
+                # IS the floor. Terminating it here would just hand the
+                # floor's identity to whichever runner the autoscaler
+                # started to handle this burst (the next check down would
+                # then treat THAT runner as permanently alive instead), so
+                # it is never a scale-down candidate.
+                continue
             if (
                 not runner["inflight"]
                 and runner["ready_at"] <= t
@@ -283,11 +292,17 @@ def simulate(
     for runner in runners:
         last = runner["last_activity"]
         if runner["terminated_at"] is None:
-            # Never scaled down (it is holding the min_concurrency floor), so
-            # it is alive for the whole window. billable_seconds adds
-            # keep_alive to last_completion_s, so subtract it here to make the
-            # billed span exactly the window rather than the window plus a
-            # tail that never happened.
+            # Never scaled down, so it is alive for the whole window. Two
+            # kinds of runner can end up here: a prewarmed one (skipped
+            # above by construction - it holds the min_concurrency floor),
+            # or an ordinary demand runner that desired_runners() never
+            # actually asked to drop below (e.g. concurrency_buffer alone
+            # can hold `want` at 1 forever, even at zero load). Either way
+            # it is genuinely still alive at end_t, so it gets the same
+            # treatment. billable_seconds adds keep_alive to
+            # last_completion_s, so subtract it here to make the billed span
+            # exactly the window rather than the window plus a tail that
+            # never happened.
             last = max(last, end_t - keep_alive)
         windows.append(
             RunnerWindow(
@@ -523,10 +538,19 @@ def sweep(
     would be counted twice.
 
     `billable_s` on each point is that total (floor + demand) over the WHOLE
-    horizon, not per burst. `cost_usd` is `billable_s` in dollars, also over
-    the whole horizon. `hourly_usd` renormalises `cost_usd` back to a
-    one-hour rate (`cost_usd * 3600 / horizon_s`) so runs at different
-    horizons stay comparable.
+    horizon, not per burst. `cost_usd` is that same horizon cost in dollars -
+    `billable_s * usd_per_second`, not renormalised to a one-hour rate. The
+    horizon itself is recorded once, alongside the points, in the frontier
+    document (see build_frontier()) rather than on every point, so a reader
+    who wants a different normalisation (a one-hour rate, a per-burst
+    figure, whatever) can recover it from `horizon_s` without this function
+    shipping a redundant field for every possible one.
+
+    `billable_s` is rounded to 3dp for display. `cost_usd` is computed from
+    that already-rounded `billable_s`, not the unrounded total - so a reader
+    who multiplies the two printed numbers by hand (`billable_s *
+    usd_per_second`) reproduces `cost_usd` exactly, rather than
+    occasionally landing a cent off in the last decimal.
     """
     grid = grid or DEFAULT_GRID
     rate = USD_PER_SECOND if usd_per_second is None else usd_per_second
@@ -562,7 +586,12 @@ def sweep(
                 floor_s = min_concurrency * horizon_s
                 demand_s = demand_billable * bursts_in_horizon
                 total_s = floor_s + demand_s
-                cost = cost_usd(total_s, usd_per_second=rate)
+                # Round billable_s FIRST, then price that rounded value -
+                # not the unrounded total - so cost_usd is exactly
+                # billable_s * rate for the numbers this point actually
+                # prints (see the docstring above).
+                billable_s = round(total_s, 3)
+                cost = cost_usd(billable_s, usd_per_second=rate)
                 peak = max(
                     row["setup"] + row["idle"] + row["running"] for row in result.timeline
                 )
@@ -576,9 +605,8 @@ def sweep(
                         "max_multiplexing": max_multiplexing,
                         "p50_wait_s": round(percentile(result.waits, 50), 3),
                         "p95_wait_s": round(percentile(result.waits, 95), 3),
-                        "billable_s": round(total_s, 3),
+                        "billable_s": billable_s,
                         "cost_usd": round(cost, 6),
-                        "hourly_usd": round(cost * 3600.0 / horizon_s, 6),
                         "peak_runners": peak,
                         # Beyond the measured envelope this is extrapolation:
                         # we never observed that many runners, so the chart
@@ -667,15 +695,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--calibrate", required=True, metavar="TRACE",
                        help="trace.json from burst.py")
-    parser.add_argument("--sweep", action="store_true",
-                       help="sweep the knob grid (currently the only mode)")
     parser.add_argument("--rate", type=float, default=None,
                        help=f"USD per second (default {USD_PER_SECOND:.9f}, "
                             f"the ${H100_USD_PER_HOUR}/h H100 list price)")
     parser.add_argument("--billing-granularity", type=float, default=1.0,
                        help="seconds each runner's billed time rounds up to (assumption)")
     parser.add_argument("--bursts-per-hour", type=float, default=1.0,
-                       help="how often this burst repeats, for the hourly figure")
+                       help="how often this burst repeats; scales cost_usd "
+                            "and billable_s directly (see --horizon-s)")
     parser.add_argument("--horizon-s", type=float, default=3600.0,
                        help="seconds the cost is totalled over (default 3600 = "
                             "1h); a min_concurrency runner is billed for all of "
@@ -684,15 +711,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="frontier.json")
     args = parser.parse_args(argv)
 
-    with open(args.calibrate) as handle:
-        trace = json.load(handle)
-    document = build_frontier(
-        trace,
-        usd_per_second=args.rate,
-        granularity=args.billing_granularity,
-        bursts_per_hour=args.bursts_per_hour,
-        horizon_s=args.horizon_s,
-    )
+    # Readers run this directly, so a bad trace should print one clear line,
+    # not a raw traceback. Only these three input-shaped failures are
+    # handled here - a missing file, unparseable JSON, or a trace whose
+    # schema calibrate() rejects; anything else is unexpected and should
+    # surface with its full traceback rather than being swallowed.
+    try:
+        with open(args.calibrate) as handle:
+            trace = json.load(handle)
+        document = build_frontier(
+            trace,
+            usd_per_second=args.rate,
+            granularity=args.billing_granularity,
+            bursts_per_hour=args.bursts_per_hour,
+            horizon_s=args.horizon_s,
+        )
+    except FileNotFoundError:
+        print(f"error: trace file not found: {args.calibrate}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"error: {args.calibrate} is not valid JSON ({exc})", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"error: {args.calibrate}: {exc}", file=sys.stderr)
+        return 1
+
     with open(args.out, "w") as handle:
         json.dump(document, handle, indent=2, sort_keys=True)
         handle.write("\n")
