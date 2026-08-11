@@ -8,6 +8,7 @@ Catalog slot 02.3 (SERV-1303). The three lessons:
 import asyncio
 import json
 import time
+import traceback
 from pathlib import Path
 from typing import Literal
 
@@ -82,6 +83,10 @@ class _PreviewSession:
                 _time.sleep(0.02)
                 continue
             step, total, x0 = job
+            # Both threads submit to the default CUDA stream, so the callback's clone
+            # is ordered before these decode kernels - no explicit sync needed (a
+            # dedicated torch.cuda.Stream here would need torch.cuda.Event handoff).
+            # The win of this thread is keeping the CPU x264 encode off the denoiser.
             try:
                 self.events.put(self._render_event(step, total, x0))
             except Exception as exc:
@@ -133,9 +138,17 @@ class _PreviewSession:
             "frames": int(frames.shape[0]),
         }
 
-    def close(self):
+    def finish(self):
+        """Stop the worker and wait for any in-flight render to land in `events`.
+
+        After this returns the queue is complete and frozen, so one final drain
+        cannot miss a preview that was still encoding when the generation ended.
+        """
         self.done.set()
-        self._worker.join(timeout=5)
+        self._worker.join(timeout=30)  # a render is ~0.1 s; 30 s is pure paranoia
+
+    def close(self):
+        self.finish()
 
 
 class Input(BaseModel):
@@ -279,12 +292,14 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
 
     @fal.endpoint("/stream")
     async def stream(self, request: Input) -> StreamingResponse:
-        height, width = RESOLUTIONS[request.resolution]
-        session = _PreviewSession(
-            self, height, width, snap_frames(request.num_frames), request.preview_every
-        )
-
         async def event_source():
+            # Built inside the generator: a response body that is never iterated
+            # (client hangs up during headers) must not leave a worker thread and
+            # a GPU generation running with nobody to read them.
+            height, width = RESOLUTIONS[request.resolution]
+            session = _PreviewSession(
+                self, height, width, snap_frames(request.num_frames), request.preview_every
+            )
             loop = asyncio.get_running_loop()
             job = loop.run_in_executor(
                 None, lambda: self._generate(request, preview_cb=session.on_step_end)
@@ -296,8 +311,31 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
                     if job.done():
                         break
                     await asyncio.sleep(0.05)
-                path, seed, timings = job.result()  # re-raises generation errors
-                final = Output(video=File.from_path(path), seed=seed, timings=timings)
+                # The worker is often still encoding the last preview while the
+                # final full-VAE mux runs. Freeze the queue, then drain it: every
+                # preview reaches the client, and nothing follows the terminal event.
+                await loop.run_in_executor(None, session.finish)  # join off the loop
+                while not session.events.empty():
+                    yield f"data: {json.dumps(session.events.get())}\n\n"
+                try:
+                    path, seed, timings = job.result()  # re-raises generation errors
+                except Exception as exc:
+                    # The 200 OK is long gone, so a raise here would just truncate the
+                    # stream - and with x-fal-sse-last-event-as-body a non-streaming
+                    # client would then read the last *preview* as the response body.
+                    # Make the failure the last event instead.
+                    traceback.print_exc()
+                    if isinstance(exc, fal.exceptions.AppException):
+                        detail, status = exc.message, exc.status_code
+                    else:
+                        detail, status = f"{type(exc).__name__}: {exc}", 500
+                    yield f"data: {json.dumps({'type': 'error', 'detail': detail, 'status_code': status})}\n\n"
+                    return
+                # await, not File.from_path: the upload is 1-2 s of blocking I/O and
+                # this coroutine owns the event loop (SSE flushes, /health) meanwhile.
+                final = Output(
+                    video=await File.from_path_async(path), seed=seed, timings=timings
+                )
                 yield f"data: {json.dumps({'type': 'result', **json.loads(final.model_dump_json())})}\n\n"
             finally:
                 session.close()
