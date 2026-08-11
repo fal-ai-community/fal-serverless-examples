@@ -3,14 +3,17 @@
 Catalog slot 02.3 (SERV-1303). The three lessons:
   1. loader.py - parallel download + page-cache pre-read for ~88 GB of weights
   2. GPU sizing - ~70 GB resident bf16 needs H200-class VRAM (see README math)
-  3. /stream    - intermediate-step tiny-VAE previews over SSE (Task 5)
+  3. /stream    - intermediate-step tiny-VAE previews over SSE
 """
+import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Literal
 
 import fal
 from fal.toolkit import File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import loader
@@ -26,6 +29,113 @@ RESOLUTIONS: dict[str, tuple[int, int]] = {
 def snap_frames(n: int) -> int:
     """LTX generates on an 8k+1 frame grid; snap down so users never 422 on it."""
     return max(9, ((n - 1) // 8) * 8 + 1)
+
+
+class _PreviewSession:
+    """Per-request preview state: x0 extrapolation + latest-wins decode handoff.
+
+    The callback runs on the denoise thread and must never block: it stores
+    the newest latents (dropping any undecoded predecessor) and returns.
+    A single decode worker drains it; the SSE generator drains `events`.
+    """
+
+    def __init__(self, app: "App", height: int, width: int, num_frames: int, every: int):
+        import queue as _queue
+        import threading
+
+        self.app, self.height, self.width, self.num_frames = app, height, width, num_frames
+        self.every = every
+        self.events: "_queue.Queue[dict]" = _queue.Queue()
+        self.done = threading.Event()
+        self._latest: tuple[int, int, object] | None = None  # (step, total, x0_latents)
+        self._lock = threading.Lock()
+        self._prev: tuple[object, float] | None = None  # (latents, sigma)
+        self._worker = threading.Thread(target=self._decode_loop, daemon=True)
+        self._worker.start()
+
+    # -- denoise thread ------------------------------------------------------
+    def on_step_end(self, pipe, i, t, callback_kwargs):
+        try:
+            latents = callback_kwargs["latents"]
+            sigma = float(pipe.scheduler.sigmas[i + 1])
+            total = len(pipe.scheduler.sigmas) - 1
+            if self._prev is not None and i % self.every == 0 and i < total - 1:
+                prev_latents, prev_sigma = self._prev
+                # Flow-matching latents move on straight paths: extrapolate to sigma=0
+                # from two consecutive states for a clean-sample estimate.
+                x0 = latents - sigma * (latents - prev_latents) / (sigma - prev_sigma)
+                with self._lock:
+                    self._latest = (i, total, x0.detach().clone())
+            self._prev = (latents.detach().clone(), sigma)
+        except Exception as exc:  # previews must never break generation
+            print(f"[preview] callback error at step {i}: {exc!r}")
+        return {}
+
+    # -- decode worker thread --------------------------------------------------
+    def _decode_loop(self):
+        import time as _time
+
+        while not self.done.is_set():
+            with self._lock:
+                job, self._latest = self._latest, None
+            if job is None:
+                _time.sleep(0.02)
+                continue
+            step, total, x0 = job
+            try:
+                self.events.put(self._render_event(step, total, x0))
+            except Exception as exc:
+                print(f"[preview] decode error at step {step}: {exc!r}")
+
+    def _render_event(self, step: int, total: int, x0) -> dict:
+        import base64
+        import os
+        import tempfile
+
+        import torch
+        from diffusers import LTX2Pipeline
+        from diffusers.utils import encode_video
+
+        tae = self.app.tiny_vae
+        f_lat = (self.num_frames - 1) // 8 + 1
+        with torch.inference_mode():
+            lat = LTX2Pipeline._unpack_latents(
+                x0, f_lat, self.height // 32, self.width // 32, 1, 1
+            )
+            # TAEHV consumes diffusion-space latents directly - do NOT apply
+            # _denormalize_latents here (saturates its input clamp; spike-verified).
+            rgb = tae.decode_video(  # NTCHW in, NTCHW [0,1] out, first 7 frames trimmed
+                lat.permute(0, 2, 1, 3, 4).to(torch.bfloat16),
+                parallel=True, show_progress_bar=False,
+            )
+            rgb = torch.nn.functional.interpolate(  # half-res previews: ~4x smaller events
+                rgb[0].float(), scale_factor=0.5, mode="area"
+            )
+            frames = (rgb.clamp(0, 1).permute(0, 2, 3, 1) * 255).to(torch.uint8).cpu()
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            path = tmp.name
+        try:
+            # encode_video accepts a torch uint8 [T,H,W,3] tensor; .contiguous()
+            # matters (av.VideoFrame.from_ndarray requirement).
+            encode_video(frames.contiguous(), 24, path)
+            payload = base64.b64encode(open(path, "rb").read()).decode()
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+        return {
+            "type": "preview",
+            "step": step,
+            "total_steps": total,
+            "progress": round((step + 1) / total, 3),
+            "video": f"data:video/mp4;base64,{payload}",
+            "width": frames.shape[2],
+            "height": frames.shape[1],
+            "frames": int(frames.shape[0]),
+        }
+
+    def close(self):
+        self.done.set()
+        self._worker.join(timeout=5)
 
 
 class Input(BaseModel):
@@ -166,3 +276,34 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
     def run(self, request: Input) -> Output:
         path, seed, timings = self._generate(request, preview_cb=None)
         return Output(video=File.from_path(path), seed=seed, timings=timings)
+
+    @fal.endpoint("/stream")
+    async def stream(self, request: Input) -> StreamingResponse:
+        height, width = RESOLUTIONS[request.resolution]
+        session = _PreviewSession(
+            self, height, width, snap_frames(request.num_frames), request.preview_every
+        )
+
+        async def event_source():
+            loop = asyncio.get_running_loop()
+            job = loop.run_in_executor(
+                None, lambda: self._generate(request, preview_cb=session.on_step_end)
+            )
+            try:
+                while True:
+                    while not session.events.empty():
+                        yield f"data: {json.dumps(session.events.get())}\n\n"
+                    if job.done():
+                        break
+                    await asyncio.sleep(0.05)
+                path, seed, timings = job.result()  # re-raises generation errors
+                final = Output(video=File.from_path(path), seed=seed, timings=timings)
+                yield f"data: {json.dumps({'type': 'result', **json.loads(final.model_dump_json())})}\n\n"
+            finally:
+                session.close()
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={"x-fal-sse-last-event-as-body": "1"},
+        )
