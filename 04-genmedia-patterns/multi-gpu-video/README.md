@@ -16,24 +16,27 @@ one prompt, one video, four GPUs cooperating.
 
 A text prompt in; a CDN-hosted mp4 (16 fps) out, with the seed echoed so the same inputs
 reproduce the same clip. This
-[sample clip](https://v3b.fal.media/files/b/0aa527d3/Egw11G3rCJhuUxb_H-v0d_wan22-557b4d97077f4cfb8aef433a6f492e61.mp4)
-is the actual output of this example's CI deploy-check (default settings: 480p, 33 frames,
-6 steps, seed 7):
+[720p sample clip](https://v3b.fal.media/files/b/0aa5f482/O2ywRcibrXZ1YRCIu27CA_wan22-1d96a465e70c4e76ba364350cd034fc4.mp4)
+is the real output of this example's validation run against a registered deploy
+(720p, 81 frames, 27 steps, seed 7), response verbatim:
 
 ```json
 {
   "video": {
-    "url": "https://v3b.fal.media/files/b/0aa527d3/Egw11G3rCJhuUxb_H-v0d_wan22-557b4d97077f4cfb8aef433a6f492e61.mp4",
+    "url": "https://v3b.fal.media/files/b/0aa5f482/O2ywRcibrXZ1YRCIu27CA_wan22-1d96a465e70c4e76ba364350cd034fc4.mp4",
     "content_type": "video/mp4",
-    "file_name": "wan22-557b4d97077f4cfb8aef433a6f492e61.mp4"
+    "file_name": "wan22-1d96a465e70c4e76ba364350cd034fc4.mp4",
+    "file_size": 841093
   },
   "seed": 7,
-  "generation_seconds": 62
+  "generation_seconds": 282.2
 }
 ```
 
-`generation_seconds` is shown rounded and varies with the node and whether the shape is
-warm - see the measured table under Cost & tuning.
+The CI deploy-check exercises the same endpoint at the fast defaults (480p, 33 frames,
+6 steps) - [its output clip](https://v3b.fal.media/files/b/0aa527d3/Egw11G3rCJhuUxb_H-v0d_wan22-557b4d97077f4cfb8aef433a6f492e61.mp4)
+comes back in about a minute on a warm runner. Timings vary with the node and whether
+the shape is warm - see the measured table under Cost & tuning.
 
 ## Run it
 
@@ -159,7 +162,8 @@ curl -X POST https://queue.fal.run/<your-username>/multi-gpu-video \
 ```
 
 That 720p call is also this example's validation protocol: deploy, run it once, confirm
-the returned mp4 plays.
+the returned mp4 plays. (Last run 2026-08-11 - it produced the sample clip at the top of
+this page.)
 
 ## Cost & tuning
 
@@ -174,17 +178,20 @@ the returned mp4 plays.
   fast path; WAN's native quality settings (720p, 81 frames, 27 steps) use the same
   endpoint and seed semantics.
 
-Measured on real ephemeral 4x GPU-H100 deploys (2026-08-04/05, fal 1.78.2,
-diffusers 0.39.0, this repo's CI harness and its gating spike deploy) - a one-time
-measurement, not a guarantee:
+Measured on real 4x GPU-H100 runs (CI harness + gating spike deploys 2026-08-04/05,
+registered-deploy validation 2026-08-11; fal 1.78.2, diffusers 0.39.0) - one-time
+measurements, not a guarantee:
 
 | Config | Wall-clock |
 |---|---|
 | 480p · 33 frames · 6 steps (defaults, warm shape) | ~62-95 s |
-| 720p · 81 frames · 27 steps | ~270 s |
+| 720p · 81 frames · 27 steps | ~270-282 s |
 
 Node-to-node variance is real: worker boot ranged 15 s (page-cache-warm node) to 221 s
 (cold node) on the bf16 copy, and host-to-device bandwidth varies with the machine.
+Multi-GPU capacity can also queue - a 4-GPU allocation may wait when capacity is tight
+(we have seen tens of minutes at peak), which is one more reason to call this endpoint
+through the queue with generous client timeouts rather than synchronous HTTP.
 
 ## Next steps
 
