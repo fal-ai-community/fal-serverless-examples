@@ -1,12 +1,12 @@
-"""Smoke test - run by the harness against the live ephemeral app.
+"""Smoke tests - run by the harness against the live ephemeral app.
 
-The harness (harness/check.py) deploys app.py, then executes this file with
-the `app_client` fixture from harness/pytest_plugin.py. Outside the harness
-the fixture skips, so plain `pytest` costs nothing. Keep tests tiny -
-deploy/teardown plumbing lives in the harness.
+'/' is the harness-smoked JSON endpoint; '/stream' (Task 5) is exercised
+with a raw SSE client because the harness only speaks request/response.
 """
 
 
-def test_smoke(app_client):
-    response = app_client.run("/", {"prompt": "a calico cat riding a bicycle"})
-    assert response["result"]
+def test_invoke_contract(app_client):
+    response = app_client.run("/", {"prompt": "a red fox trotting through fresh snow at golden hour"})
+    assert response["video"]["url"].startswith("https://")
+    assert isinstance(response["seed"], int)
+    assert response["timings"]["generate_s"] > 0
