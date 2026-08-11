@@ -116,3 +116,175 @@ def stream_frames(q: queue.Queue, worker_done: threading.Event,
         if event is None:
             return
         yield sse_format(event)
+
+
+# ---------------------------------------------------------------------------
+# Inputs / outputs
+# ---------------------------------------------------------------------------
+
+SAMPLE_IMAGE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
+HF_REVISION = "2e73555018d2741ccd486e56c24fac41155a1dc6"
+WEIGHTS_DIR = FAL_PERSISTENT_DIR / "sam-3d-objects" / HF_REVISION
+DOCKERFILE = Path(__file__).parent / "Dockerfile"
+
+
+class GenerateInput(BaseModel):
+    image_url: str = Field(
+        description="Image containing the object to reconstruct in 3D.",
+        examples=[SAMPLE_IMAGE],
+    )
+    mask_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional binary mask isolating the object (white = object). "
+            "Without it the whole image is reconstructed as one object - "
+            "fine for object-centric photos, poor for cluttered scenes."
+        ),
+    )
+    seed: int | None = Field(
+        default=None, description="Random seed; omit for a random one."
+    )
+    stage1_steps: int | None = Field(
+        default=None, ge=4, le=50,
+        description="Geometry diffusion steps (default: model config, 25).",
+    )
+    stage2_steps: int | None = Field(
+        default=None, ge=4, le=50,
+        description="Appearance diffusion steps (default: model config, 25).",
+    )
+
+
+class StreamInput(GenerateInput):
+    geometry_every: int = Field(
+        default=1, ge=1, le=10,
+        description="Emit a geometry frame every N steps (1 = smoothest).",
+    )
+    colors_every: int = Field(
+        default=5, ge=1, le=25,
+        description=(
+            "Emit a colored appearance frame every N steps. Each frame costs "
+            "a Gaussian decode, so this is a latency knob, not just polish."
+        ),
+    )
+
+
+class AssetOutput(BaseModel):
+    glb: File = Field(description="Final textured mesh (vertex colors), GLB.")
+    gaussian_splat: File = Field(description="Gaussian splat, PLY.")
+    seed: int = Field(description="Seed actually used.")
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+
+class SAM3DStreamApp(
+    fal.App,
+    name="sam-3d-progressive",
+    keep_alive=60,  # raise for interactive use; see README "Cost & tuning"
+    kind="container",
+    image=ContainerImage.from_dockerfile(str(DOCKERFILE), builder="depot"),
+    max_concurrency=1,
+    min_concurrency=0,
+):
+    # SAM-3D's own prerequisite is >=32 GB VRAM, which rules out most
+    # smaller tiers; H100 keeps both diffusion stages interactive.
+    machine_type = "GPU-H100"
+    app_auth = "private"
+    request_timeout = 600
+
+    def setup(self):
+        import torch
+        from huggingface_hub import snapshot_download
+        from hydra.utils import instantiate
+        from omegaconf import OmegaConf
+
+        # Gated checkpoint: requires one-time access approval on
+        # huggingface.co/facebook/sam-3d-objects and an HF_TOKEN fal secret.
+        # Pinned revision + /data cache: repeat cold starts skip the download.
+        snapshot_download(
+            "facebook/sam-3d-objects",
+            revision=HF_REVISION,
+            local_dir=str(WEIGHTS_DIR),
+        )
+
+        # Mirrors the official notebook/inference.py `Inference` wrapper
+        # (that helper is not part of the pip-installed package).
+        # FAL_PERSISTENT_DIR is not a real pathlib.Path - OmegaConf.load
+        # rejects it with "Unexpected file type" (spike finding).
+        config_path = Path(str(WEIGHTS_DIR)) / "checkpoints" / "pipeline.yaml"
+        config = OmegaConf.load(config_path)
+        config.rendering_engine = "pytorch3d"
+        config.compile_model = False
+        config.workspace_dir = str(config_path.parent)
+        self.pipeline = instantiate(config)
+
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("[sam-3d-progressive] pipeline ready")
+
+    # -- shared input/output plumbing --------------------------------------
+
+    def _load_rgba(self, input: GenerateInput):
+        """Fetch image (+ optional mask) and merge to the RGBA the pipeline
+        expects. Runs BEFORE any StreamingResponse is returned, so bad inputs
+        are honest HTTP 422s, never mid-stream error events."""
+        import numpy as np
+
+        try:
+            rgb = np.array(FalImage(url=input.image_url).to_pil().convert("RGB"))
+        except Exception as exc:
+            raise FieldException(
+                "image_url", "Could not fetch or decode the image."
+            ) from exc
+
+        if input.mask_url:
+            try:
+                mask_pil = FalImage(url=input.mask_url).to_pil().convert("L")
+            except Exception as exc:
+                raise FieldException(
+                    "mask_url", "Could not fetch or decode the mask."
+                ) from exc
+            mask = (np.array(mask_pil.resize((rgb.shape[1], rgb.shape[0]))) > 127)
+            mask = mask.astype(np.uint8) * 255
+        else:
+            mask = np.full(rgb.shape[:2], 255, dtype=np.uint8)
+        return np.concatenate([rgb, mask[..., None]], axis=-1)
+
+    def _export_assets(self, outputs: dict, request: Request):
+        """Final assets travel by URL, never inline - the terminal event and
+        the JSON endpoint share this rule."""
+        with TemporaryDirectory() as tmp:
+            splat_path = str(Path(tmp) / "splat.ply")
+            outputs["gs"].save_ply(splat_path)
+            splat = File.from_path(splat_path, multipart=True, request=request)
+
+            glb_path = str(Path(tmp) / "model.glb")
+            outputs["glb"].export(glb_path)
+            glb = File.from_path(
+                glb_path, content_type="model/gltf-binary",
+                multipart=True, request=request,
+            )
+        return glb, splat
+
+    # -- endpoints ----------------------------------------------------------
+
+    @fal.endpoint("/")
+    def generate(self, input: GenerateInput, request: Request) -> AssetOutput:
+        """Plain request/response: the whole pipeline, assets by URL.
+        Use /stream to watch it happen."""
+        rgba = self._load_rgba(input)
+        seed = input.seed if input.seed is not None else secrets.randbits(31)
+        outputs = self.pipeline.run(
+            rgba, None, seed,
+            stage1_only=False,
+            with_mesh_postprocess=False,
+            with_texture_baking=False,
+            with_layout_postprocess=False,
+            use_vertex_color=True,
+            stage1_inference_steps=input.stage1_steps,
+            stage2_inference_steps=input.stage2_steps,
+        )
+        glb, splat = self._export_assets(outputs, request)
+        return AssetOutput(glb=glb, gaussian_splat=splat, seed=seed)

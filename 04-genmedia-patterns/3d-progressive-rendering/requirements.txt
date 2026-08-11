@@ -1,0 +1,9 @@
+# Local-venv mirror. For a container example the AUTHORITATIVE environment is
+# the Dockerfile in this folder (the model stack is pinned transitively by
+# sam-3d-objects @ f91db411, installed there). These pins cover what you need
+# locally: the unit tests and the pinned client/runtime versions.
+fal==1.78.2
+numpy==1.26.4
+torch==2.5.1
+torchvision==0.20.1
+huggingface_hub==0.34.4
