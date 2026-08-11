@@ -1,0 +1,205 @@
+{
+  "app": "rehan/tune-autoscaling",
+  "burst": {
+    "concurrency": 20,
+    "duration_s": 0.0,
+    "pattern": "spike",
+    "requests": 20
+  },
+  "fal_version": "1.78.2",
+  "machine_type": "GPU-H100",
+  "rate_usd_per_second": 0.0011083333333333333,
+  "recorded_at": "2026-08-11T19:13:37Z",
+  "requests": [
+    {
+      "arrived_s": 0.0,
+      "completed_s": 182.182,
+      "id": 0,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.002,
+      "completed_s": 187.184,
+      "id": 1,
+      "served_by": "35584fc381bd",
+      "setup_duration_s": 127.497,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.003,
+      "completed_s": 178.987,
+      "id": 2,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.005,
+      "completed_s": 179.694,
+      "id": 3,
+      "served_by": "6ea97c714db0",
+      "setup_duration_s": 135.427,
+      "status": 200,
+      "was_cold": true
+    },
+    {
+      "arrived_s": 0.006,
+      "completed_s": 169.181,
+      "id": 4,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": true
+    },
+    {
+      "arrived_s": 0.007,
+      "completed_s": 180.097,
+      "id": 5,
+      "served_by": "651b638c7432",
+      "setup_duration_s": 135.417,
+      "status": 200,
+      "was_cold": true
+    },
+    {
+      "arrived_s": 0.008,
+      "completed_s": 180.73,
+      "id": 6,
+      "served_by": "35584fc381bd",
+      "setup_duration_s": 127.497,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.01,
+      "completed_s": 173.166,
+      "id": 7,
+      "served_by": "35584fc381bd",
+      "setup_duration_s": 127.497,
+      "status": 200,
+      "was_cold": true
+    },
+    {
+      "arrived_s": 0.011,
+      "completed_s": 185.437,
+      "id": 8,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.012,
+      "completed_s": 186.527,
+      "id": 9,
+      "served_by": "651b638c7432",
+      "setup_duration_s": 135.417,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.013,
+      "completed_s": 172.143,
+      "id": 10,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.014,
+      "completed_s": 185.925,
+      "id": 11,
+      "served_by": "6ea97c714db0",
+      "setup_duration_s": 135.427,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.016,
+      "completed_s": 182.793,
+      "id": 12,
+      "served_by": "6ea97c714db0",
+      "setup_duration_s": 135.427,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.017,
+      "completed_s": 175.503,
+      "id": 13,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.018,
+      "completed_s": 183.967,
+      "id": 14,
+      "served_by": "35584fc381bd",
+      "setup_duration_s": 127.497,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.019,
+      "completed_s": 188.746,
+      "id": 15,
+      "served_by": "2e138d5ee35d",
+      "setup_duration_s": 127.566,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.021,
+      "completed_s": 189.857,
+      "id": 16,
+      "served_by": "651b638c7432",
+      "setup_duration_s": 135.417,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.022,
+      "completed_s": 189.217,
+      "id": 17,
+      "served_by": "6ea97c714db0",
+      "setup_duration_s": 135.427,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.023,
+      "completed_s": 176.51,
+      "id": 18,
+      "served_by": "35584fc381bd",
+      "setup_duration_s": 127.497,
+      "status": 200,
+      "was_cold": false
+    },
+    {
+      "arrived_s": 0.024,
+      "completed_s": 183.321,
+      "id": 19,
+      "served_by": "651b638c7432",
+      "setup_duration_s": 135.417,
+      "status": 200,
+      "was_cold": false
+    }
+  ],
+  "scale_config": {
+    "concurrency_buffer": 0,
+    "concurrency_buffer_perc": 0,
+    "keep_alive": 300,
+    "max_concurrency": 4,
+    "max_multiplexing": 1,
+    "min_concurrency": 0,
+    "scaling_delay": 0
+  },
+  "schema": "fal-serverless-examples/tune-autoscaling/trace@1"
+}
