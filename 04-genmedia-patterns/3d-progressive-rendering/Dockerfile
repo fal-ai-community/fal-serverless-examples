@@ -34,12 +34,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends software-proper
 
 RUN python3.11 -m pip install --no-cache-dir torch==2.5.1+cu121 torchvision==0.20.1+cu121
 
-# The model code, pinned by SHA. Its requirements*.txt files pin the rest of
-# the stack (spconv, xformers, kaolin, gsplat, pytorch3d, flash-attn, ...).
-# Install order per upstream doc/setup.md ('.[p3d]' is a separate step because
-# pytorch3d's torch dependency resolution is broken; '[dev]' is lint/test
-# tooling we don't need). flash-attn and pytorch3d compile from source here -
-# slow once, then cached by fal until this file changes.
+# The model code, pinned by SHA. Its requirements*.txt files supply most of
+# the stack (spconv, xformers, kaolin, gsplat, ...) transitively via '.' and
+# '.[inference]'. flash-attn and pytorch3d are installed explicitly with
+# --no-build-isolation because their setup.py imports torch, which pip's
+# isolated build environment cannot see. '[dev]' is skipped (lint/test
+# tooling we don't need). Build is cached by fal until this file changes.
 RUN git clone https://github.com/facebookresearch/sam-3d-objects.git /opt/sam-3d-objects && \
     cd /opt/sam-3d-objects && git checkout f91db411c50efee93d8db7aeb323885650f6f722
 RUN cd /opt/sam-3d-objects && \
