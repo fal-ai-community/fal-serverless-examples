@@ -71,3 +71,34 @@ def test_module_top_level_is_import_light():
         elif isinstance(node, ast.ImportFrom):
             top_level_imports.add((node.module or "").split(".")[0])
     assert top_level_imports <= {"sys", "types", "__future__"}, top_level_imports
+
+
+# --------------------------- live tests (harness) ---------------------------
+# The harness deploys each app*.py and runs this whole file against it with
+# HARNESS_APP_URL + HARNESS_VARIANT set; app_client skips otherwise.
+
+
+def test_small_seeded_generation(app_client):
+    response = app_client.run("/", SMALL_REQUEST)
+    assert response["seed"] == 42, "seed must echo back for reproducibility"
+    assert response["video"]["url"].startswith("https://"), response["video"]
+    assert response["generation_ms"] > 0
+
+
+def test_setup_report_matches_variant(app_client):
+    report = app_client.run("/setup-report", {})
+    assert report["variant"] == EXPECTED_VARIANT[variant()]
+    assert report["total_seconds"] > 0
+    stage_names = [s["name"] for s in report["stages"]]
+    assert stage_names, "setup() must record its stages"
+    if report["variant"] == "optimized":
+        assert any("FlashPack" in name for name in stage_names), stage_names
+        assert any("inductor" in name for name in stage_names), stage_names
+    else:
+        assert report["built_caches_this_boot"] is False
+
+
+def test_rejects_non_4k_plus_1_frames(app_client):
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        app_client.run("/", {**SMALL_REQUEST, "num_frames": 18})
+    assert exc_info.value.response.status_code == 422
