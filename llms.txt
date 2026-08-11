@@ -21,7 +21,12 @@
 - [00.3 media-in-media-out](00-getting-started/media-in-media-out/README.md): file plumbing on a CPU machine - URL inputs, bounded downloads cached on /data, CDN outputs with output_format -> content-type, per-file retention
 - [00.4 bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
 - [01.1 same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
+- [01.3 dev-staging-prod](01-environments-containers/dev-staging-prod/README.md): one codebase across environments - env-scoped secrets, promotion-is-redeploy, and the verified three-step rollback (set-rev alone does not move traffic)
+- [02.2 tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
 - [04.3 per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
+- [04.4 train-serve-lora](04-genmedia-patterns/train-serve-lora/README.md): train a FLUX.2-klein LoRA in-app and serve it - long-request trainer pattern (keep_alive=0, request_timeout, skip_retry), dataset preflight with typed 422s, atomic /data handoff, one-slot adapter serving on distilled klein
+- [04.5 multi-gpu-video](04-genmedia-patterns/multi-gpu-video/README.md): WAN 2.2 A14B (2x14B MoE, ~70 GB bf16) sharded across 4 GPUs with fal.distributed + diffusers Ulysses context parallelism - one video, four GPUs; bf16 /data pre-conversion, per-shape warmup, the {"error": ...} worker contract, single-flight runner semantics
+- [05.1 post-production-pipeline](05-media-processing/post-production-pipeline/README.md): transcode ladder + thumbnails + captions on a CPU machine - parallel ffmpeg rungs in a pinned container, faststart MP4s, soft-muxed captions with VTT sidecar, and a queue + Ed25519-verified-webhook client pair
 
 ## Docs
 

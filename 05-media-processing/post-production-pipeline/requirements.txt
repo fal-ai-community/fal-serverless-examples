@@ -1,0 +1,3 @@
+# Mirror of the Dockerfile's pip installs - the image is authoritative for
+# this container example (App.requirements stays unset; repo convention).
+fal==1.78.2
