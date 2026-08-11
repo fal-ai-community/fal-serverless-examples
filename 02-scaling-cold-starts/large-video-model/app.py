@@ -138,17 +138,21 @@ class _PreviewSession:
             "frames": int(frames.shape[0]),
         }
 
-    def finish(self):
+    def finish(self, timeout: float = 30.0):
         """Stop the worker and wait for any in-flight render to land in `events`.
 
         After this returns the queue is complete and frozen, so one final drain
         cannot miss a preview that was still encoding when the generation ended.
+        A render is ~0.1 s; the generous default is pure paranoia, and callers
+        that cannot afford to block pass a smaller bound.
         """
         self.done.set()
-        self._worker.join(timeout=30)  # a render is ~0.1 s; 30 s is pure paranoia
+        self._worker.join(timeout=timeout)
 
     def close(self):
-        self.finish()
+        # Runs from the generator's `finally` - on a client disconnect that is the
+        # event loop thread, so cap the join hard rather than stalling /health.
+        self.finish(timeout=5.0)
 
 
 class Input(BaseModel):
@@ -319,11 +323,22 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
                     yield f"data: {json.dumps(session.events.get())}\n\n"
                 try:
                     path, seed, timings = job.result()  # re-raises generation errors
+                    # await, not File.from_path: the upload is 1-2 s of blocking I/O
+                    # and this coroutine owns the event loop (SSE flushes, /health)
+                    # meanwhile. Everything that can fail - generation, upload,
+                    # serialization - is inside this try; only the yield is outside.
+                    final = Output(
+                        video=await File.from_path_async(path), seed=seed, timings=timings
+                    )
+                    result = json.dumps(
+                        {"type": "result", **json.loads(final.model_dump_json())}
+                    )
                 except Exception as exc:
                     # The 200 OK is long gone, so a raise here would just truncate the
                     # stream - and with x-fal-sse-last-event-as-body a non-streaming
                     # client would then read the last *preview* as the response body.
-                    # Make the failure the last event instead.
+                    # Make the failure the last event instead. (CancelledError is a
+                    # BaseException on 3.11+, so cancellation still propagates.)
                     traceback.print_exc()
                     if isinstance(exc, fal.exceptions.AppException):
                         detail, status = exc.message, exc.status_code
@@ -331,12 +346,7 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
                         detail, status = f"{type(exc).__name__}: {exc}", 500
                     yield f"data: {json.dumps({'type': 'error', 'detail': detail, 'status_code': status})}\n\n"
                     return
-                # await, not File.from_path: the upload is 1-2 s of blocking I/O and
-                # this coroutine owns the event loop (SSE flushes, /health) meanwhile.
-                final = Output(
-                    video=await File.from_path_async(path), seed=seed, timings=timings
-                )
-                yield f"data: {json.dumps({'type': 'result', **json.loads(final.model_dump_json())})}\n\n"
+                yield f"data: {result}\n\n"
             finally:
                 session.close()
 
