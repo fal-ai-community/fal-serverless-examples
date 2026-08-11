@@ -11,6 +11,7 @@
   "machine_type": "GPU-H100",
   "pareto_front": [
     1,
+    0,
     2,
     3,
     4,

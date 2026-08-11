@@ -226,7 +226,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", type=float, default=0.0,
                        help="seconds the arrivals are spread over (ignored for spike)")
     parser.add_argument("--concurrency", type=int, default=20,
-                       help="client-side parallelism; keep >= requests for a spike")
+                       help="client-side worker pool size; keep >= requests "
+                            "for any pattern whose arrival schedule you want "
+                            "honoured - with fewer workers than requests, a "
+                            "task only starts waiting out its arrival offset "
+                            "once a worker frees up, so ramp and steady "
+                            "arrivals fire late and silently stop matching "
+                            "the pattern you asked for (not just spikes)")
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--rate", type=float, default=model.USD_PER_SECOND)
     parser.add_argument("--prompt",

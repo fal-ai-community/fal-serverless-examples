@@ -170,8 +170,10 @@ def simulate(
 
     Scale-down is modelled as keep_alive expiry only, because fal publishes
     no other scale-down dynamics. That is why this example MEASURES a real
-    burst - the measurement is the authority, and the residual chart shows
-    where this model disagrees with it.
+    burst - the measurement is the authority, and README.md's "Cost &
+    tuning" table is where a reader compares this model's output against
+    it (chart.py renders the burst timeline and the cost-latency frontier;
+    there is no third, residual chart).
     """
     pending = sorted(arrivals)
     queue: list[tuple[float, int]] = []
@@ -623,16 +625,38 @@ def sweep(
     return points
 
 
+def _tick_quantized(value: float, *, tick_s: float = TICK_S) -> float:
+    """Round `value` to the nearest multiple of the simulation's own tick.
+
+    p95_wait_s is a simulation output, so any difference smaller than one
+    tick (e.g. 139.677s vs 139.676s) is sub-tick numerical noise, not a real
+    latency difference - quantizing before comparing is what keeps that
+    noise from acting as a tie-breaker.
+    """
+    return round(value / tick_s) * tick_s
+
+
 def pareto_front(points: list[dict]) -> list[int]:
-    """Indices of points no other point beats on both cost and p95 wait."""
+    """Indices of points no other point beats on both cost and p95 wait.
+
+    p95_wait_s is quantized to the tick clock (TICK_S = 0.1s) inside the
+    dominance test below, so two points that only differ by sub-tick noise
+    (a fraction of a millisecond, far below the 0.1s the simulation can
+    actually resolve) are treated as tied on wait rather than one silently
+    excluding the other from the front. cost_usd needs no such treatment -
+    it has no comparable source of noise. The returned ordering is
+    unaffected: it still sorts by the raw (unquantized) cost_usd and
+    p95_wait_s, exactly as before.
+    """
     front = []
     for i, point in enumerate(points):
+        point_wait = _tick_quantized(point["p95_wait_s"])
         dominated = any(
             other["cost_usd"] <= point["cost_usd"]
-            and other["p95_wait_s"] <= point["p95_wait_s"]
+            and _tick_quantized(other["p95_wait_s"]) <= point_wait
             and (
                 other["cost_usd"] < point["cost_usd"]
-                or other["p95_wait_s"] < point["p95_wait_s"]
+                or _tick_quantized(other["p95_wait_s"]) < point_wait
             )
             for j, other in enumerate(points)
             if j != i
@@ -660,12 +684,24 @@ def build_frontier(
     Deliberately carries NO wall-clock stamp: it inherits the trace's
     recorded_at so that regenerating from an unchanged trace is
     byte-identical, which is what lets CI detect chart and model rot for free.
+
+    `usd_per_second`, when omitted, inherits the trace's own recorded
+    `rate_usd_per_second` (set by burst.py's --rate at measurement time) -
+    NOT the $3.99/h list price. A reader who ran burst.py on a negotiated
+    rate and then calibrates from that trace should get pricing at the rate
+    they actually measured, without having to pass --rate a second time.
+    Only a trace carrying no rate at all falls back to USD_PER_SECOND.
     """
     calibration = calibrate(trace)
+    rate = (
+        usd_per_second
+        if usd_per_second is not None
+        else trace.get("rate_usd_per_second", USD_PER_SECOND)
+    )
     points = sweep(
         calibration,
         grid=grid,
-        usd_per_second=usd_per_second,
+        usd_per_second=rate,
         granularity=granularity,
         bursts_per_hour=bursts_per_hour,
         horizon_s=horizon_s,
@@ -674,9 +710,7 @@ def build_frontier(
         "schema": FRONTIER_SCHEMA,
         "trace_recorded_at": trace["recorded_at"],
         "machine_type": calibration.machine_type,
-        "rate_usd_per_second": (
-            USD_PER_SECOND if usd_per_second is None else usd_per_second
-        ),
+        "rate_usd_per_second": rate,
         "billing_granularity_s": granularity,
         "bursts_per_hour": bursts_per_hour,
         "horizon_s": horizon_s,
@@ -696,8 +730,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--calibrate", required=True, metavar="TRACE",
                        help="trace.json from burst.py")
     parser.add_argument("--rate", type=float, default=None,
-                       help=f"USD per second (default {USD_PER_SECOND:.9f}, "
-                            f"the ${H100_USD_PER_HOUR}/h H100 list price)")
+                       help="USD per second; if omitted, inherits the "
+                            "trace's own recorded rate_usd_per_second (set "
+                            "by burst.py's --rate when the burst was "
+                            f"measured), falling back to {USD_PER_SECOND:.9f} "
+                            f"(the ${H100_USD_PER_HOUR}/h H100 list price) "
+                            "only if the trace carries no rate at all")
     parser.add_argument("--billing-granularity", type=float, default=1.0,
                        help="seconds each runner's billed time rounds up to (assumption)")
     parser.add_argument("--bursts-per-hour", type=float, default=1.0,

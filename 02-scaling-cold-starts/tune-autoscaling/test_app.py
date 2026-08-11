@@ -3,8 +3,8 @@
 * Unit tests over the pure model functions - free, no deploy, run on every
   PR by the static job. model.py is stdlib-only, so they need nothing
   beyond pytest.
-* Live tests that fire real requests at an ephemeral deploy (added in a
-  later task); the `app_client` fixture skips when no app is under test.
+* Live tests that fire real requests at an ephemeral deploy; the
+  `app_client` fixture skips when no app is under test.
 
 The unit tests side-load model.py by path rather than importing it, so the
 example folder needs no package plumbing - same trick as
@@ -869,9 +869,14 @@ def test_sequential_requests_land_on_the_same_warm_runner(app_client):
 
 
 def test_warm_requests_are_not_flagged_cold(app_client):
-    # harness/check.py fires one smoke request at "/" before running this
-    # file, so by now the runner has served at least once and was_cold must
-    # be False. If the harness ever stops smoking first, this flips.
+    # This runner is warm for two independent reasons by now, not one: the
+    # harness's own pre-test smoke request at "/", AND the three live tests
+    # above, which already served at least one request each against the
+    # same single pinned runner (min_concurrency=0, concurrency_buffer=0 -
+    # see app.py's docstring). The assertion is over-determined today. If
+    # this test is ever reordered ahead of the three above, only the
+    # harness's smoke request keeps it meaningful - so keep at least one of
+    # the two true, or this silently stops testing anything.
     response = app_client.run("/", {"prompt": PROMPT})
     assert response["was_cold"] is False
 

@@ -12,9 +12,16 @@ one real burst can be measured without any extra credential:
      a cold start, and setup_duration_s IS the cold start, measured on the
      runner rather than inferred from a client-side timer.
 
-The scaling knobs below are the recommended config from the analysis in
-README.md. min_concurrency and concurrency_buffer are both 0, which also
-keeps the CI deploy-check to exactly one runner - the only one
+The scaling knobs below deliberately reproduce the UN-TUNED config the
+burst in trace.json was measured under - they are not a recommendation.
+keep_alive=300 in particular is on no Pareto-optimal point in frontier.json
+and README.md's "Cost & tuning" calls it a tax for a burst shaped like this
+one; it stays at 300 here anyway, because changing it would desynchronise
+this file from the committed trace and break a reader's ability to
+redeploy this exact app and reproduce that measurement. See README.md's
+"Cost & tuning" for what the frontier says to change, and why, once you've
+reproduced the baseline. min_concurrency and concurrency_buffer are both 0,
+which also keeps the CI deploy-check to exactly one runner - the only one
 harness/check.py can observe and confirm stopped.
 """
 import random
@@ -66,16 +73,17 @@ class Output(BaseModel):
     )
 
 
-class TuneAutoscaling(fal.App, keep_alive=300):
+class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's measured config, see the docstring
     machine_type = "GPU-H100"  # PINNED: GPU-L40 has no published price
     app_auth = "private"
     startup_timeout = 1200  # the account's first-ever boot pulls ~16 GB to /data
 
-    # The recommended config. See README.md "Cost & tuning" for the frontier
-    # point each value comes from.
+    # The un-tuned config this example's burst was measured under - not a
+    # recommendation. See README.md "Cost & tuning" for what the frontier
+    # says to change instead, and why.
     min_concurrency = 0  # bursty traffic means long quiet periods: scale to zero
     max_concurrency = 4  # spend ceiling; the burst queues rather than surprising you
-    concurrency_buffer = 0  # taught in the README, not declared: see the docstring
+    concurrency_buffer = 0  # no idle buffer while ramping; README.md prices raising it
 
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [

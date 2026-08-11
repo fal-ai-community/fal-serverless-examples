@@ -12,8 +12,9 @@ Two constraints that shape every line below:
   * Mintlify's image CDN strips <foreignObject>, so every label is a real
     <text> element.
 
-The visual language here is deliberately minimal - see the design brief for
-the intended treatment. Keep render()'s signature stable when restyling.
+The visual language here is deliberately minimal: two flat-colour series,
+small labels, no gridlines or gradients. Keep render()'s signature stable
+when restyling.
 """
 from __future__ import annotations
 
@@ -95,7 +96,12 @@ def burst_timeline(trace: dict) -> str:
     timeline = model.measured_timeline(trace, tick_s=1.0)
     if not timeline:
         raise ValueError("trace produced no timeline rows")
-    t_lo = timeline[0]["t"]
+    # The axis origin is the burst's actual start (t=0), not the first row
+    # measured_timeline() happens to emit. That first row starts at the
+    # earliest runner's setup_start_s, which is well after t=0 whenever
+    # capacity acquisition (PENDING, unbilled) takes a while - anchoring the
+    # axis there instead of at 0 would silently hide that free gap.
+    t_lo = 0.0
     t_hi = max(row["t"] for row in timeline)
     y_max = max(
         max(r["setup"] + r["idle"] + r["running"] for r in timeline),
@@ -165,10 +171,10 @@ def cost_latency_frontier(frontier: dict) -> str:
 
     front = [to_xy(points[i]) for i in frontier.get("pareto_front", [])]
     body = [
-        *_axes("cost for this burst (USD)", "p95 queue wait (s)", cost_hi, wait_hi),
+        *_axes("cost over the 1-hour horizon (USD)", "p95 queue wait (s)", cost_hi, wait_hi),
         *([_polyline(front, MODELLED, width=1, dash="5 4")] if len(front) > 1 else []),
         *marks,
-        _text(x1, y1 + 14, "modelled - dashed = beyond measured envelope",
+        _text(x1, y1 + 14, "modelled - dashed line = Pareto front",
               anchor="end", size=11, fill=MODELLED),
     ]
     subtitle = (
