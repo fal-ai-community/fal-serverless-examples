@@ -1311,7 +1311,8 @@ def test_stream_event_contract(app_client):
     geometry = [e for e in events if e["type"] == "geometry"]
     appearance = [e for e in events if e["type"] == "appearance"]
     assert geometry and appearance
-    assert max(types.index(t) for t in types if t == "geometry") < types.index("appearance")
+    last_geometry = max(i for i, t in enumerate(types) if t == "geometry")
+    assert last_geometry < types.index("appearance")
 
     progresses = [e["progress"] for e in events if "progress" in e]
     assert progresses == sorted(progresses), "progress went backwards"
