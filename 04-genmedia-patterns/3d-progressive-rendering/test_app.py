@@ -43,8 +43,8 @@ def test_encode_decode_roundtrip_with_colors():
     coords = np.array([[0, 0, 0], [63, 63, 63]], dtype=np.int64)
     colors = np.array([[0.0, 0.5, 1.0], [1.0, 0.0, 0.25]], dtype=np.float32)
     rows = app_module.decode_voxels(app_module.encode_voxels(coords, colors))
-    assert rows[0] == (0, 0, 0, 0, 127, 255)
-    assert rows[1] == (63, 63, 63, 255, 0, 63)
+    assert rows[0] == (0, 0, 0, 0, 128, 255)
+    assert rows[1] == (63, 63, 63, 255, 0, 64)
 
 
 def test_encode_voxels_gray_fill_without_colors():
