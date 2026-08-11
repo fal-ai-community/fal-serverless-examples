@@ -12,6 +12,7 @@ example folder needs no package plumbing - same trick as
 """
 import importlib.util
 import sys
+import urllib.error
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -949,3 +950,157 @@ def test_build_trace_round_trips_through_the_model():
     # r-aaa completed at 32.0 then 36.0 back-to-back: service time is 4s
     assert calibration.service_s == 4.0
     assert calibration.observed_runners == 1
+
+
+# --------------------------------------------------------------------------
+# Review-fix regression tests (SERV-1294): a network blip in the optional
+# cross-check must never destroy a completed real-money burst, an
+# uncalibratable trace must produce a diagnostic instead of a traceback, and
+# the live-config guard must say why it failed.
+# --------------------------------------------------------------------------
+
+GPU_H100_CONFIG = {
+    "machine_types": ["GPU-H100"],
+    "keep_alive": 300,
+    "min_concurrency": 0,
+    "max_concurrency": 4,
+    "concurrency_buffer": 0,
+    "concurrency_buffer_perc": 0,
+    "scaling_delay": 0,
+    "max_multiplexing": 1,
+}
+
+
+def calibratable_records():
+    """Two runners; r-aaa serves twice back-to-back so service_s is derivable.
+
+    Same shape as model.py's synthetic_trace() fixture requests.
+    """
+    return [
+        {"id": 0, "arrived_s": 0.0, "completed_s": 34.0, "status": 200,
+         "served_by": "r-aaa", "was_cold": True, "setup_duration_s": 30.0},
+        {"id": 1, "arrived_s": 0.0, "completed_s": 36.0, "status": 200,
+         "served_by": "r-bbb", "was_cold": True, "setup_duration_s": 32.0},
+        {"id": 2, "arrived_s": 34.0, "completed_s": 38.0, "status": 200,
+         "served_by": "r-aaa", "was_cold": False, "setup_duration_s": 30.0},
+    ]
+
+
+def uncalibratable_records():
+    """Two runners, each serving exactly once: no back-to-back gap anywhere,
+    so model.calibrate must raise "no runner served two requests"."""
+    return [
+        {"id": 0, "arrived_s": 0.0, "completed_s": 34.0, "status": 200,
+         "served_by": "r-aaa", "was_cold": True, "setup_duration_s": 30.0},
+        {"id": 1, "arrived_s": 0.0, "completed_s": 36.0, "status": 200,
+         "served_by": "r-bbb", "was_cold": True, "setup_duration_s": 32.0},
+    ]
+
+
+def test_cross_check_analytics_cannot_raise_on_a_transport_error(monkeypatch):
+    # Finding 1: a DNS failure, connection error, or timeout raises a bare
+    # URLError (or socket.timeout) that HTTPError-only handling does not
+    # catch. This must come back as a reported failure, never propagate.
+    def raise_url_error(*args, **kwargs):
+        raise urllib.error.URLError("dns boom")
+
+    monkeypatch.setattr(burst.urllib.request, "urlopen", raise_url_error)
+    result = burst.cross_check_analytics("someone/tune-autoscaling", {})
+    assert result["ok"] is False
+    assert "URLError" in result.get("error", "")
+    assert "dns boom" in result.get("error", "")
+
+
+def test_cross_check_analytics_still_reports_403_with_its_hint(monkeypatch):
+    # The existing HTTPError/403 branch must survive the broadened handler.
+    def raise_403(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            url="https://api.fal.ai/v1/serverless/analytics",
+            code=403, msg="Forbidden", hdrs=None, fp=None,
+        )
+
+    monkeypatch.setattr(burst.urllib.request, "urlopen", raise_403)
+    result = burst.cross_check_analytics("someone/tune-autoscaling", {})
+    assert result["ok"] is False
+    assert result["status"] == 403
+    assert "Key-format" in result["hint"]
+
+
+def test_main_saves_the_trace_even_when_the_cross_check_is_broken(tmp_path, monkeypatch):
+    # This is the regression that matters most (Finding 1b): every recorded
+    # request lives only in memory until trace.json is written. Before the
+    # fix, cross_check_analytics ran BEFORE the write and could not catch a
+    # transport error, so a completed real-money burst died with nothing on
+    # disk. No network or CLI may be touched here.
+    monkeypatch.setattr(burst, "read_live_config", lambda app: dict(GPU_H100_CONFIG))
+    monkeypatch.setattr(burst, "run_burst", lambda *a, **k: calibratable_records())
+    monkeypatch.setattr(burst, "_auth_headers", lambda: {})
+
+    def raise_url_error(*args, **kwargs):
+        raise urllib.error.URLError("dns boom")
+
+    monkeypatch.setattr(burst.urllib.request, "urlopen", raise_url_error)
+
+    import json
+
+    out = tmp_path / "trace.json"
+    exit_code = burst.main([
+        "--app", "someone/tune-autoscaling",
+        "--out", str(out),
+        "--from-analytics",
+    ])
+
+    assert exit_code == 0
+    assert out.exists(), "trace.json must be written even though the cross-check failed"
+    trace = json.loads(out.read_text())
+    assert trace["schema"] == model.TRACE_SCHEMA
+    assert len(trace["requests"]) == 3
+    assert trace["analytics_cross_check"]["ok"] is False
+
+
+def test_main_reports_an_uncalibratable_trace_without_a_traceback(tmp_path, monkeypatch, capsys):
+    # Finding 2: no runner served two requests back-to-back (e.g.
+    # --concurrency >= --requests on a spike), which is exactly what
+    # Task 8's live workflow can hit. main() must still save the trace and
+    # print one diagnostic line rather than an uncaught ValueError traceback.
+    monkeypatch.setattr(burst, "read_live_config", lambda app: dict(GPU_H100_CONFIG))
+    monkeypatch.setattr(burst, "run_burst", lambda *a, **k: uncalibratable_records())
+    monkeypatch.setattr(burst, "_auth_headers", lambda: {})
+
+    import json
+
+    out = tmp_path / "trace.json"
+    exit_code = burst.main([
+        "--app", "someone/tune-autoscaling",
+        "--out", str(out),
+    ])
+
+    assert exit_code == 1
+    assert out.exists(), "the trace must remain saved even though calibration failed"
+    trace = json.loads(out.read_text())
+    assert trace["schema"] == model.TRACE_SCHEMA
+
+    captured = capsys.readouterr()
+    assert str(out) in captured.err, "the diagnostic must name the file that WAS saved"
+    assert "two requests" in captured.err, "must quote calibrate()'s underlying message"
+    # No traceback: a real traceback prints many lines and the word "Traceback".
+    assert "Traceback" not in captured.err
+
+
+def test_read_live_config_reports_the_captured_stderr_on_a_non_zero_exit(monkeypatch):
+    # Finding 3: `check=True` raises CalledProcessError, whose default
+    # string does not surface the captured stderr that holds the real
+    # reason (e.g. "not logged in"). The guard must raise a RuntimeError
+    # that includes it.
+    import subprocess
+
+    class FakeResult:
+        returncode = 1
+        stdout = ""
+        stderr = "Error: not logged in. Run `fal auth login` first.\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeResult())
+    import pytest
+
+    with pytest.raises(RuntimeError, match="not logged in"):
+        burst.read_live_config("someone/tune-autoscaling")

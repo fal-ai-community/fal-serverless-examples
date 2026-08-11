@@ -67,11 +67,31 @@ def assert_machine(config: dict, expected: str = PINNED_MACHINE) -> None:
 
 
 def read_live_config(app: str) -> dict:
-    completed = subprocess.run(
-        ["fal", "apps", "list", "--json"],
-        capture_output=True, text=True, check=True,
-    )
-    return select_app_config(json.loads(completed.stdout), app)
+    try:
+        completed = subprocess.run(
+            ["fal", "apps", "list", "--json"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "the `fal` CLI was not found on PATH. It comes from this "
+            "example's requirements.txt - install it (or activate the "
+            f"venv that has it) before running a burst. ({error})"
+        ) from error
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"`fal apps list --json` exited {completed.returncode}: "
+            f"{completed.stderr.strip() or '(no stderr captured)'}"
+        )
+    try:
+        apps_document = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        snippet = completed.stdout[:200]
+        raise RuntimeError(
+            f"`fal apps list --json` did not print JSON ({error}); "
+            f"stdout started with: {snippet!r}"
+        ) from error
+    return select_app_config(apps_document, app)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -131,9 +151,15 @@ def build_trace(
 def cross_check_analytics(app: str, headers: dict) -> dict:
     """Optional: compare derived billable seconds against fal's own figure.
 
-    Never required to produce a chart. /v1/serverless/analytics needs a
-    Key-format credential; a stored browser session gets 403, which is
-    reported rather than raised.
+    Never required to produce a chart, and must never be ABLE to raise: a
+    completed burst has already cost real GPU time and every record still
+    lives only in memory when this runs, so a DNS failure, connection
+    error, or timeout here (a bare URLError/socket.timeout - not a subclass
+    of HTTPError) would otherwise destroy that measurement. Every failure
+    mode, HTTPError included, comes back as the same reported-failure shape.
+
+    /v1/serverless/analytics needs a Key-format credential; a stored
+    browser session gets 403, which is reported rather than raised.
     """
     url = f"{ANALYTICS_URL}?app={app}&timeframe=minute"
     request = urllib.request.Request(url, headers=headers)
@@ -147,6 +173,16 @@ def cross_check_analytics(app: str, headers: dict) -> dict:
             "hint": (
                 "403 means this credential lacks the scope; the derived figure "
                 "stands on its own. Use a Key-format API key to cross-check."
+            ),
+        }
+    except Exception as error:  # noqa: BLE001 - deliberately catch-all, see above
+        return {
+            "ok": False,
+            "error": f"{type(error).__name__}: {error}",
+            "hint": (
+                "the cross-check could not reach the analytics endpoint "
+                "(network error, DNS, or timeout); the derived figure "
+                "stands on its own."
             ),
         }
 
@@ -226,18 +262,39 @@ def main(argv: list[str] | None = None) -> int:
         usd_per_second=args.rate,
         recorded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
+
+    def write_trace() -> None:
+        with open(args.out, "w") as handle:
+            json.dump(trace, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+
+    # Deliberate ordering: the trace is written to disk BEFORE the optional
+    # cross-check runs. The burst above is expensive and irreplaceable - every
+    # recorded request lives only in memory until this write happens - while
+    # the cross-check is neither: it is optional and (per its docstring)
+    # cannot raise. Running it first would risk the entire measurement for a
+    # feature whose own purpose is to be skippable.
+    write_trace()
+
     if args.from_analytics:
         trace["analytics_cross_check"] = cross_check_analytics(args.app, _auth_headers())
+        write_trace()
 
-    with open(args.out, "w") as handle:
-        json.dump(trace, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    print(f"wrote {args.out}: {len(records)} requests, {len(failed)} failed")
 
-    calibration = model.calibrate(trace)
+    try:
+        calibration = model.calibrate(trace)
+    except ValueError as error:
+        print(
+            f'error: could not calibrate {args.out}: "{error}". The trace is '
+            f"saved and can be re-analysed once the cause is addressed.",
+            file=sys.stderr,
+        )
+        return 1
+
     billable = model.billable_seconds(
         model.measured_windows(trace), keep_alive=float(config.get("keep_alive") or 0)
     )
-    print(f"wrote {args.out}: {len(records)} requests, {len(failed)} failed")
     print(f"  observed {calibration.observed_runners} runner(s), "
           f"cold start {calibration.cold_start_s:.1f}s, "
           f"service {calibration.service_s:.1f}s")
