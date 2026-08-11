@@ -18,6 +18,8 @@ A FLUX.2 [klein] endpoint that tells you who served every request, so a burst ag
 }
 ```
 
+![Runners and queue depth through one real burst](charts/burst-timeline.svg)
+
 Those last three fields are the whole trick. Distinct `served_by` values across one burst give you the runner ramp; `was_cold` marks who paid a cold start; `setup_duration_s` **is** the cold start, timed on the runner rather than guessed from a stopwatch on your laptop. No metrics API, no admin credential.
 
 The recorded run in [`trace.json`](trace.json): **20 requests**, fired all at once, served by **4 runners**, cold start **127.6 s** (p50), service **3.0 s**.
@@ -99,6 +101,8 @@ curl -X POST https://fal.run/<your-username>/tune-autoscaling \
 ```
 
 ## Cost & tuning
+
+![What each configuration costs, and what it waits](charts/cost-latency-frontier.svg)
 
 Same 20-request spike, four configurations, priced over a **1-hour horizon** at the published H100 list rate of $3.99/h ($0.001108/s) — if you're on a negotiated rate, pass `--rate`. Only the first row was measured; the rest are model output. This is deliberately a hard rate, not the price of one burst: a `min_concurrency` runner is alive around the clock, so the model bills it for the whole horizon whether or not the burst ever lands (`--bursts-per-hour 1 --horizon-s 3600`, both defaults).
 

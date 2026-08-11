@@ -1104,3 +1104,69 @@ def test_read_live_config_reports_the_captured_stderr_on_a_non_zero_exit(monkeyp
 
     with pytest.raises(RuntimeError, match="not logged in"):
         burst.read_live_config("someone/tune-autoscaling")
+
+
+import json as _json
+
+_chart_spec = importlib.util.spec_from_file_location(
+    "autoscale_chart", Path(__file__).parent / "chart.py"
+)
+chart = importlib.util.module_from_spec(_chart_spec)
+_chart_spec.loader.exec_module(chart)
+
+HERE = Path(__file__).parent
+
+
+def _artifacts():
+    import pytest
+
+    if not (HERE / "trace.json").exists() or not (HERE / "frontier.json").exists():
+        pytest.skip("trace.json / frontier.json not recorded yet")
+    return (
+        _json.loads((HERE / "trace.json").read_text()),
+        _json.loads((HERE / "frontier.json").read_text()),
+    )
+
+
+def test_render_writes_both_charts(tmp_path):
+    trace, frontier = _artifacts()
+    written = chart.render(trace, frontier, tmp_path)
+    assert [p.name for p in written] == [
+        "burst-timeline.svg", "cost-latency-frontier.svg",
+    ]
+    for path in written:
+        assert path.read_text().startswith("<svg")
+
+
+def test_render_is_deterministic(tmp_path):
+    trace, frontier = _artifacts()
+    first = {p.name: p.read_bytes() for p in chart.render(trace, frontier, tmp_path / "a")}
+    second = {p.name: p.read_bytes() for p in chart.render(trace, frontier, tmp_path / "b")}
+    assert first == second, "rendering twice must produce identical bytes"
+
+
+def test_committed_charts_are_current(tmp_path):
+    """The free rot check: a stale committed chart fails CI for zero dollars."""
+    trace, frontier = _artifacts()
+    for path in chart.render(trace, frontier, tmp_path):
+        committed = HERE / "charts" / path.name
+        assert committed.exists(), f"{path.name} is not committed"
+        assert path.read_bytes() == committed.read_bytes(), (
+            f"{path.name} is stale - regenerate with:\n"
+            f"  python chart.py --trace trace.json --frontier frontier.json --out charts/"
+        )
+
+
+def test_no_foreignobject_anywhere():
+    # Mintlify's image CDN strips foreignObject, silently truncating its text.
+    for path in sorted((HERE / "charts").glob("*.svg")):
+        assert "foreignObject" not in path.read_text(), path.name
+
+
+def test_render_refuses_an_empty_series(tmp_path):
+    import pytest
+
+    trace, frontier = _artifacts()
+    empty = dict(frontier, points=[], pareto_front=[])
+    with pytest.raises(ValueError, match="no points"):
+        chart.render(trace, empty, tmp_path)
