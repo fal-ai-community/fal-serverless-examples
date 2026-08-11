@@ -534,6 +534,10 @@ def test_sweep_points_carry_every_documented_key():
 
 
 def test_warm_configs_cost_more_and_wait_less():
+    # This now holds for a much stronger reason than before: min_concurrency
+    # is billed as a horizon-wide floor (min_concurrency * horizon_s), so
+    # always_warm's cost is dominated by 2 * 3600s of always-on runner time,
+    # not by incidental extra seconds inside the burst window.
     points = {
         (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
         for p in model.sweep(model.calibrate(synthetic_trace()))
@@ -542,6 +546,115 @@ def test_warm_configs_cost_more_and_wait_less():
     always_warm = points[(300, 2, 0)]
     assert always_warm["p95_wait_s"] < scale_to_zero["p95_wait_s"]
     assert always_warm["cost_usd"] > scale_to_zero["cost_usd"]
+
+
+def test_min_concurrency_floor_is_billed_across_the_default_horizon():
+    # A min_concurrency runner is alive around the clock - that is what the
+    # knob means - so it must be billed for the whole horizon (default
+    # 3600s), not just whatever sliver of it the burst window happens to
+    # touch. Even the cheapest keep_alive/buffer combination at
+    # min_concurrency=2 must clear the 2 * 3600s floor.
+    points = {
+        (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
+        for p in model.sweep(model.calibrate(synthetic_trace()))
+    }
+    point = points[(0, 2, 0)]
+    assert point["billable_s"] >= 2 * 3600.0
+
+
+def test_scale_to_zero_is_the_cheapest_point_on_the_fixture():
+    # This is the regression the whole change exists to prevent. Costing a
+    # min_concurrency runner only within the burst window (instead of the
+    # 24/7 floor it actually represents) - combined with the correct rule
+    # that a prewarmed runner skips a billed SETUP - inverted the example's
+    # central advice: min_concurrency=0 came out DOMINATED on this fixture,
+    # and the frontier told a reader to keep runners warm because it looked
+    # free. It must not be dominated, and it must be the single cheapest
+    # point in the sweep.
+    calibration = model.calibrate(synthetic_trace())
+    points = model.sweep(calibration)
+    cheapest = min(points, key=lambda p: p["cost_usd"])
+    assert cheapest["min_concurrency"] == 0
+    assert cheapest["keep_alive"] == 0
+    cheapest_index = next(i for i, p in enumerate(points) if p is cheapest)
+    assert cheapest_index in model.pareto_front(points)
+
+
+def test_min_concurrency_one_does_not_double_count_the_prewarmed_window():
+    # sweep() must charge a prewarmed runner ONLY through the horizon-wide
+    # floor (min_concurrency * horizon_s), never also through demand_s - or
+    # its cost is counted twice. Derive the exact expected billable_s from
+    # the stated arithmetic (floor_s + demand_s, demand_s from the
+    # NON-prewarmed windows only) and assert equality, not just an
+    # inequality.
+    calibration = model.calibrate(synthetic_trace())
+    base = calibration.scale_config
+    keep_alive = 0.0
+    min_concurrency = 1
+    concurrency_buffer = 0
+    horizon_s = 3600.0
+    bursts_per_hour = 1.0
+
+    result = model.simulate(
+        list(calibration.arrivals),
+        service_s=calibration.service_s,
+        cold_start_s=calibration.cold_start_s,
+        keep_alive=keep_alive,
+        min_concurrency=min_concurrency,
+        max_concurrency=base.get("max_concurrency"),
+        concurrency_buffer=concurrency_buffer,
+        concurrency_buffer_perc=int(base.get("concurrency_buffer_perc", 0)),
+        max_multiplexing=int(base.get("max_multiplexing", 1)),
+        scaling_delay=float(base.get("scaling_delay", 0)),
+    )
+    demand_windows = [w for w in result.windows if not w.prewarmed]
+    assert len(demand_windows) < len(result.windows), (
+        "fixture must actually produce a prewarmed window, or this test "
+        "isn't exercising the double-counting guard at all"
+    )
+    demand_billable = model.billable_seconds(
+        demand_windows, keep_alive=keep_alive, granularity=1.0
+    )
+    floor_s = min_concurrency * horizon_s
+    bursts_in_horizon = bursts_per_hour * horizon_s / 3600.0
+    expected_total = floor_s + demand_billable * bursts_in_horizon
+
+    points = {
+        (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
+        for p in model.sweep(calibration, horizon_s=horizon_s, bursts_per_hour=bursts_per_hour)
+    }
+    point = points[(int(keep_alive), min_concurrency, concurrency_buffer)]
+    assert point["billable_s"] == round(expected_total, 3)
+
+    # And explicitly: that must be less than what double-counting would give
+    # (floor PLUS the full window - prewarmed included - billed on top).
+    double_counted = floor_s + model.billable_seconds(
+        result.windows, keep_alive=keep_alive, granularity=1.0
+    ) * bursts_in_horizon
+    assert point["billable_s"] < double_counted
+
+
+def test_horizon_scales_the_always_on_floor():
+    import pytest
+
+    calibration = model.calibrate(synthetic_trace())
+    short = {
+        (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
+        for p in model.sweep(calibration, horizon_s=3600.0)
+    }
+    long = {
+        (p["keep_alive"], p["min_concurrency"], p["concurrency_buffer"]): p
+        for p in model.sweep(calibration, horizon_s=7200.0)
+    }
+    # min_concurrency=2 pays a floor: doubling the horizon must cost more.
+    assert long[(0, 2, 0)]["cost_usd"] > short[(0, 2, 0)]["cost_usd"]
+    # min_concurrency=0 has no floor at all - the only lever is
+    # bursts_in_horizon, which is exactly proportional to horizon_s at a
+    # fixed bursts_per_hour, so billable_s must double exactly rather than
+    # merely increase.
+    assert long[(0, 0, 0)]["billable_s"] == pytest.approx(
+        2 * short[(0, 0, 0)]["billable_s"]
+    )
 
 
 def test_points_beyond_the_measured_envelope_are_flagged_unvalidated():
@@ -577,6 +690,8 @@ def test_build_frontier_is_deterministic_and_carries_no_wall_clock():
     assert first["calibration"]["cold_start_s"] == 30.0
     assert first["rate_usd_per_second"] == model.USD_PER_SECOND
     assert first["pareto_front"] == model.pareto_front(first["points"])
+    assert first["horizon_s"] == 3600.0
+    assert first["bursts_per_hour"] == 1.0
 
 
 def test_cli_writes_a_frontier_file(tmp_path):

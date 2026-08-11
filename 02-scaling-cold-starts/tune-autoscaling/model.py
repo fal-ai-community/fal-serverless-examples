@@ -60,11 +60,20 @@ class RunnerWindow:
     before it - PENDING, DOCKER_PULL - is free. `last_completion_s` is when
     it finished its last request; it stays alive, and billing, for
     keep_alive seconds after that.
+
+    `prewarmed` marks a runner that was already alive before the burst (one
+    of the min_concurrency floor) rather than one the autoscaler started in
+    response to it. The distinction matters for costing: a prewarmed
+    runner's real cost is a horizon-wide floor - it is alive around the
+    clock, burst or no burst - not a per-burst charge like the rest of the
+    fleet. sweep() relies on this flag to keep the two apart; folding a
+    prewarmed window into the per-burst demand would double-count it.
     """
 
     runner_id: str
     setup_start_s: float
     last_completion_s: float
+    prewarmed: bool = False
 
 
 def billable_seconds(
@@ -184,6 +193,7 @@ def simulate(
             "inflight": [],
             "last_activity": ready_at,
             "terminated_at": None,
+            "prewarmed": prewarmed,
         }
         runners.append(runner)
         return runner
@@ -279,7 +289,11 @@ def simulate(
             # billed span exactly the window rather than the window plus a
             # tail that never happened.
             last = max(last, end_t - keep_alive)
-        windows.append(RunnerWindow(runner["id"], runner["setup_start"], last))
+        windows.append(
+            RunnerWindow(
+                runner["id"], runner["setup_start"], last, prewarmed=runner["prewarmed"]
+            )
+        )
 
     return SimResult(
         timeline=timeline,
@@ -493,13 +507,33 @@ def sweep(
     usd_per_second: float | None = None,
     granularity: float = 1.0,
     bursts_per_hour: float = 1.0,
+    horizon_s: float = 3600.0,
 ) -> list[dict]:
-    """Simulate the same measured traffic under every knob combination."""
+    """Simulate the same measured traffic under every knob combination.
+
+    Cost is charged over an explicit horizon (default one hour), not the
+    burst window alone. A min_concurrency runner is alive around the clock -
+    that is what the knob means - so its real cost is a horizon-wide floor of
+    `min_concurrency * horizon_s` runner-seconds, independent of how often
+    the burst repeats. Every OTHER runner only exists because of the burst,
+    so it is charged per repeat: its burst-window billable seconds times
+    `bursts_in_horizon = bursts_per_hour * horizon_s / 3600`. Prewarmed
+    runners (the RunnerWindow.prewarmed flag set by simulate()) are excluded
+    from that per-burst demand and charged only via the floor, or their cost
+    would be counted twice.
+
+    `billable_s` on each point is that total (floor + demand) over the WHOLE
+    horizon, not per burst. `cost_usd` is `billable_s` in dollars, also over
+    the whole horizon. `hourly_usd` renormalises `cost_usd` back to a
+    one-hour rate (`cost_usd * 3600 / horizon_s`) so runs at different
+    horizons stay comparable.
+    """
     grid = grid or DEFAULT_GRID
     rate = USD_PER_SECOND if usd_per_second is None else usd_per_second
     base = calibration.scale_config
     max_multiplexing = int(base.get("max_multiplexing", 1))
     buffer_perc = int(base.get("concurrency_buffer_perc", 0))
+    bursts_in_horizon = bursts_per_hour * horizon_s / 3600.0
 
     points = []
     for keep_alive in grid["keep_alive"]:
@@ -517,10 +551,18 @@ def sweep(
                     max_multiplexing=max_multiplexing,
                     scaling_delay=float(base.get("scaling_delay", 0)),
                 )
-                billable = billable_seconds(
-                    result.windows, keep_alive=float(keep_alive), granularity=granularity
+                # Prewarmed (min_concurrency) windows are billed only via the
+                # horizon-wide floor below - excluding them here is what
+                # keeps them from being counted a second time as per-burst
+                # demand.
+                demand_windows = [w for w in result.windows if not w.prewarmed]
+                demand_billable = billable_seconds(
+                    demand_windows, keep_alive=float(keep_alive), granularity=granularity
                 )
-                cost = cost_usd(billable, usd_per_second=rate)
+                floor_s = min_concurrency * horizon_s
+                demand_s = demand_billable * bursts_in_horizon
+                total_s = floor_s + demand_s
+                cost = cost_usd(total_s, usd_per_second=rate)
                 peak = max(
                     row["setup"] + row["idle"] + row["running"] for row in result.timeline
                 )
@@ -534,9 +576,9 @@ def sweep(
                         "max_multiplexing": max_multiplexing,
                         "p50_wait_s": round(percentile(result.waits, 50), 3),
                         "p95_wait_s": round(percentile(result.waits, 95), 3),
-                        "billable_s": round(billable, 3),
+                        "billable_s": round(total_s, 3),
                         "cost_usd": round(cost, 6),
-                        "hourly_usd": round(cost * bursts_per_hour, 6),
+                        "hourly_usd": round(cost * 3600.0 / horizon_s, 6),
                         "peak_runners": peak,
                         # Beyond the measured envelope this is extrapolation:
                         # we never observed that many runners, so the chart
@@ -579,8 +621,13 @@ def build_frontier(
     usd_per_second: float | None = None,
     granularity: float = 1.0,
     bursts_per_hour: float = 1.0,
+    horizon_s: float = 3600.0,
 ) -> dict:
     """The whole frontier.json document.
+
+    `billable_s`/`cost_usd` on each point are totals over `horizon_s`
+    seconds, not one burst - see sweep()'s docstring for the floor-plus-
+    demand arithmetic behind that.
 
     Deliberately carries NO wall-clock stamp: it inherits the trace's
     recorded_at so that regenerating from an unchanged trace is
@@ -593,6 +640,7 @@ def build_frontier(
         usd_per_second=usd_per_second,
         granularity=granularity,
         bursts_per_hour=bursts_per_hour,
+        horizon_s=horizon_s,
     )
     return {
         "schema": FRONTIER_SCHEMA,
@@ -603,6 +651,7 @@ def build_frontier(
         ),
         "billing_granularity_s": granularity,
         "bursts_per_hour": bursts_per_hour,
+        "horizon_s": horizon_s,
         "calibration": {
             "cold_start_s": calibration.cold_start_s,
             "service_s": calibration.service_s,
@@ -627,6 +676,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="seconds each runner's billed time rounds up to (assumption)")
     parser.add_argument("--bursts-per-hour", type=float, default=1.0,
                        help="how often this burst repeats, for the hourly figure")
+    parser.add_argument("--horizon-s", type=float, default=3600.0,
+                       help="seconds the cost is totalled over (default 3600 = "
+                            "1h); a min_concurrency runner is billed for all of "
+                            "it, since it is alive around the clock regardless "
+                            "of when or how often the burst happens")
     parser.add_argument("--out", default="frontier.json")
     args = parser.parse_args(argv)
 
@@ -637,6 +691,7 @@ def main(argv: list[str] | None = None) -> int:
         usd_per_second=args.rate,
         granularity=args.billing_granularity,
         bursts_per_hour=args.bursts_per_hour,
+        horizon_s=args.horizon_s,
     )
     with open(args.out, "w") as handle:
         json.dump(document, handle, indent=2, sort_keys=True)
@@ -647,7 +702,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  cheapest on front: keep_alive={cheapest['keep_alive']} "
           f"min_concurrency={cheapest['min_concurrency']} "
           f"buffer={cheapest['concurrency_buffer']} "
-          f"-> ${cheapest['cost_usd']:.4f}, p95 wait {cheapest['p95_wait_s']:.1f}s")
+          f"-> ${cheapest['cost_usd']:.4f} over the {args.horizon_s:.0f}s horizon "
+          f"(not one burst), p95 wait {cheapest['p95_wait_s']:.1f}s")
     return 0
 
 
