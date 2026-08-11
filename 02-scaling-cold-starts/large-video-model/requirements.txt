@@ -1,0 +1,2 @@
+fal==1.78.2
+# mirrored from App.requirements in Task 4 (CI enforces exact match)
