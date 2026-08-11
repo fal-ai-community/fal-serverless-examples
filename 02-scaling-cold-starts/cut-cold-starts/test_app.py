@@ -102,3 +102,54 @@ def test_rejects_non_4k_plus_1_frames(app_client):
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
         app_client.run("/", {**SMALL_REQUEST, "num_frames": 18})
     assert exc_info.value.response.status_code == 422
+
+
+def _load_bench():
+    """Load bench.py under a unique module name: plain `import bench` could
+    collide with another example's bench.py in a whole-repo pytest run."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "cut_cold_starts_bench", HERE / "bench.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bench_table_formats_stages_in_order():
+    bench = _load_bench()
+
+    runs = [
+        {
+            "spawn_to_healthy_s": 100.0,
+            "variant": "optimized",
+            "gpu": "H100",
+            "built_caches_this_boot": False,
+            "stages": [
+                {"name": "imports", "seconds": 5.0},
+                {"name": "load weights (FlashPack, /data -> GPU)", "seconds": 9.5},
+            ],
+            "total_seconds": 90.0,
+        },
+        {
+            "spawn_to_healthy_s": 700.0,
+            "variant": "optimized",
+            "gpu": "H100",
+            "built_caches_this_boot": True,
+            "stages": [
+                {"name": "imports", "seconds": 5.2},
+                {"name": "download + build FlashPack pack (first boot only)", "seconds": 400.0},
+                {"name": "load weights (FlashPack, /data -> GPU)", "seconds": 12.0},
+            ],
+            "total_seconds": 650.0,
+        },
+    ]
+    table = bench.format_table(runs)
+    lines = table.splitlines()
+    assert lines[0].startswith("| stage |")
+    assert "| imports | 5.0 | 5.2 |" in table
+    # stages absent from a run render as - (dashes), never invented zeros
+    assert "| download + build FlashPack pack (first boot only) | - | 400.0 |" in table
+    assert "| setup() total | 90.0 | 650.0 |" in table
+    assert "| spawn -> healthy | 100.0 | 700.0 |" in table
