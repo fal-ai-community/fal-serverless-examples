@@ -1060,3 +1060,112 @@ $("go").onclick = async () => {
 - Spec coverage: loader ✓ (T2), taehv ✓ (T3), invoke+sizing ✓ (T4), previews+SSE ✓ (T5), clients ✓ (T6-7), README/catalog ✓ (T8), validation/rollout ✓ (T9), spike gates ✓ (T1).
 - All exact pins present except three marked `<fill from spike ...>` — deliberate spike outputs, listed in Task 1 Step 6.
 - Type consistency: `_generate` tuple, `_PreviewSession` API, event schema names match across T4/T5/T6/T7 tests and clients.
+
+---
+
+## Spike results (2026-08-11)
+
+Run on a registered throwaway app `rehan/serv-1303-spike` (GPU-H200, `app_auth="private"`,
+diffusers 0.39.0 / torch 2.12.1), deleted after the run — see "Teardown" below.
+Spike code was throwaway (scratchpad, not committed); every number below is from
+observed output of that deploy.
+
+| Gate | Measurement | Pass? |
+|---|---|---|
+| 1. Pipeline + callback on 0.39.0 | `LTX2Pipeline.from_pretrained` loads the pinned snapshot; `callback_on_step_end` fires on steps 0-7 with `callback_kwargs.keys() == ["latents"]`, `latents.shape == [1, 3072, 128]` (packed `[B,S,D]`); `pipe.scheduler.sigmas[i+1] == [0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]`; all distilled kwargs accepted (`sigmas`, `num_inference_steps`, `guidance_scale`, `use_cross_timestep`, `output_type`, `return_dict`, `callback_on_step_end*`, `frame_rate`); `DISTILLED_SIGMA_VALUES` importable from `diffusers.pipelines.ltx2.utils` | **PASS** |
+| 2. Preview legibility | x0-extrapolated, **wide**: composition-only at step 1, **watchable from step 2**, near-final from step 3. x0, **standard**: same step-2 threshold but visibly softer/smearier at every step. Un-extrapolated `raw` latents: pure noise through step 4, usable only at steps 6-7 — x0 extrapolation is required, not an optimisation. **Correction: the tiny VAE must NOT be fed denormalized latents** (see Decisions) | **PASS** |
+| 3. VRAM + timings | Peak 68.5 GB allocated / 71.6 GB device-resident at 768x512x57f on a 139.8 GB H200 (weights alone 65.9 GB); 71.9 / 77.4 GB at 1024x576x97f. Cold boot: `download_s` 365.0 (88.45 GB), `page_cache_s` 5.5, `pipe_load_s` 21.3, `tae_load_s` 0.4 = **392.2 s**. Warm boot (`/data` cached): 1.0 / 10.3-13.7 / 23.3-34.8 / 0.4 = **~35-50 s**. Warm generate at 768x512x57f: **2.5 s** with previews off, **6.9-7.0 s** with 7 x0 previews; 15.1 s at 1024x576x97f. Round-trip HTTP: 4.9 s / 9.1-9.2 s / 18.8 s | **PASS** |
+| 4. Preview cost | wide TAEHV decode of all 57 frames: **0.033-0.034 s** (0.082 s at 1024x576x97f); half-res mp4 encode (libx264, CPU) 0.15-0.20 s — the encode, not the decode, is the cost. Half-res mp4 **43.5-138.1 KB** -> base64 SSE event **58-184 KB**, well under the ~1 MB ceiling (full-res would be 96-476 KB). Denoise step budget is only ~0.31 s, so the decode+encode **must** stay on the plan's separate latest-wins worker thread; inline it roughly doubles wall time | **PASS** |
+| 5. Gateway SSE | 10 x **911.5 KB** events over **200.8 s** through `https://fal.run/...`, arriving incrementally (server->client lag 0.22-0.52 s per event, no batching, no buffering). Response kept `content-type: text/event-stream; charset=utf-8`, `transfer-encoding: chunked`, and echoed `x-fal-sse-last-event-as-body: 1` | **PASS** |
+
+### Decisions
+
+- **`TAEHV_VARIANT = "wide"`** (`taeltx2_3_wide.pth`). Same step-2 legibility threshold as standard but
+  markedly more detail from step 3 on, for +9 ms decode (0.034 s vs 0.025 s) and +36 MB of weights.
+  Its previews also *compress better* (43.5-138.1 KB vs 44.3-160.7 KB half-res), so events are smaller too.
+- **CORRECTION to the "Mid-step decode recipe" in Global Constraints:** do **not** call
+  `LTX2Pipeline._denormalize_latents` before `TAEHV.decode_video`. The taehv README states
+  *"TAEHV does not use any latent scales / shifts (TAEHV encodes / decodes exactly what diffusion
+  models use)"*, and the spike A/B confirms it: with denormalization every preview — including the
+  sigma=0 one, where the latents are final — comes out heavily blurred; without it, the step-7
+  preview matches the full-VAE decode. The recipe is
+  `_unpack_latents(lat, F_lat, H_lat, W_lat, 1, 1)` -> permute NCTHW->NTCHW -> `.to(bfloat16)` ->
+  `decode_video(parallel=True, show_progress_bar=False)`. Tasks 3/5 must drop the denormalize step.
+- **Smoke shape: keep `768x512`, `num_frames=57`.** Warm `/` invoke measured 9.1-9.2 s end to end
+  (2.5 s of it model, 4.0 s previews, 0.9 s final encode, 0.5 s upload) — far inside the < 100 s bar.
+  Add ~10 s for the first request after boot unless `setup()` warms up (Task 4 Step already plans this;
+  the spike's first post-boot call took 16.4 s vs 6.9 s warm).
+- **README/demo shape: consider `1024x576`, `num_frames=97`** (15.1 s generate, 18.8 s round trip,
+  71.9 GB peak). At the smoke shape the whole generation is over in ~7 s, which undersells the
+  preview stream; the larger shape shows it off and still fits the envelope comfortably.
+- **`HARNESS_STARTUP_TIMEOUT`: not required.** Cold boot measured 392 s, under the plan's own 500 s
+  trigger; margin to the 600 s default is ~35% and download-speed dependent, so raising it to 1500 in
+  Task 8 remains cheap insurance rather than a necessity.
+- **`taehv.py` transport: `app_files`, not `local_python_modules`.** `local_python_modules=["taehv"]`
+  requires cloudpickle to import `taehv` in the *deploying* environment, and `taehv.py` imports torch
+  at module scope while CI installs only `harness/requirements.txt` — it cannot work there.
+  `app_files = ["taehv.py"]` uploads the file to `/app/taehv.py` and puts `/app` on `sys.path`
+  remotely (verified: `app_files import ok (/app/taehv.py)`). **Task 4 must also set**
+  `app_files_context_dir = str(Path(__file__).resolve().parent)` — `app_files` entries resolve
+  against `local_file_path`, which the fal CLI sets but `harness/check.py`'s runpy loader does not,
+  so without an absolute context dir CI would look for `<repo root>/taehv.py`.
+- **`encode_video` call shapes** (`diffusers.utils.encode_video`, signature
+  `(video, fps, output_path, audio=None, audio_sample_rate=None, video_chunks_number=1)`):
+  previews pass a **torch uint8 tensor `[T, H, W, 3]`** — `encode_video(frames.permute(0,2,3,1).contiguous(), 24, path)`;
+  the final mux is `encode_video(video[0], 24, path, audio=audio[0].float().cpu(), audio_sample_rate=pipe.vocoder.config.output_sampling_rate)`
+  with `output_type="np"` giving `video` as `ndarray [1, 57, 512, 768, 3]` and `audio` as `[1, 2, 111840]`.
+  A *list* of numpy arrays is not an accepted input type (the function falls through to `next(video)`).
+
+### Resolved pins (from `pip freeze` in the deployed spike env)
+
+```
+accelerate==1.14.0      hf-transfer==0.1.9       pillow==12.3.0
+av==16.0.1              hf-xet==1.6.0            safetensors==0.8.0
+diffusers==0.39.0       huggingface_hub==1.27.0  torch==2.12.1
+fal==1.78.2             numpy==2.4.6             tqdm==4.70.0
+                                                 transformers==5.3.0
+```
+
+Runtime: Python 3.11.3, torch `2.12.1+cu130`, GPU `NVIDIA H200` (139.8 GB).
+Pipeline facts for Tasks 4/5: `vae_spatial_compression_ratio=32`, `vae_temporal_compression_ratio=8`,
+`transformer_spatial_patch_size=1`, `transformer_temporal_patch_size=1`,
+`vae.config.timestep_conditioning=False`, vocoder `LTX2VocoderWithBWE` at 48000 Hz,
+scheduler `FlowMatchEulerDiscreteScheduler`. TAEHV (both variants): `patch_size=4`,
+`latent_channels=128`, `t_upscale=8`, `frames_to_trim=7`; wide 30.17 M params, standard 11.76 M.
+
+### Checksums (for `loader.TAEHV_WEIGHTS_SHA` and the Task 3 vendoring)
+
+| File | sha256 | bytes |
+|---|---|---|
+| `taeltx2_3_wide.pth` (chosen) | `007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339` | 60400499 |
+| `taeltx2_3.pth` | `f01aeedfcac20b9c7ac2ccd8256720eec5638015e8a44a2d0f4a7887d63be958` | 23567285 |
+| `taehv.py` @ `32ac0146...` | `607c2a578bc2684e6cd21e96f8c1d024b1c32912e6f58c724f14131a3d4a2773` | 23839 |
+
+### Contact sheets
+
+Same seed (1303) and the same latents decoded by both tiny VAEs — the wide-vs-standard A/B:
+
+- x0 / **wide** montage (steps 1-7): https://v3b.fal.media/files/b/0aa5f430/_1vIoBaY1Ydn7bcDOAE10_sheet_x0_wide.png
+- x0 / **standard** montage (steps 1-7): https://v3b.fal.media/files/b/0aa5f41e/xxMZH95oZCCv-4ulSCnoa_sheet_x0_standard.png
+- full-VAE reference frame (the ground truth those previews approximate): https://v3b.fal.media/files/b/0aa5f430/pSL2v9onW7byhgm3E1Sqf_reference_full_vae_wide.png
+
+Supporting sheets from the recipe A/B (different seed):
+
+- x0 / wide **without** denormalization (correct — sharp): https://v3b.fal.media/files/b/0aa5f410/CVv0kW3ooqaTug2JY7Ppt_sheet_x0_wide.png
+- x0 / wide **with** denormalization (wrong — blurred): https://v3b.fal.media/files/b/0aa5f3e0/ALAFnVLFCk8LVQp1xATRU_sheet_x0_wide.png
+- `raw` (un-extrapolated) latents / wide — noise until step 6: https://v3b.fal.media/files/b/0aa5f3fe/dxr6b27R1GSpct3abLzyp_sheet_raw_wide.png
+
+Downloaded locally for review at
+`<scratchpad>/spike/sheets_ab/`, `sheets_wide_nodenorm/`, `sheets_wide/`, `sheets_standard/`
+(scratchpad path: `/tmp/claude-1000/-home-relic-fal-serverless-examples--claude-worktrees-video-model-intermediate-decoding-12b16f/86787203-ce83-4809-8c7c-dfe12297c5ac/scratchpad/spike/`).
+
+### Teardown
+
+`fal apps scale serv-1303-spike --min-concurrency 0 --keep-alive 1`, then
+`fal apps delete serv-1303-spike` -> `Application 'serv-1303-spike' deleted
+(bf60f289-1fff-46ac-80a3-c7d06bb25264)`. Verified: `fal apps list` no longer contains it,
+`fal apps runners serv-1303-spike` returns "Application ... not found", and `fal runners list`
+shows no spike runner.
+
+**Gate verdict: all five PASS — build the example as designed**, with the denormalization
+correction and the `app_files` transport folded into Tasks 3/4/5.
