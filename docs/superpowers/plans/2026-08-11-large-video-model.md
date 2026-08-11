@@ -22,7 +22,7 @@
 - Model/weights (pinned): `diffusers/LTX-2.3-Distilled-Diffusers` @ `432e0d3c2d1769aaa4d295f9243f7062bf6b47ee` (95 GB, ungated). Tiny VAE: madebyollin/taehv branch `2026_03_11_taeltx23_wide` @ `32ac0146b11007cda5a57b60a3b35653361fb8a4` (`taehv.py` + `taeltx2_3_wide.pth`, 60 MB) and `taeltx2_3.pth` (24 MB, same content on main @ `e589fddc076e77f5ba8cd6baabe4ba3260b261cd`).
 - Distilled call contract (from the model card + `diffusers/pipelines/ltx2/utils.py`): `sigmas=DISTILLED_SIGMA_VALUES, num_inference_steps=8, guidance_scale=1.0`, LTX-2.3 behavior via `use_cross_timestep=True`.
 - Callback contract (diffusers 0.39.0 `pipeline_ltx2.py:1409-1421`): `callback_on_step_end(pipe, i, t, callback_kwargs)` → MUST return a dict; `callback_kwargs["latents"]` is video latents, post-step, packed `[B, S, D]`, at `pipe.scheduler.sigmas[i+1]`; audio latents are NOT reachable.
-- Mid-step decode recipe: `LTX2Pipeline._unpack_latents(lat, F_lat, H_lat, W_lat, 1, 1)` → `[B,128,F,H,W]`; `LTX2Pipeline._denormalize_latents(lat, vae.latents_mean, vae.latents_std, vae.config.scaling_factor)`; permute NCTHW→NTCHW; `TAEHV.decode_video()` → NTCHW RGB [0,1], first 7 frames trimmed.
+- Mid-step decode recipe (SPIKE-CORRECTED 2026-08-11): `LTX2Pipeline._unpack_latents(lat, F_lat, H_lat, W_lat, 1, 1)` → `[B,128,F,H,W]`; permute NCTHW→NTCHW; `.to(torch.bfloat16)`; `TAEHV.decode_video()` → NTCHW RGB [0,1], first 7 frames trimmed. **NO `_denormalize_latents`** — TAEHV consumes diffusion-space latents as-is; denormalizing saturates its input clamp and blurs every preview (A/B-verified on the spike deploy).
 - Latent geometry: `H_lat = height//32`, `W_lat = width//32`, `F_lat = (frames-1)//8 + 1`; height/width divisible by 32; frames on the 8k+1 grid.
 
 ---
@@ -318,7 +318,7 @@ _TAEHV_REF = "32ac0146b11007cda5a57b60a3b35653361fb8a4"
 TAEHV_WEIGHTS_URL = (
     f"https://raw.githubusercontent.com/madebyollin/taehv/{_TAEHV_REF}/taeltx2_3_wide.pth"
 )
-TAEHV_WEIGHTS_SHA = "<fill from spike: sha256 of the downloaded file>"
+TAEHV_WEIGHTS_SHA = "007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339"  # spike-verified
 _TAEHV_DIR = Path("/data/models/taehv")
 
 
@@ -346,7 +346,7 @@ def fetch_model() -> str:
         )
         print(f"[loader] model cache hit in {time.time() - t0:.1f}s")
     except (LocalEntryNotFoundError, FileNotFoundError):
-        print(f"[loader] cold download of {MODEL_REPO} (~95 GB) ...")
+        print(f"[loader] cold download of {MODEL_REPO} (~88 GB) ...")
         path = snapshot_download(
             MODEL_REPO, revision=MODEL_REV, local_dir=MODEL_DIR, max_workers=32
         )
@@ -486,11 +486,12 @@ Expected: `1 skipped` (no live app - fixture skips; the harness will run it for 
 """Serve a 20+ GB video model - LTX-2.3 22B distilled on one H200.
 
 Catalog slot 02.3 (SERV-1303). The three lessons:
-  1. loader.py - parallel download + page-cache pre-read for ~95 GB of weights
+  1. loader.py - parallel download + page-cache pre-read for ~88 GB of weights
   2. GPU sizing - ~70 GB resident bf16 needs H200-class VRAM (see README math)
   3. /stream    - intermediate-step tiny-VAE previews over SSE (Task 5)
 """
 import time
+from pathlib import Path
 from typing import Literal
 
 import fal
@@ -541,8 +542,14 @@ class Output(BaseModel):
 class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idle H200 bills
     machine_type = "GPU-H200"  # ~70 GB resident bf16 weights - see README "GPU sizing"
     app_auth = "private"
-    startup_timeout = 1800  # first-ever boot downloads ~95 GB to /data
-    local_python_modules = ["loader", "taehv"]
+    startup_timeout = 1800  # first-ever boot downloads ~88 GB to /data (spike: 392 s cold)
+    local_python_modules = ["loader"]  # pure-python, safe to import in the deploying env
+    # taehv.py imports torch at module top; local_python_modules would make CI's
+    # torch-less env import it at deploy time. app_files ships it by path instead;
+    # the explicit context_dir keeps it example-relative regardless of the loader
+    # (fal run sets local_file_path, harness/check.py's runpy loader does not).
+    app_files = ["taehv.py"]
+    app_files_context_dir = str(Path(__file__).resolve().parent)
     # Authoritative deploy-time deps; requirements.txt mirrors exactly (CI-enforced).
     requirements = [
         "fal==1.78.2",  # keep in sync with harness/requirements.txt
@@ -552,8 +559,8 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
         "accelerate==1.14.0",
         "av==16.0.1",  # diffusers.utils.encode_video (mp4 mux, incl. audio)
         "hf-transfer==0.1.9",
-        "huggingface_hub==<fill from spike pip freeze>",
-        "numpy==<fill from spike pip freeze>",
+        "huggingface_hub==1.27.0",
+        "numpy==2.4.6",
     ]
 
     def setup(self) -> None:
@@ -621,7 +628,8 @@ class App(fal.App, keep_alive=300):  # 5 min: video sessions come in bursts; idl
         timings["generate_s"] = round(time.time() - t0, 1)
 
         t0 = time.time()
-        out_path = tempfile.mktemp(suffix=".mp4")
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            out_path = tmp.name
         waveform = audio[0]
         if not torch.is_tensor(waveform):
             waveform = torch.from_numpy(waveform)
@@ -779,26 +787,28 @@ class _PreviewSession:
         from diffusers import LTX2Pipeline
         from diffusers.utils import encode_video
 
-        pipe, tae = self.app.pipe, self.app.tiny_vae
+        tae = self.app.tiny_vae
         f_lat = (self.num_frames - 1) // 8 + 1
         with torch.inference_mode():
             lat = LTX2Pipeline._unpack_latents(
                 x0, f_lat, self.height // 32, self.width // 32, 1, 1
             )
-            lat = LTX2Pipeline._denormalize_latents(
-                lat, pipe.vae.latents_mean, pipe.vae.latents_std, pipe.vae.config.scaling_factor
-            )
+            # TAEHV consumes diffusion-space latents directly - do NOT apply
+            # _denormalize_latents here (saturates its input clamp; spike-verified).
             rgb = tae.decode_video(  # NTCHW in, NTCHW [0,1] out, first 7 frames trimmed
                 lat.permute(0, 2, 1, 3, 4).to(torch.bfloat16),
                 parallel=True, show_progress_bar=False,
             )
             rgb = torch.nn.functional.interpolate(  # half-res previews: ~4x smaller events
-                rgb[0].float(), scale_factor=0.5, mode="bilinear", align_corners=False
+                rgb[0].float(), scale_factor=0.5, mode="area"
             )
-            frames = (rgb.clamp(0, 1).permute(0, 2, 3, 1) * 255).to(torch.uint8).cpu().numpy()
-        path = tempfile.mktemp(suffix=".mp4")
+            frames = (rgb.clamp(0, 1).permute(0, 2, 3, 1) * 255).to(torch.uint8).cpu()
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            path = tmp.name
         try:
-            encode_video(list(frames), 24.0, path)
+            # encode_video accepts a torch uint8 [T,H,W,3] tensor; .contiguous()
+            # matters (av.VideoFrame.from_ndarray requirement).
+            encode_video(frames.contiguous(), 24, path)
             payload = base64.b64encode(open(path, "rb").read()).decode()
         finally:
             if os.path.exists(path):
@@ -1027,7 +1037,7 @@ $("go").onclick = async () => {
 - [ ] **Step 1: Write the README** following the template's §4-A order with this content map (write real prose, not these bullets):
 
 - Intro: serving a 20+ GB model well + watching it generate.
-- **What you get**: final mp4 (embed/link), a GIF of `viewer.html` mid-generation (record during Task 9's deployed run), the smoke-request JSON.
+- **What you get**: final mp4 (embed/link), a GIF of `viewer.html` mid-generation (record during Task 9's deployed run — showcase at 1024x576/97 frames per the spike suggestion: ~15 s of generation demos previews far better than the 7 s smoke shape), the smoke-request JSON.
 - **Run it**: template's pinned block, then `python client.py` + `viewer.html` usage.
 - **How it works**: 3 subsections — `loader.py` (why parallel beats sequential on /data: 4 MB content-addressed chunks; the local_files_only warm path), **GPU sizing** (the ~70 GB bf16 math over the machine-types table: A100-40/L40-48 no, H100-80 no activation headroom, H200-141 yes — THE teaching section), previews (x0 extrapolation + tiny VAE + latest-wins threading; link the taehv repo).
 - **Deploy**: `fal deploy`, `fal_client.stream()` snippet mirroring client.py, note `/stream` goes through the synchronous gateway (`fal.run`), not the queue.
@@ -1046,7 +1056,7 @@ $("go").onclick = async () => {
 ### Task 9: Full validation + numbers + PR
 
 **Files:**
-- Modify: `.github/workflows/check.yml` (only if spike/Task 4 showed cold boot > 500 s: add `HARNESS_STARTUP_TIMEOUT: "1500"` to the deploy job env with a comment naming 02.3)
+- Modify: `.github/workflows/check.yml` — NOT NEEDED per spike (cold boot 392 s < 600 s default); skip unless Task 4/9 observes worse
 - Modify: `02-scaling-cold-starts/large-video-model/README.md` (stamped numbers + GIF)
 
 - [ ] **Step 1: Full harness run** — `python harness/check.py --example 02-scaling-cold-starts/large-video-model` twice (cold-ish + warm): green, teardown confirmed both times.
