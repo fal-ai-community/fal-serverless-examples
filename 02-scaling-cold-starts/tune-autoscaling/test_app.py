@@ -831,3 +831,45 @@ def test_main_reports_a_wrong_schema_trace_without_a_traceback(tmp_path, capsys)
     lines = captured.err.strip("\n").splitlines()
     assert len(lines) == 1, f"expected one clean error line, got: {captured.err!r}"
     assert str(wrong) in lines[0]
+
+
+# --------------------------------------------------------------------------
+# Live tests: these need a real ephemeral deploy. The app_client fixture
+# skips when HARNESS_APP_URL is unset, so plain pytest stays free.
+# --------------------------------------------------------------------------
+
+PROMPT = "a calico cat riding a bicycle through a sunlit wheat field, film photo"
+
+
+def test_generates_an_image_and_echoes_the_seed(app_client):
+    response = app_client.run("/", {"prompt": PROMPT, "seed": 42})
+    assert response["image"]["url"].startswith("http")
+    assert response["seed"] == 42
+
+
+def test_reports_which_runner_served_it(app_client):
+    response = app_client.run("/", {"prompt": PROMPT})
+    # burst.py counts distinct runners by this field alone - no metrics API
+    # and no ADMIN credential - so its shape is load-bearing.
+    assert isinstance(response["served_by"], str)
+    assert len(response["served_by"]) == 12
+    assert response["setup_duration_s"] > 0, "setup() must time itself"
+
+
+def test_sequential_requests_land_on_the_same_warm_runner(app_client):
+    # An ephemeral deploy with min_concurrency=0 and concurrency_buffer=0
+    # holds exactly one runner, so two sequential requests must share it.
+    # This is the property that lets a trace's distinct served_by values be
+    # read as a runner count.
+    first = app_client.run("/", {"prompt": PROMPT})
+    second = app_client.run("/", {"prompt": PROMPT})
+    assert first["served_by"] == second["served_by"]
+    assert first["setup_duration_s"] == second["setup_duration_s"]
+
+
+def test_warm_requests_are_not_flagged_cold(app_client):
+    # harness/check.py fires one smoke request at "/" before running this
+    # file, so by now the runner has served at least once and was_cold must
+    # be False. If the harness ever stops smoking first, this flips.
+    response = app_client.run("/", {"prompt": PROMPT})
+    assert response["was_cold"] is False
