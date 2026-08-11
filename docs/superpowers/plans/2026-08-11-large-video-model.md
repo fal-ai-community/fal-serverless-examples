@@ -19,7 +19,7 @@
 - README follows `templates/example/README.md` §4-A section order exactly.
 - No performance claims except ONE stamped measured table (02.2 precedent), values from the validated deploy.
 - Never cite internal registry code anywhere; public sources only.
-- Model/weights (pinned): `diffusers/LTX-2.3-Distilled-Diffusers` @ `432e0d3c2d1769aaa4d295f9243f7062bf6b47ee` (95 GB, ungated). Tiny VAE: madebyollin/taehv branch `2026_03_11_taeltx23_wide` @ `32ac0146b11007cda5a57b60a3b35653361fb8a4` (`taehv.py` + `taeltx2_3_wide.pth`, 60 MB) and `taeltx2_3.pth` (24 MB, same content on main @ `e589fddc076e77f5ba8cd6baabe4ba3260b261cd`).
+- Model/weights (pinned): `diffusers/LTX-2.3-Distilled-Diffusers` @ `432e0d3c2d1769aaa4d295f9243f7062bf6b47ee` (~88 GB on disk measured by the spike; ungated). Tiny VAE: madebyollin/taehv branch `2026_03_11_taeltx23_wide` @ `32ac0146b11007cda5a57b60a3b35653361fb8a4` (`taehv.py` + `taeltx2_3_wide.pth`, 60 MB) and `taeltx2_3.pth` (24 MB, same content on main @ `e589fddc076e77f5ba8cd6baabe4ba3260b261cd`).
 - Distilled call contract (from the model card + `diffusers/pipelines/ltx2/utils.py`): `sigmas=DISTILLED_SIGMA_VALUES, num_inference_steps=8, guidance_scale=1.0`, LTX-2.3 behavior via `use_cross_timestep=True`.
 - Callback contract (diffusers 0.39.0 `pipeline_ltx2.py:1409-1421`): `callback_on_step_end(pipe, i, t, callback_kwargs)` → MUST return a dict; `callback_kwargs["latents"]` is video latents, post-step, packed `[B, S, D]`, at `pipe.scheduler.sigmas[i+1]`; audio latents are NOT reachable.
 - Mid-step decode recipe (SPIKE-CORRECTED 2026-08-11): `LTX2Pipeline._unpack_latents(lat, F_lat, H_lat, W_lat, 1, 1)` → `[B,128,F,H,W]`; permute NCTHW→NTCHW; `.to(torch.bfloat16)`; `TAEHV.decode_video()` → NTCHW RGB [0,1], first 7 frames trimmed. **NO `_denormalize_latents`** — TAEHV consumes diffusion-space latents as-is; denormalizing saturates its input clamp and blurs every preview (A/B-verified on the spike deploy).
@@ -1047,7 +1047,7 @@ $("go").onclick = async () => {
 
 - [ ] **Step 2: Tier README row** — in `02-scaling-cold-starts/README.md`, change the 02.3 row's Example cell to link `[Serve a 20+ GB video model...](large-video-model/)` and readiness to reflect "shipped" per the table style used by tier 00.
 
-- [ ] **Step 3: llms.txt** — add under "Live examples": `- [02.3 large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~95 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE`
+- [ ] **Step 3: llms.txt** — add under "Live examples": `- [02.3 large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE`
 
 - [ ] **Step 4: Commit** — `git add -A && git commit -m "docs(02.3): README, tier table, llms.txt (SERV-1303)"`
 
@@ -1068,7 +1068,7 @@ $("go").onclick = async () => {
 ## Self-review checklist (run after writing)
 
 - Spec coverage: loader ✓ (T2), taehv ✓ (T3), invoke+sizing ✓ (T4), previews+SSE ✓ (T5), clients ✓ (T6-7), README/catalog ✓ (T8), validation/rollout ✓ (T9), spike gates ✓ (T1).
-- All exact pins present except three marked `<fill from spike ...>` — deliberate spike outputs, listed in Task 1 Step 6.
+- All pins resolved (spike fold-in, 2026-08-11): `huggingface_hub==1.27.0`, `numpy==2.4.6`, `TAEHV_WEIGHTS_SHA=007788e6...` — no `<fill>` markers remain.
 - Type consistency: `_generate` tuple, `_PreviewSession` API, event schema names match across T4/T5/T6/T7 tests and clients.
 
 ---
@@ -1092,7 +1092,8 @@ observed output of that deploy.
 
 - **`TAEHV_VARIANT = "wide"`** (`taeltx2_3_wide.pth`). Same step-2 legibility threshold as standard but
   markedly more detail from step 3 on, for +9 ms decode (0.034 s vs 0.025 s) and +36 MB of weights.
-  Its previews also *compress better* (43.5-138.1 KB vs 44.3-160.7 KB half-res), so events are smaller too.
+  Its cleaner output also compresses at least as well (wide half-res mp4 43.5-138.1 KB, run_prod_3), so
+  quality costs nothing on event size.
 - **CORRECTION to the "Mid-step decode recipe" in Global Constraints:** do **not** call
   `LTX2Pipeline._denormalize_latents` before `TAEHV.decode_video`. The taehv README states
   *"TAEHV does not use any latent scales / shifts (TAEHV encodes / decodes exactly what diffusion
@@ -1101,8 +1102,10 @@ observed output of that deploy.
   preview matches the full-VAE decode. The recipe is
   `_unpack_latents(lat, F_lat, H_lat, W_lat, 1, 1)` -> permute NCTHW->NTCHW -> `.to(bfloat16)` ->
   `decode_video(parallel=True, show_progress_bar=False)`. Tasks 3/5 must drop the denormalize step.
-- **Smoke shape: keep `768x512`, `num_frames=57`.** Warm `/` invoke measured 9.1-9.2 s end to end
-  (2.5 s of it model, 4.0 s previews, 0.9 s final encode, 0.5 s upload) — far inside the < 100 s bar.
+- **Smoke shape: keep `768x512`, `num_frames=57`.** Warm invoke measured 9.1-9.2 s end to end on the
+  spike's `/` (which ran previews inline: 2.5 s denoise + 4.0 s preview overhead + 0.9 s final encode
+  + 0.5 s upload = 7.9 s in-app, remainder HTTP/CDN framing; run_prod_1/3). The real example's `/`
+  runs previews off (4.9 s measured, run_nopreview) — far inside the < 100 s bar either way.
   Add ~10 s for the first request after boot unless `setup()` warms up (Task 4 Step already plans this;
   the spike's first post-boot call took 16.4 s vs 6.9 s warm).
 - **README/demo shape: consider `1024x576`, `num_frames=97`** (15.1 s generate, 18.8 s round trip,
@@ -1124,7 +1127,8 @@ observed output of that deploy.
   previews pass a **torch uint8 tensor `[T, H, W, 3]`** — `encode_video(frames.permute(0,2,3,1).contiguous(), 24, path)`;
   the final mux is `encode_video(video[0], 24, path, audio=audio[0].float().cpu(), audio_sample_rate=pipe.vocoder.config.output_sampling_rate)`
   with `output_type="np"` giving `video` as `ndarray [1, 57, 512, 768, 3]` and `audio` as `[1, 2, 111840]`.
-  A *list* of numpy arrays is not an accepted input type (the function falls through to `next(video)`).
+  A *list* of numpy arrays appears unsupported (falls through to `next(video)` per source reading —
+  not executed on the deploy; the uint8-tensor form IS the executed, verified path).
 
 ### Resolved pins (from `pip freeze` in the deployed spike env)
 
