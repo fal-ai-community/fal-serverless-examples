@@ -16,7 +16,7 @@ preview on small reconstructions, then the final assets by URL:
 ```json
 {"type":"geometry","step":12,"total_steps":25,"progress":0.27,"voxels":"<base64>","count":8541,"grid_size":64}
 {"type":"appearance","step":20,"total_steps":25,"progress":0.82,"voxels":"<base64>","count":8541,"grid_size":64}
-{"type":"complete","progress":1.0,"glb":{"url":"https://…/model.glb"},"gaussian_splat":{"url":"https://…/splat.ply"},"seed":42}
+{"type":"complete","progress":1.0,"model_glb":{"url":"https://…/model.glb"},"gaussian_splat":{"url":"https://…/splat.ply"},"seed":42}
 ```
 
 ## Run it
@@ -55,7 +55,7 @@ with httpx.stream(
 
 ## How it works
 
-Three ideas, in the order they appear in app.py:
+Three ideas (app.py builds them bottom-up - encoder, then queue, then driver):
 
 1. **No fork.** The official pipeline's generators expose `generate_iter()`,
    a public per-solver-step iterator (`generate()` is just "loop it, keep the
@@ -112,7 +112,7 @@ for await (const event of stream) console.log(event.type, event.progress);
 
 ## Cost & tuning
 
-Measured on an H100 warm runner (spike numbers, bare pipeline): a full
+Measured on an H100 warm runner (bare pipeline): a full
 25+25-step generation (vertex-color GLB, no texture bake) took **≈16s**,
 averaging 158ms/step in stage 1 (geometry) and 112ms/step in stage 2
 (appearance); each colored frame costs one extra Gaussian decode at

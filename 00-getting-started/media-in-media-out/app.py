@@ -13,8 +13,7 @@ from typing import Literal
 
 import fal
 from fal.exceptions import FieldException
-from fal.toolkit import File, Image, download_file
-from fal.toolkit.utils.download_utils import DownloadError
+from fal.toolkit import DownloadError, File, Image, download_file
 from pydantic import BaseModel, Field
 
 MAX_DOWNLOAD_MB = 20
@@ -64,7 +63,9 @@ class Input(BaseModel):
 
 class Output(BaseModel):
     image: Image = Field(description="The processed image, hosted on fal's CDN.")
-    thumbnail: Image = Field(description=f"A {THUMBNAIL_EDGE}px thumbnail of the same image.")
+    thumbnail: Image = Field(
+        description=f"A thumbnail of the same image, at most {THUMBNAIL_EDGE}px."
+    )
     report: File = Field(
         description="A JSON report of what happened (dimensions, bytes, timings)."
     )
@@ -79,21 +80,17 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         "pillow==11.3.0",
     ]
 
-    def setup(self) -> None:
-        """Nothing to load - media apps are I/O-bound, not model-bound."""
-
     @fal.endpoint("/")
     def process(self, request: Input) -> Output:
         from PIL import Image as PILImage
         from PIL import ImageOps
 
-        # MEDIA IN - a bounded, SSRF-guarded download (both built into
-        # download_file), cached on /data persistent storage. The cache is
-        # keyed by URL hash so a repeat request for the same URL skips the
-        # transfer entirely - across workers, deploys, and CI runs.
-        t0 = time.monotonic()
+        # MEDIA IN - cache on /data keyed by URL hash; repeats skip the transfer.
+        t0 = time.perf_counter()
         cache_dir = CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
-        cached = next(cache_dir.glob("*"), None) if cache_dir.is_dir() else None
+        # download_file stages partial downloads as same-directory .tmp files;
+        # never serve one as the cached image.
+        cached = next((p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None)
         if cached is not None:
             source_path = cached
         else:
@@ -105,15 +102,13 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                 raise FieldException(
                     field="image_url",
                     message=f"could not download (limit {MAX_DOWNLOAD_MB} MB): {exc}",
-                )
-        download_ms = int((time.monotonic() - t0) * 1000)
+                    type="file_download_error",
+                ) from exc
+        download_ms = int((time.perf_counter() - t0) * 1000)
 
-        # PROCESS - plain Pillow work with the gotchas handled the way
-        # production apps do: decode errors are a typed 422, oversized pixel
-        # counts are rejected before decode allocates, EXIF rotation is
-        # best-effort, and exotic modes (CMYK, palette) are normalized to
-        # something the chosen encoder can actually write.
-        t1 = time.monotonic()
+        # PROCESS - the pixel gate sits between open() and load(): reject
+        # oversized images before decode allocates.
+        t1 = time.perf_counter()
         try:
             source = PILImage.open(source_path)
             if source.width * source.height > MAX_PIXELS:
@@ -123,32 +118,41 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                         f"image too large ({source.width}x{source.height}); "
                         f"max ~{MAX_PIXELS // 1_000_000} megapixels"
                     ),
+                    type="image_too_large",
                 )
             source.load()
         except FieldException:
             raise
+        except PILImage.DecompressionBombError:
+            # open() itself rejects images over 2x MAX_PIXELS, before our gate runs
+            raise FieldException(
+                field="image_url",
+                message=f"image too large; max ~{MAX_PIXELS // 1_000_000} megapixels",
+                type="image_too_large",
+            ) from None
         except Exception:
-            raise FieldException(field="image_url", message="not a decodable image")
+            raise FieldException(
+                field="image_url",
+                message="not a decodable image",
+                type="unsupported_image_format",
+            ) from None
         try:
             source = ImageOps.exif_transpose(source)
         except Exception:
             pass  # best-effort: bad EXIF metadata must not reject a decodable image
         original_size = (source.width, source.height)
-        if source.mode not in ("RGB", "RGBA"):
-            source = source.convert(
-                "RGBA" if request.output_format in ("png", "webp") else "RGB"
-            )
-        if request.output_format == "jpeg" and source.mode == "RGBA":
-            source = source.convert("RGB")  # JPEG has no alpha channel
-        processed = source.copy()
-        processed.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
+        if request.output_format == "jpeg":
+            if source.mode != "RGB":
+                source = source.convert("RGB")  # JPEG has no alpha channel
+        elif source.mode not in ("RGB", "RGBA"):
+            source = source.convert("RGBA")
+        source.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
+        processed = source
         thumb = processed.copy()  # derive from the smaller image, not the original
         thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.LANCZOS)
-        processed_ms = int((time.monotonic() - t1) * 1000)
+        processed_ms = int((time.perf_counter() - t1) * 1000)
 
-        # MEDIA OUT - format choice becomes the file's content type; an optional
-        # per-file retention rides along as an object lifecycle preference; and
-        # sync_mode swaps the CDN for inline data URIs.
+        # MEDIA OUT
         repository = "in_memory" if request.sync_mode else "fal_v3"
         save_kwargs = None
         if request.expires_in_seconds is not None:
@@ -157,7 +161,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                     "expiration_duration_seconds": request.expires_in_seconds
                 }
             }
-        t2 = time.monotonic()
+        t2 = time.perf_counter()
         image = Image.from_pil(
             processed,
             format=request.output_format,
@@ -172,7 +176,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
             save_kwargs=save_kwargs,
             fallback_save_kwargs=save_kwargs,
         )
-        upload_ms = int((time.monotonic() - t2) * 1000)
+        upload_ms = int((time.perf_counter() - t2) * 1000)
 
         report_data = {
             "source": {

@@ -60,8 +60,9 @@ def test_generate_smoke(app_client):
         },
     )
     assert response["seed"] == 7
-    assert response["generation_seconds"] > 0
+    assert response["timings"]["generate"] > 0
     url = response["video"]["url"]
     assert url.startswith("https://")
-    head = httpx.get(url, timeout=60).content[:64]
+    # Range request: check the mp4 ftyp box without downloading the clip.
+    head = httpx.get(url, timeout=60, headers={"Range": "bytes=0-63"}).content[:64]
     assert b"ftyp" in head[:16], f"not an mp4: {head!r}"

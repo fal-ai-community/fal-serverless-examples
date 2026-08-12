@@ -20,6 +20,8 @@ def test_invoke_contract(app_client):
     assert response["video"]["content_type"] == "video/mp4"
     assert response["video"]["file_name"] == "output.mp4"
     assert isinstance(response["seed"], int)
+    # Default num_frames=57 already sits on the 8k+1 grid, so it echoes unchanged.
+    assert response["num_frames"] == 57
     assert response["timings"]["generate_s"] > 0
 
 
@@ -60,3 +62,4 @@ def test_stream_previews(app_client):
     # content_type/file_name too, or clients get application/octet-stream.
     assert events[-1]["video"]["content_type"] == "video/mp4"
     assert events[-1]["video"]["file_name"] == "output.mp4"
+    assert events[-1]["num_frames"] == 57

@@ -10,6 +10,7 @@ player) and final.mp4 (with audio) when generation completes.
 """
 import base64
 import pathlib
+import shutil
 import sys
 import urllib.request
 
@@ -17,7 +18,9 @@ import fal_client
 
 
 def main() -> None:
-    app_id, prompt = sys.argv[1], sys.argv[2]
+    if len(sys.argv) != 3:
+        raise SystemExit(__doc__)
+    app_id, prompt = sys.argv[1:3]
     for event in fal_client.stream(app_id, {"prompt": prompt}, path="/stream"):
         if event["type"] == "preview":
             data = base64.b64decode(event["video"]["url"].split(",", 1)[1])
@@ -30,7 +33,9 @@ def main() -> None:
                 f" - preview_latest.mp4 updated ({len(data) // 1024} KB)"
             )
         elif event["type"] == "result":
-            urllib.request.urlretrieve(event["video"]["url"], "final.mp4")
+            with urllib.request.urlopen(event["video"]["url"], timeout=60) as resp:
+                with open("final.mp4", "wb") as out:
+                    shutil.copyfileobj(resp, out)
             print(f"done: final.mp4 (seed {event['seed']}, {event['timings']})")
         elif event["type"] == "error":
             print(f"generation failed ({event['status_code']}): {event['detail']}")

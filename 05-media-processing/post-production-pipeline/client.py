@@ -85,9 +85,10 @@ def main() -> int:
         )
         status.raise_for_status()
         body = status.json()
-        for line in (body.get("logs") or [])[seen_logs:]:
+        logs = body.get("logs") or []
+        for line in logs[seen_logs:]:
             print(f"  [app] {line.get('message', line)}")
-        seen_logs = len(body.get("logs") or [])
+        seen_logs = len(logs)
         if body["status"] != last_status:
             last_status = body["status"]
             position = body.get("queue_position")

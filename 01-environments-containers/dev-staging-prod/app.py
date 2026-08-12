@@ -1,22 +1,14 @@
-"""Dev -> staging -> prod: one codebase, three environments.
+"""Catalog slot 01.3 (SERV-1299). Dev -> staging -> prod.
 
-Catalog slot 01.3 (SERV-1299). The app is deliberately boring - what it
-demonstrates is that IDENTICAL code behaves differently per environment
-because its secrets and scale settings are environment-scoped. It reports
-back exactly what it was given, so you can prove the promotion worked.
-
-Important framing: fal has no "promote" primitive. An app cannot be moved
-between environments; promotion is redeploying the same code into the next
-one. Revisions and rollbacks are per-app WITHIN one environment.
+Deliberately boring app: it reports back exactly what each environment gave
+it (secret value + code version), so a promotion or rollback can be proven
+rather than assumed.
 """
 import os
 
 import fal
 from pydantic import BaseModel, Field
 
-# Set per environment:
-#   fal secrets set --env staging DEPLOY_STAGE=staging
-#   fal secrets set DEPLOY_STAGE=production        # main is the default env
 STAGE_SECRET = "DEPLOY_STAGE"
 # Bumped by hand to make rollbacks visible - see the README's rollback step.
 CODE_VERSION = "1.0.0"
@@ -32,14 +24,21 @@ class Input(BaseModel):
 class Output(BaseModel):
     echo: str = Field(description="Your input, unchanged.")
     stage: str = Field(
-        description="Value of the DEPLOY_STAGE secret in THIS environment."
+        description=(
+            "Value of the DEPLOY_STAGE secret in THIS environment, "
+            "or 'unset' when the secret is missing."
+        )
     )
     code_version: str = Field(description="Constant baked into the code.")
     environment_configured: bool = Field(
-        description="False when the environment has no DEPLOY_STAGE secret set."
+        description=(
+            "False when the environment's DEPLOY_STAGE secret is missing or empty."
+        )
     )
 
 
+# fal derives the app name from the class name: PromotionDemo deploys as
+# "promotion-demo", the name the README's URLs are written against.
 class PromotionDemo(fal.App, keep_alive=60):
     machine_type = "S"
     app_auth = "private"
@@ -55,7 +54,7 @@ class PromotionDemo(fal.App, keep_alive=60):
 
     @fal.endpoint("/")
     def whoami(self, request: Input) -> Output:
-        stage = os.getenv(STAGE_SECRET)
+        stage = os.getenv(STAGE_SECRET) or None  # empty-string secret == unset
         return Output(
             echo=request.echo,
             stage=stage or "unset",

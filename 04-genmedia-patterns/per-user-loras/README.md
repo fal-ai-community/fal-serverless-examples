@@ -71,7 +71,7 @@ The first-ever run downloads the base model (~16 GB) plus the eight featured ada
 
 **Clients never compute hints.** Every response carries the header `x-fal-runner-hint: lora:<user_id>` — capture it and pass it back as the `hint=` option on your next request for that user. One line of client code turns a stateless queue into cache-affine routing.
 
-**`/register` is the product loop.** POST a `user_id` plus a LoRA URL or Hugging Face repo id (this is what a training job emits — see 04.4), and the app downloads it to `/data` (size-capped, safetensors-validated, temp-file + atomic rename so concurrent runners never see partial files) and writes the KV index. Omit the URL and the app generates a small deterministic synthetic adapter instead — that's how `fleet_demo.py` creates a thousand users without training a thousand LoRAs. Registration failures are typed 422s (`lora_too_large`, `lora_invalid_format`, `lora_download_failed`, `lora_incompatible`); GPU OOM during a load is deliberately **not** a 422 — it propagates as a retryable failure.
+**`/register` is the product loop.** POST a `user_id` plus a LoRA URL or Hugging Face repo id (this is what a training job emits — see 04.4), and the app downloads it to `/data` (size-capped, safetensors-validated, temp-file + atomic rename so concurrent runners never see partial files) and writes the KV index. Omit the URL and the app generates a small deterministic synthetic adapter instead — that's how `fleet_demo.py` creates a thousand users without training a thousand LoRAs. Registration failures are typed 422s (`lora_too_large`, `lora_invalid_format`, `lora_download_failed`, `lora_incompatible`); the eight featured ids are reserved and can't be re-registered (`user_reserved`). GPU OOM during a load is deliberately **not** a 422 — it propagates as a retryable failure.
 
 **Warmup goes through the LoRA path.** `setup()` ends by activating a featured adapter and generating once — a runner that can't serve adapters never enters the pool.
 
@@ -84,7 +84,7 @@ fal deploy app.py
 **Python** — the `hint=` option sets the `X-Fal-Runner-Hint` header for you:
 
 ```bash
-pip install fal-client
+pip install fal-client==1.0.0
 ```
 
 ```python

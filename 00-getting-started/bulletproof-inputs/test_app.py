@@ -84,8 +84,8 @@ def test_archive_gates(tmp_path):
     assert excinfo.value.type == "file_too_large"
 
     stats = app_module.inspect_zip(bomb, max_entries=100, max_uncompressed_mb=128, field="archive_url")
-    assert stats["entries"] == 1
-    assert stats["compression_ratio"] > 100  # the bomb signature
+    assert stats.entries == 1
+    assert stats.compression_ratio > 100  # the bomb signature
 
     many = tmp_path / "many.zip"
     with zipfile.ZipFile(many, "w") as archive:
@@ -129,7 +129,8 @@ def test_metadata_endpoint_is_refused(app_client):
 def test_localhost_is_refused(app_client):
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run("/", {"image_url": "http://127.0.0.1:8080/secrets"})
-    # Port policy fires first; either way it must be a typed 422.
+    # Port policy fires before the SDK's SSRF refusal, so the type is
+    # value_error with the port in the message.
     detail = assert_typed_422(excinfo, "image_url", "value_error")
     assert "8080" in detail["msg"]
 

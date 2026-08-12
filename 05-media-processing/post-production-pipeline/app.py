@@ -20,13 +20,16 @@ from typing import Literal
 import fal
 from fal.container import ContainerImage
 from fal.exceptions import FieldException
-from fal.toolkit import File, Image, Video, download_file
+from fal.toolkit import File, Image, download_file
 from fal.toolkit.utils.download_utils import DownloadError
 from pydantic import BaseModel, Field
 
 MAX_DOWNLOAD_MB = 300
 MAX_CAPTIONS_MB = 5
 MAX_DURATION_S = 600  # caps a request's encode time; raise when self-hosting
+# Kills a hung ffmpeg instead of letting it pin the worker until fal's much
+# longer request timeout; 2x the duration cap leaves headroom for slow rungs.
+FFMPEG_TIMEOUT_S = 2 * MAX_DURATION_S
 CACHE_ROOT = Path("/data/cache/post-production")
 DOCKERFILE = Path(__file__).parent / "Dockerfile"
 Rung = Literal[2160, 1440, 1080, 720, 480, 360]
@@ -57,7 +60,11 @@ def normalize_ladder(rungs: list[int], source_height: int) -> tuple[list[int], l
     """Dedupe + sort descending, and drop rungs that would upscale."""
     wanted = sorted(set(rungs), reverse=True)
     if not wanted:
-        raise FieldException(field="ladder", message="ladder needs at least one rung")
+        raise FieldException(
+            field="ladder",
+            message="ladder needs at least one rung",
+            type="value_error",
+        )
     encode = [h for h in wanted if h <= source_height]
     skipped = [f"{h}p (source is {source_height}p)" for h in wanted if h > source_height]
     if not encode:
@@ -77,11 +84,14 @@ def thumbnail_timestamps(duration_s: float, count: int) -> list[float]:
     return [duration_s * (i + 1) / (count + 1) for i in range(count)]
 
 
-def select_captions(captions_srt: str | None, captions_url: str | None) -> str | None:
+def select_captions(
+    captions_srt: str | None, captions_url: str | None
+) -> Literal["inline", "url"] | None:
     if captions_srt and captions_url:
         raise FieldException(
             field="captions_srt",
             message="set captions_srt or captions_url, not both",
+            type="value_error",
         )
     if captions_srt:
         return "inline"
@@ -99,7 +109,7 @@ class ProbeInfo:
     video_codec: str
 
 
-def parse_probe(probe: dict, field: str = "video_url") -> ProbeInfo:
+def parse_probe(probe: dict) -> ProbeInfo:
     """Gate the SOURCE: reject stills/audio-only (no playable duration) and
     absurd durations before any encode time is spent."""
     streams = probe.get("streams", [])
@@ -108,13 +118,13 @@ def parse_probe(probe: dict, field: str = "video_url") -> ProbeInfo:
     duration_s = float(duration_raw) if duration_raw else 0.0
     if not video or duration_s <= 0:
         raise FieldException(
-            field=field,
+            field="video_url",
             message="no playable video stream (still images and audio files are rejected)",
             type="invalid_video",
         )
     if duration_s > MAX_DURATION_S:
         raise FieldException(
-            field=field,
+            field="video_url",
             message=(
                 f"source is {duration_s:.0f}s long; this deployment caps sources "
                 f"at {MAX_DURATION_S}s (raise MAX_DURATION_S when self-hosting)"
@@ -184,7 +194,7 @@ def run_ffmpeg(cmd: list[str], *, error_field: str | None = None,
     """User-input failures become typed 422s (error_field set); pipeline
     failures on already-validated media stay 500s, so the queue marks the
     job failed rather than blaming the caller."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
     if result.returncode != 0:
         tail = (result.stderr or "").strip()[-400:]
         if error_field is not None:
@@ -229,7 +239,7 @@ class Input(BaseModel):
         examples=[SAMPLE_VIDEO],
     )
     ladder: list[Rung] = Field(
-        default_factory=lambda: [1080, 720, 480],
+        default=[1080, 720, 480],
         description=(
             "Rendition heights to encode. Rungs above the source height are "
             "skipped, never upscaled (the report lists skips)."
@@ -248,7 +258,7 @@ class Input(BaseModel):
         default=None,
         description="URL of an .srt file; alternative to captions_srt (set at most one).",
     )
-    thumbnail_count: int = Field(
+    num_thumbnails: int = Field(
         default=3, ge=1, le=10,
         description="Poster frames, evenly spaced through the clip.",
     )
@@ -256,20 +266,24 @@ class Input(BaseModel):
 
 class Rendition(BaseModel):
     label: str = Field(description='Rung name, e.g. "720p".')
-    video: Video = Field(
+    video: File = Field(
         description="H.264 MP4 on fal's CDN: faststart, AAC when the source has audio, captions muxed when provided."
     )
     width: int = Field(description="Actual encoded width (aspect preserved).")
     height: int = Field(description="Actual encoded height.")
-    size_bytes: int
-    encode_ms: int
+    size_bytes: int = Field(description="Rendition file size in bytes.")
+    encode_ms: int = Field(description="Wall-clock encode time for this rung in milliseconds.")
 
 
 class Output(BaseModel):
+    # No sync_mode input on purpose: multi-hundred-MB renditions make data-URI transport inappropriate.
     renditions: list[Rendition] = Field(description="Highest rung first.")
     thumbnails: list[Image] = Field(description="JPEG poster frames, evenly spaced.")
     captions_vtt: File | None = Field(
         default=None, description="Normalized WebVTT sidecar for web players."
+    )
+    timings: dict[str, float] = Field(
+        description="Stage wall-clock seconds: download, encode_wall, thumbnails, upload."
     )
     report: File = Field(
         description="JSON provenance: probe summary, timings, per-rendition stats, skipped rungs, toolchain."
@@ -292,17 +306,14 @@ class PostProductionPipeline(fal.App, keep_alive=60):
 
     @fal.endpoint("/")
     def process(self, request: Input) -> Output:
-        # CAPTIONS (pure check) - validated first, before any network I/O:
-        # "both fields set" is a fast 422, not one paid for with a 300 MB
-        # download. The actual SRT materialization stays below, inside the
-        # tempdir block, since it needs a place to write/download to.
+        # Validate caption exclusivity before the download: "both set" must
+        # fail without paying for a 300 MB transfer.
         caption_source = select_captions(request.captions_srt, request.captions_url)
-        caption_field = "captions_srt" if caption_source == "inline" else "captions_url"
 
-        # SOURCE - bounded, SSRF-guarded download (both built into
-        # download_file), cached on /data keyed by URL hash: a repeat request
-        # skips the transfer across workers, deploys, and CI runs.
-        t0 = time.monotonic()
+        # download_file is size-capped and SSRF-guarded; the /data cache is
+        # keyed by URL hash, so a repeat request skips the transfer across
+        # workers, deploys, and CI runs.
+        t0 = time.perf_counter()
         cache_dir = CACHE_ROOT / hashlib.sha256(request.video_url.encode()).hexdigest()[:16]
         cached = None
         if cache_dir.is_dir():
@@ -326,18 +337,16 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                     message=f"could not download (limit {MAX_DOWNLOAD_MB} MB): {exc}",
                     type="file_download_error",
                 )
-        download_ms = int((time.monotonic() - t0) * 1000)
+        download_s = time.perf_counter() - t0
 
-        # GATE - probe once, reject stills/marathons, learn dims + audio.
         info = parse_probe(probe_media(source, error_field="video_url"))
         encode_rungs, skipped = normalize_ladder(request.ladder, info.height)
 
         with tempfile.TemporaryDirectory(prefix="postprod-") as tmp:
             workdir = Path(tmp)
 
-            # CAPTIONS - materialize + convert (SRT -> WebVTT) BEFORE spending
-            # encode time, so a bad caption file is a fast typed 422. Which
-            # field to blame (caption_field) was already decided above.
+            # Materialize + convert captions (SRT -> WebVTT) before spending
+            # encode time, so a bad caption file is a fast typed 422.
             srt_path = vtt_path = None
             if caption_source == "inline":
                 srt_path = workdir / "captions.srt"
@@ -355,6 +364,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                         type="file_download_error",
                     )
             if srt_path is not None:
+                caption_field = "captions_srt" if caption_source == "inline" else "captions_url"
                 vtt_path = workdir / "captions.vtt"
                 run_ffmpeg(
                     build_vtt_cmd(srt_path, vtt_path),
@@ -362,47 +372,46 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                     error_message="not parseable as SRT captions",
                 )
 
-            # LADDER - one ffmpeg process per rung, in parallel. These are
-            # subprocesses, so Python threads only babysit pipes; the real
-            # question is rung count vs vCPUs - see README "Cost & tuning".
+            # One ffmpeg subprocess per rung, in parallel: Python threads only
+            # babysit pipes, so the limit is rung count vs vCPUs, not the GIL.
             stem = Path(source).stem
-            t1 = time.monotonic()
+            t1 = time.perf_counter()
 
             def encode(height: int) -> tuple[int, Path, int]:
                 out = workdir / f"{stem}_{height}p.mp4"
-                started = time.monotonic()
+                started = time.perf_counter()
                 run_ffmpeg(build_rendition_cmd(source, srt_path, height, info.has_audio, out))
-                return height, out, int((time.monotonic() - started) * 1000)
+                return height, out, int((time.perf_counter() - started) * 1000)
 
             with ThreadPoolExecutor(max_workers=len(encode_rungs)) as pool:
                 encoded = list(pool.map(encode, encode_rungs))
-            encode_wall_ms = int((time.monotonic() - t1) * 1000)
+            encode_wall_s = time.perf_counter() - t1
 
-            # THUMBNAILS - fast keyframe seeks on the local source.
-            t2 = time.monotonic()
-            thumb_width = min(THUMB_MAX_WIDTH, info.width) // 2 * 2
+            t2 = time.perf_counter()
+            thumb_width = min(THUMB_MAX_WIDTH, info.width) // 2 * 2  # even width: 4:2:0 subsampling
             thumb_paths = []
-            for i, ts in enumerate(thumbnail_timestamps(info.duration_s, request.thumbnail_count)):
+            for i, ts in enumerate(thumbnail_timestamps(info.duration_s, request.num_thumbnails)):
                 out = workdir / f"{stem}_thumb_{i:02d}.jpg"
                 run_ffmpeg(build_thumbnail_cmd(source, ts, thumb_width, out))
                 thumb_paths.append(out)
-            thumbs_ms = int((time.monotonic() - t2) * 1000)
+            thumbs_s = time.perf_counter() - t2
 
-            # UPLOADS - fal CDN via toolkit types. content_type is explicit
-            # everywhere: from_path never guesses, and an octet-stream video
-            # won't play inline in a browser or the playground.
-            t3 = time.monotonic()
+            # content_type is explicit on every upload: from_path never
+            # guesses, and an octet-stream video won't play inline in a
+            # browser or the playground.
+            t3 = time.perf_counter()
             renditions = []
             rendition_report = []
             for height, path, encode_ms in encoded:
                 summary = stream_summary(probe_media(path))
+                size_bytes = path.stat().st_size
                 renditions.append(
                     Rendition(
                         label=f"{height}p",
-                        video=Video.from_path(path, content_type="video/mp4"),
+                        video=File.from_path(path, content_type="video/mp4"),
                         width=summary["width"],
                         height=summary["height"],
-                        size_bytes=path.stat().st_size,
+                        size_bytes=size_bytes,
                         encode_ms=encode_ms,
                     )
                 )
@@ -410,7 +419,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                     {
                         "label": f"{height}p",
                         **summary,
-                        "size_bytes": path.stat().st_size,
+                        "size_bytes": size_bytes,
                         "encode_ms": encode_ms,
                         "captions_muxed": srt_path is not None,
                     }
@@ -422,8 +431,14 @@ class PostProductionPipeline(fal.App, keep_alive=60):
             captions_vtt = (
                 File.from_path(vtt_path, content_type="text/vtt") if vtt_path else None
             )
-            upload_ms = int((time.monotonic() - t3) * 1000)
+            upload_s = time.perf_counter() - t3
 
+        timings = {
+            "download": download_s,  # ~0 on a cache hit
+            "encode_wall": encode_wall_s,  # parallel: max(rung), not sum
+            "thumbnails": thumbs_s,
+            "upload": upload_s,
+        }
         report_data = {
             "source": {
                 "url": request.video_url,
@@ -441,12 +456,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
             },
             "captions": caption_source or "none",
             "renditions": rendition_report,
-            "timings_ms": {
-                "download": download_ms,  # ~0 on a cache hit
-                "encode_wall": encode_wall_ms,  # parallel: max(rung), not sum
-                "thumbnails": thumbs_ms,
-                "upload": upload_ms,
-            },
+            "timings_ms": {stage: int(seconds * 1000) for stage, seconds in timings.items()},
             "toolchain": {"ffmpeg": self.ffmpeg_version, "vcpus": os.cpu_count()},
         }
         report = File.from_bytes(
@@ -458,5 +468,6 @@ class PostProductionPipeline(fal.App, keep_alive=60):
             renditions=renditions,
             thumbnails=thumbnails,
             captions_vtt=captions_vtt,
+            timings={stage: round(seconds, 3) for stage, seconds in timings.items()},
             report=report,
         )

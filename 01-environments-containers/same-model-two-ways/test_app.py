@@ -13,8 +13,10 @@ from pathlib import Path
 
 SAMPLE = "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac"
 EXPECTED_BUILDER = {"app": "fal-runtime", "app_container": "container"}
-# Where each variant leaves its transcript so the next one can compare.
-LEDGER = Path(tempfile.gettempdir()) / "same-model-two-ways-transcripts.json"
+# Where each variant leaves its transcript so the other can compare. Keyed by
+# parent PID (both variants share the harness run's parent process) so a stale
+# ledger from an earlier run can't poison the compare.
+LEDGER = Path(tempfile.gettempdir()) / f"same-model-two-ways-{os.getppid()}.json"
 
 
 def variant() -> str:

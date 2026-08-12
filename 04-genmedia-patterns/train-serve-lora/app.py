@@ -1,17 +1,20 @@
 """Serve a freshly-trained klein LoRA from /data - the serving half of 04.4.
 
-The trainer (app_trainer.py) writes /data/loras/<lora_name>/; this app loads
-adapters from there by name onto the DISTILLED klein-4B (4-step inference).
-Train where gradients behave, serve where inference is fast.
+Catalog slot 04.4 (SERV-1312). The trainer (app_trainer.py) writes
+/data/loras/<lora_name>/; this app loads adapters from there by name onto
+the DISTILLED klein-4B (4-step inference). Train where gradients behave,
+serve where inference is fast.
 
 One resident adapter, swapped on demand - deliberately the 20-line version
 of 04.3's LRU fleet (see README "Next steps").
 """
+import os
 import random
 import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal
 
 import fal
 from fal.exceptions import FieldException
@@ -22,7 +25,7 @@ from pydantic import BaseModel, Field
 import shared
 
 
-class GenerateInput(BaseModel):
+class Input(BaseModel):
     prompt: str = Field(
         description=(
             "What to generate. Repeat your training trigger phrase to invoke "
@@ -61,7 +64,7 @@ class GenerateInput(BaseModel):
 
 class ServingInfo(BaseModel):
     lora_name: str = Field(description="The adapter that produced this image.")
-    adapter_source: str = Field(
+    adapter_source: Literal["cached", "disk", "seeded"] = Field(
         description=(
             "'cached' = already on the GPU; 'disk' = loaded from /data for this "
             "request; 'seeded' = loaded from the /data copy that setup() "
@@ -70,10 +73,10 @@ class ServingInfo(BaseModel):
     )
 
 
-class GenerateOutput(BaseModel):
+class Output(BaseModel):
     image: Image = Field(description="The generated image.")
     seed: int = Field(description="The seed that produced this image.")
-    timings: dict = Field(description="Seconds spent in adapter handling vs inference.")
+    timings: dict[str, float] = Field(description="Seconds spent in adapter handling vs inference.")
     serving: ServingInfo = Field(description="How this request was served.")
 
 
@@ -82,8 +85,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
     app_auth = "private"
     startup_timeout = 1200  # first boot: ~16 GB of weights + the demo adapter
     local_python_modules = ["shared"]  # Import Code: same module the trainer ships
-    max_multiplexing = 1  # one-slot adapter state: concurrent requests must
-    # never interleave _load_adapter/set_adapters (correctness, not tuning)
+    # One-slot adapter state: concurrent requests must never interleave
+    # _load_adapter/set_adapters (correctness, not tuning).
+    max_multiplexing = 1
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
@@ -92,17 +96,15 @@ class KleinLoraServer(fal.App, keep_alive=300):
         "transformers==5.3.0",
         "torch==2.12.1",
         "accelerate==1.14.0",
-        "peft==0.19.1",
+        "peft==0.20.0",
         "safetensors==0.8.0",
         "pillow==11.3.0",
-        "numpy==2.4.0",
+        "numpy==2.4.6",
     ]
 
     def setup(self) -> None:
         """Load -> seed -> adopt -> warm up, all through the adapter path,
         so a healthy worker is proven able to serve LoRA traffic."""
-        import os
-
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         import torch
@@ -159,7 +161,7 @@ class KleinLoraServer(fal.App, keep_alive=300):
             guidance_scale=1.0,
         )
 
-    def _load_adapter(self, name: str) -> str:
+    def _load_adapter(self, name: str) -> Literal["cached", "disk", "seeded"]:
         """Swap the resident adapter; returns the adapter_source tag."""
         if self._resident == name:
             return "cached"
@@ -229,10 +231,10 @@ class KleinLoraServer(fal.App, keep_alive=300):
         """'N/M modules loaded' - the other half of LoRA debuggability."""
         from peft.tuners.tuners_utils import BaseTunerLayer
 
-        sd = type(self.pipe).lora_state_dict(str(path))
+        lora_sd = self.pipe.lora_state_dict(str(path))
         file_modules = {
             k.removeprefix("transformer.").removesuffix(".lora_A.weight")
-            for k in sd
+            for k in lora_sd
             if k.endswith(".lora_A.weight")
         }
         injected = {
@@ -246,17 +248,17 @@ class KleinLoraServer(fal.App, keep_alive=300):
             print(f"[lora] unused modules (first 5): {sorted(file_modules - injected)[:5]}")
 
     @fal.endpoint("/")
-    def generate(self, request: GenerateInput) -> GenerateOutput:
+    def generate(self, request: Input) -> Output:
         import torch
 
-        t0 = time.monotonic()
+        t0 = time.perf_counter()
         source = self._load_adapter(request.lora_name)
         self.pipe.set_adapters(self._adapter_id, adapter_weights=request.lora_scale)
-        t_lora = time.monotonic() - t0
+        t_lora = time.perf_counter() - t0
 
         size = get_image_size(request.image_size)
         seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
-        t1 = time.monotonic()
+        t1 = time.perf_counter()
         result = self.pipe(
             prompt=request.prompt,
             height=size.height,
@@ -265,11 +267,11 @@ class KleinLoraServer(fal.App, keep_alive=300):
             guidance_scale=1.0,  # klein is guidance-distilled; the arg is ignored
             generator=torch.Generator("cuda").manual_seed(seed),
         )
-        t_inference = time.monotonic() - t1
+        t_inference = time.perf_counter() - t1
 
         repository = "in_memory" if request.sync_mode else "fal_v3"
         image = Image.from_pil(result.images[0], repository=repository)
-        return GenerateOutput(
+        return Output(
             image=image,
             seed=seed,
             timings={"lora": round(t_lora, 3), "inference": round(t_inference, 3)},

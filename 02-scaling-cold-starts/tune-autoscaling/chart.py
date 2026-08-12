@@ -29,8 +29,8 @@ import model  # noqa: E402
 WIDTH, HEIGHT = 960, 420
 PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 64, 24, 40, 48
 
-MEASURED = "#8553ff"   # fal purple: measured series
-MODELLED = "#6366f1"   # indigo: model output
+MEASURED = "#8553ff"  # fal purple: measured series
+MODELLED = "#6366f1"  # indigo: model output
 QUEUE = "#94a3b8"
 AXIS = "#64748b"
 INK = "#0f172a"
@@ -41,7 +41,16 @@ def _n(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
 
 
-def _text(x, y, content, *, anchor="start", size=12, fill=INK, weight="normal"):
+def _text(
+    x: float,
+    y: float,
+    content: str,
+    *,
+    anchor: str = "start",
+    size: int = 12,
+    fill: str = INK,
+    weight: str = "normal",
+) -> str:
     return (
         f'<text x="{_n(x)}" y="{_n(y)}" text-anchor="{anchor}" '
         f'font-family="ui-sans-serif,system-ui,sans-serif" font-size="{size}" '
@@ -49,7 +58,13 @@ def _text(x, y, content, *, anchor="start", size=12, fill=INK, weight="normal"):
     )
 
 
-def _polyline(points, stroke, *, width=2, dash=None):
+def _polyline(
+    points: list[tuple[float, float]],
+    stroke: str,
+    *,
+    width: float = 2,
+    dash: str | None = None,
+) -> str:
     coords = " ".join(f"{_n(x)},{_n(y)}" for x, y in points)
     dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
     return (
@@ -58,7 +73,7 @@ def _polyline(points, stroke, *, width=2, dash=None):
     )
 
 
-def _frame(title, subtitle, body):
+def _frame(title: str, subtitle: str, body: list[str]) -> str:
     return "\n".join(
         [
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
@@ -73,7 +88,7 @@ def _frame(title, subtitle, body):
     )
 
 
-def _axes(x_label, y_label, x_max, y_max):
+def _axes(x_label: str, y_label: str, x_max: float, y_max: float) -> list[str]:
     x0, x1 = PAD_LEFT, WIDTH - PAD_RIGHT
     y0, y1 = HEIGHT - PAD_BOTTOM, PAD_TOP
     return [
@@ -85,7 +100,7 @@ def _axes(x_label, y_label, x_max, y_max):
     ]
 
 
-def _scale(value, lo, hi, out_lo, out_hi):
+def _scale(value: float, lo: float, hi: float, out_lo: float, out_hi: float) -> float:
     if hi == lo:
         return (out_lo + out_hi) / 2
     return out_lo + (value - lo) / (hi - lo) * (out_hi - out_lo)
@@ -104,7 +119,7 @@ def burst_timeline(trace: dict) -> str:
     t_lo = 0.0
     t_hi = max(row["t"] for row in timeline)
     y_max = max(
-        max(r["setup"] + r["idle"] + r["running"] for r in timeline),
+        max(model.live_runners(r) for r in timeline),
         max(r["queue_depth"] for r in timeline),
         1,
     )
@@ -112,7 +127,7 @@ def burst_timeline(trace: dict) -> str:
     y0, y1 = HEIGHT - PAD_BOTTOM, PAD_TOP
 
     def to_xy(row, key):
-        value = row["setup"] + row["idle"] + row["running"] if key == "runners" else row[key]
+        value = model.live_runners(row) if key == "runners" else row[key]
         return (
             _scale(row["t"], t_lo, t_hi, x0, x1),
             _scale(value, 0, y_max, y0, y1),
@@ -122,7 +137,9 @@ def burst_timeline(trace: dict) -> str:
     body = [
         *_axes("seconds from burst start", "count", t_hi - t_lo, y_max),
         _polyline([to_xy(r, "runners") for r in timeline], MEASURED, width=2),
-        _polyline([to_xy(r, "queue_depth") for r in timeline], QUEUE, width=2, dash="4 3"),
+        _polyline(
+            [to_xy(r, "queue_depth") for r in timeline], QUEUE, width=2, dash="4 3"
+        ),
         _text(x1, y1 + 14, "runners (measured)", anchor="end", size=11, fill=MEASURED),
         _text(x1, y1 + 30, "queue depth (measured)", anchor="end", size=11, fill=QUEUE),
     ]
@@ -155,9 +172,7 @@ def cost_latency_frontier(frontier: dict) -> str:
     for point in points:
         x, y = to_xy(point)
         if point["measured"]:
-            marks.append(
-                f'<circle cx="{_n(x)}" cy="{_n(y)}" r="6" fill="{MEASURED}"/>'
-            )
+            marks.append(f'<circle cx="{_n(x)}" cy="{_n(y)}" r="6" fill="{MEASURED}"/>')
             marks.append(_text(x + 10, y + 4, "measured", size=11, fill=MEASURED))
         elif point["validated"]:
             marks.append(f'<circle cx="{_n(x)}" cy="{_n(y)}" r="4" fill="{MODELLED}"/>')
@@ -171,11 +186,19 @@ def cost_latency_frontier(frontier: dict) -> str:
 
     front = [to_xy(points[i]) for i in frontier.get("pareto_front", [])]
     body = [
-        *_axes("cost over the 1-hour horizon (USD)", "p95 queue wait (s)", cost_hi, wait_hi),
+        *_axes(
+            "cost over the 1-hour horizon (USD)", "p95 queue wait (s)", cost_hi, wait_hi
+        ),
         *([_polyline(front, MODELLED, width=1, dash="5 4")] if len(front) > 1 else []),
         *marks,
-        _text(x1, y1 + 14, "modelled - dashed line = Pareto front",
-              anchor="end", size=11, fill=MODELLED),
+        _text(
+            x1,
+            y1 + 14,
+            "modelled - dashed line = Pareto front",
+            anchor="end",
+            size=11,
+            fill=MODELLED,
+        ),
     ]
     subtitle = (
         f"{len(points)} configurations simulated on the measured traffic shape - "
@@ -185,7 +208,7 @@ def cost_latency_frontier(frontier: dict) -> str:
     return _frame("What each configuration costs, and what it waits", subtitle, body)
 
 
-def render(trace: dict, frontier: dict, out_dir) -> list[Path]:
+def render(trace: dict, frontier: dict, out_dir: str | Path) -> list[Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     documents = {
@@ -207,10 +230,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="charts")
     args = parser.parse_args(argv)
 
-    with open(args.trace) as handle:
-        trace = json.load(handle)
-    with open(args.frontier) as handle:
-        frontier = json.load(handle)
+    # Readers run this directly, so a missing or unparseable input should
+    # print one clear line, not a raw traceback - same contract as model.py.
+    try:
+        path = args.trace
+        with open(path) as handle:
+            trace = json.load(handle)
+        path = args.frontier
+        with open(path) as handle:
+            frontier = json.load(handle)
+    except FileNotFoundError:
+        print(f"error: file not found: {path}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"error: {path} is not valid JSON ({exc})", file=sys.stderr)
+        return 1
+
     for path in render(trace, frontier, args.out):
         print(f"wrote {path}")
     return 0
