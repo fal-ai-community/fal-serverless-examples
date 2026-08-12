@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SAM-3D progressive viewer</title>
+<style>
+  body { margin: 0; font: 14px system-ui; background: #111; color: #eee; }
+  #bar { display: flex; gap: 8px; padding: 10px; flex-wrap: wrap; align-items: center; }
+  #bar input { padding: 6px; background: #222; color: #eee; border: 1px solid #444; }
+  #url { width: 320px; } #key { width: 200px; } #img { width: 280px; }
+  #status { padding: 0 10px 8px; color: #9ad; }
+  canvas { display: block; }
+  a { color: #9ad; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <input id="url" placeholder="deployed app URL (…fal.run/you/sam-3d-progressive)">
+  <input id="key" placeholder="FAL key id:secret" type="password">
+  <input id="img" value="https://storage.googleapis.com/falserverless/UNO/crystal_ball.png">
+  <button id="go">Generate</button>
+  <span id="dl"></span>
+</div>
+<div id="status">Paste your endpoint + key (local dev only: the key is visible
+to this page - never ship this pattern to real users), then Generate.</div>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
+camera.position.set(1.2, 0.9, 1.2);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const dir = new THREE.DirectionalLight(0xffffff, 1.2);
+dir.position.set(2, 3, 1); scene.add(dir);
+
+function resize() {
+  const h = innerHeight - document.getElementById("bar").offsetHeight
+    - document.getElementById("status").offsetHeight;
+  renderer.setSize(innerWidth, h);
+  camera.aspect = innerWidth / h; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+(function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+
+let voxelMesh = null, meshPreview = null;
+const MAX_INSTANCES = 70000;
+const proto = new THREE.BoxGeometry(1, 1, 1);
+const mat = new THREE.MeshLambertMaterial();
+const dummy = new THREE.Object3D();
+
+// Real instancing: ONE InstancedMesh, per-instance matrix + color. (The old
+// docs page nested <mesh> children inside instancedMesh - that renders
+// nothing instanced at all.)
+function showVoxels(rows, gridSize) {
+  if (meshPreview) { scene.remove(meshPreview); meshPreview = null; }
+  if (!voxelMesh) {
+    voxelMesh = new THREE.InstancedMesh(proto, mat, MAX_INSTANCES);
+    voxelMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(voxelMesh);
+  }
+  const s = 1 / gridSize;
+  const n = Math.min(rows.length, MAX_INSTANCES);
+  dummy.scale.set(s * 0.9, s * 0.9, s * 0.9);
+  for (let i = 0; i < n; i++) {
+    const [x, y, z, r, g, b] = rows[i];
+    // dequantize grid index -> centered world coords
+    dummy.position.set((x + 0.5) / gridSize - 0.5, (y + 0.5) / gridSize - 0.5,
+                       (z + 0.5) / gridSize - 0.5);
+    dummy.updateMatrix();
+    voxelMesh.setMatrixAt(i, dummy.matrix);
+    voxelMesh.setColorAt(i, new THREE.Color(r / 255, g / 255, b / 255));
+  }
+  voxelMesh.count = n;
+  voxelMesh.instanceMatrix.needsUpdate = true;
+  if (voxelMesh.instanceColor) voxelMesh.instanceColor.needsUpdate = true;
+}
+
+function showMeshPreview(ev) {
+  const verts = new Float32Array(b64bytes(ev.vertices).buffer);
+  const faces = new Uint32Array(b64bytes(ev.faces).buffer);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+  geo.setIndex(new THREE.BufferAttribute(faces, 1));
+  let m;
+  if (ev.colors) {
+    const cols = b64bytes(ev.colors);
+    const colF = new Float32Array(cols.length);
+    for (let i = 0; i < cols.length; i++) colF[i] = cols[i] / 255;
+    geo.setAttribute("color", new THREE.BufferAttribute(colF, 3));
+    m = new THREE.MeshLambertMaterial({ vertexColors: true });
+  } else {
+    m = new THREE.MeshLambertMaterial({ color: 0x8899aa });
+  }
+  geo.computeVertexNormals();
+  if (voxelMesh) { scene.remove(voxelMesh); voxelMesh = null; }
+  meshPreview = new THREE.Mesh(geo, m);
+  // model space is roughly [-0.5, 0.5] voxel coords; mesh preview shares it
+  scene.add(meshPreview);
+}
+
+function b64bytes(b64) {
+  const bin = atob(b64), out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function decodeVoxels(b64) {
+  const bytes = b64bytes(b64), rows = [];
+  for (let i = 0; i + 5 < bytes.length; i += 6) rows.push(bytes.subarray(i, i + 6));
+  return rows;
+}
+
+const status = (m) => document.getElementById("status").textContent = m;
+
+document.getElementById("go").onclick = async () => {
+  const url = document.getElementById("url").value.replace(/\/+$/, "");
+  const key = document.getElementById("key").value.trim();
+  document.getElementById("dl").innerHTML = "";
+  status("connecting…");
+
+  // EventSource can't POST or set headers, so: fetch + manual SSE parse.
+  // Events arrive in arbitrary chunk boundaries - buffer and split on the
+  // blank line, exactly what the old docs snippet forgot.
+  const resp = await fetch(url + "/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Key " + key },
+    body: JSON.stringify({ image_url: document.getElementById("img").value }),
+  });
+  if (!resp.ok) { status("HTTP " + resp.status + ": " + await resp.text()); return; }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      if (!chunk.startsWith("data: ")) continue; // comment heartbeats etc.
+      const ev = JSON.parse(chunk.slice(6));
+      if (ev.type === "geometry" || ev.type === "appearance") {
+        showVoxels(decodeVoxels(ev.voxels), ev.grid_size);
+        status(`${ev.type} ${ev.step}/${ev.total_steps} - ${ev.count} voxels`);
+      } else if (ev.type === "mesh_preview") {
+        showMeshPreview(ev); status("mesh preview");
+      } else if (ev.type === "status") {
+        status(ev.message);
+      } else if (ev.type === "complete") {
+        status("done - seed " + ev.seed);
+        document.getElementById("dl").innerHTML =
+          `<a href="${ev.glb.url}">GLB</a> · <a href="${ev.gaussian_splat.url}">splat</a>`;
+      } else if (ev.type === "error") {
+        status("error: " + ev.message);
+      }
+    }
+  }
+};
+</script>
+</body>
+</html>
