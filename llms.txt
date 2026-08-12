@@ -27,6 +27,7 @@
 - [04.3 per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
 - [04.4 train-serve-lora](04-genmedia-patterns/train-serve-lora/README.md): train a FLUX.2-klein LoRA in-app and serve it - long-request trainer pattern (keep_alive=0, request_timeout, skip_retry), dataset preflight with typed 422s, atomic /data handoff, one-slot adapter serving on distilled klein
 - [04.5 multi-gpu-video](04-genmedia-patterns/multi-gpu-video/README.md): WAN 2.2 A14B (2x14B MoE, ~70 GB bf16) sharded across 4 GPUs with fal.distributed + diffusers Ulysses context parallelism - one video, four GPUs; bf16 /data pre-conversion, per-shape warmup, the {"error": ...} worker contract, single-flight runner semantics
+- [04.7 3d-progressive-rendering](04-genmedia-patterns/3d-progressive-rendering/README.md): SAM-3D Objects with progressive SSE streaming - voxel frames during both diffusion stages via the official pipeline's generate_iter (no model fork), final GLB + Gaussian splat by URL, single-file Three.js viewer
 - [05.1 post-production-pipeline](05-media-processing/post-production-pipeline/README.md): transcode ladder + thumbnails + captions on a CPU machine - parallel ffmpeg rungs in a pinned container, faststart MP4s, soft-muxed captions with VTT sidecar, and a queue + Ed25519-verified-webhook client pair
 
 ## Docs

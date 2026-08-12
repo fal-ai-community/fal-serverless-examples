@@ -74,7 +74,7 @@ Three ideas, in the order they appear in app.py:
    voxel (raw 64³ grid indices fit uint8 losslessly - `(v+0.5)/64-0.5` to
    dequantize; colors are scaled float 0-1 → byte exactly once, in one
    encoder). The GLB and splat never travel inline - the `complete` event
-   carries fal CDN URLs (see Working with Files).
+   carries fal CDN URLs (see [handling inputs & outputs](https://docs.fal.ai/serverless/development/handle-inputs-and-outputs)).
 
 A rare fifth event, `mesh_preview`, carries a vertex-colored mesh inline for
 small reconstructions - most SAM-3D outputs (we measured 306k vertices on the
