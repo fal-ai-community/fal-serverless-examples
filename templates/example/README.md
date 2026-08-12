@@ -4,6 +4,8 @@
 
 One paragraph: the problem this solves and who hits it.
 
+> Catalog slot `NN.n` ([SERV-xxxx](https://linear.app/features-and-labels/issue/SERV-xxxx)).
+
 ## What you get
 
 <!-- OUTPUT FIRST: show the result before any code — image/video/audio sample or response JSON. -->
@@ -13,7 +15,7 @@ One paragraph: the problem this solves and who hits it.
 ```bash
 pip install fal==1.78.2   # keep pinned to this example's requirements.txt
 fal auth login
-fal run app.py        # local iteration against real GPUs
+fal run app.py        # ephemeral app on fal infra; prints playground + API URLs
 ```
 
 ## How it works

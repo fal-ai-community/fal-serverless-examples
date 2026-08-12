@@ -11,7 +11,7 @@ A clean request returns the audit trail of gates it passed:
 ```json
 {
   "accepted": true,
-  "format": "PNG", "width": 768, "height": 1024, "bytes": 1035058,
+  "format": "PNG", "width": 768, "height": 1024, "file_size": 1035058,
   "gates": ["url_policy", "download_cap", "format_allowlist", "pixel_budget", "decode"],
   "archive": null
 }

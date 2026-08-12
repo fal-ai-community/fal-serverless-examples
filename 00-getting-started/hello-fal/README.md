@@ -51,9 +51,9 @@ curl -X POST https://fal.run/<your-username>/hello-fal \
 
 ## Cost & tuning
 
-- `S` is a CPU tier billed per second; a greeting endpoint costs fractions of a cent per run. GPU tiers cost dollars per hour — see the machine-types docs before reaching for one.
+- `S` is a CPU tier billed per second; CPU tiers cost far less than GPU tiers — see the machine-types docs for current pricing before reaching for one.
 - `keep_alive=60` trades ~60s of idle billing after each burst for zero cold starts within it. Set it to `0` if you only care about batch-style calls, or higher if your traffic is steady.
-- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — a few seconds, versus the model-load-dominated cold starts you'll meet in 00.2.
+- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — unlike the model-load-dominated cold starts you'll meet in 00.2.
 
 ## Next steps
 

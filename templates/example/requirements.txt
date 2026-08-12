@@ -1,3 +1,3 @@
 fal==1.78.2
-# pin everything this example imports, e.g.:
+# Exact mirror of App.requirements in app.py (authoritative; CI static check enforces it), e.g.:
 # torch==2.6.0

@@ -8,6 +8,7 @@ Model: black-forest-labs/FLUX.2-klein-4B - Apache-2.0 and ungated (no HF
 token anywhere). Careful: the 9B klein variants are gated + non-commercial;
 do not swap them in here.
 """
+import os
 import random
 
 import fal
@@ -15,6 +16,8 @@ from fal.toolkit import Image, ImageSizeInput, get_image_size
 from pydantic import BaseModel, Field
 
 MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
+MAX_SEED = 2**32 - 1
+GUIDANCE_SCALE = 1.0  # guidance-distilled model; CFG is baked into the weights
 
 
 class Input(BaseModel):
@@ -28,7 +31,7 @@ class Input(BaseModel):
     )
     num_inference_steps: int = Field(
         default=4,
-        ge=1,
+        ge=4,  # below the distillation target the model produces visibly broken images
         le=8,
         description="Denoising steps. klein is distilled for 4; more buys little.",
     )
@@ -71,8 +74,6 @@ class FirstImageApi(fal.App, keep_alive=300):
 
     def setup(self) -> None:
         """Load -> (compile) -> warmup: everything slow happens once per worker."""
-        import os
-
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # before any HF download
 
         import torch
@@ -95,21 +96,22 @@ class FirstImageApi(fal.App, keep_alive=300):
             height=1024,
             width=1024,
             num_inference_steps=1,
-            guidance_scale=1.0,
+            guidance_scale=GUIDANCE_SCALE,
         )
 
     @fal.endpoint("/")
     def generate(self, request: Input) -> Output:
         import torch
 
+        # Sizes pass through unclamped; validation patterns are 00.4 bulletproof-inputs' topic.
         size = get_image_size(request.image_size)
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = request.seed if request.seed is not None else random.randint(0, MAX_SEED)
         result = self.pipe(
             prompt=request.prompt,  # keyword-only in Flux2KleinPipeline
             height=size.height,
             width=size.width,
             num_inference_steps=request.num_inference_steps,
-            guidance_scale=1.0,  # klein is guidance-distilled; keep at 1.0
+            guidance_scale=GUIDANCE_SCALE,
             generator=torch.Generator("cuda").manual_seed(seed),
         )
         repository = "in_memory" if request.sync_mode else "fal_v3"

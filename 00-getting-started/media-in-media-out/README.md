@@ -29,6 +29,8 @@ fal run app.py        # prints playground + API URLs; Ctrl-C to stop
 
 ## How it works
 
+**No `setup()`.** Media plumbing is I/O-bound, not model-bound — there is nothing to preload, so the app defines no `setup()` at all.
+
 **Media in — the `_url` convention.** Inputs arrive as URL strings; the `image_url` field name is what gives the playground its drag-and-drop upload widget (uploads become URLs before your code ever runs). See [handle inputs & outputs](https://fal.ai/docs/documentation/development/handle-inputs-and-outputs).
 
 **Bounded download, cached on `/data`.** `download_file` refuses anything over 20 MB (a `DownloadError` becomes a typed 422 pointing at `image_url`) and every fetch goes through the SDK's SSRF-guarded HTTP path — two protections you get for free. What the SDK does *not* do is skip repeat transfers, so the example adds the cache itself: downloads land in a URL-hashed directory on [`/data` persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage), and a repeat request for the same URL reuses the file — across workers, deploys, and CI runs. The `report.source.cache_hit` and `download_ms` fields make it visible: hundreds of ms on first fetch, ~zero after. (Hardening beyond this — decompression-bomb policy, typed error taxonomies — is 00.4's subject; this example does gate absurd pixel counts before decode. HEIC/AVIF inputs are out of scope here.)

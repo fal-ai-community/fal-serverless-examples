@@ -11,8 +11,8 @@ from fal.container import ContainerImage
 from pydantic import BaseModel, Field
 
 MODEL_ID = "openai/whisper-tiny.en"
-# Canonical ASR sample used by the transformers docs: a clip of the
-# "I have a dream" speech.
+# Canonical ASR sample from the transformers docs ("I have a dream" clip).
+# setup() fetches it from huggingface.co, so cold starts need that host up.
 SAMPLE_AUDIO = "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac"
 DOCKERFILE = Path(__file__).parent / "Dockerfile"
 
@@ -32,8 +32,7 @@ class Output(BaseModel):
 class TranscribeContainer(fal.App, keep_alive=60):
     machine_type = "L"
     app_auth = "private"
-    # WAY 2: the image carries the dependencies, so `requirements` stays
-    # empty - everything this app imports is baked in by the Dockerfile.
+    # Dependencies are baked into the image by the Dockerfile; no `requirements` list.
     image = ContainerImage.from_dockerfile(str(DOCKERFILE))
 
     def setup(self) -> None:
@@ -41,9 +40,12 @@ class TranscribeContainer(fal.App, keep_alive=60):
         from transformers import pipeline
 
         self.pipe = pipeline(
-            "automatic-speech-recognition", model=MODEL_ID, torch_dtype=torch.float32
+            "automatic-speech-recognition", model=MODEL_ID, dtype=torch.float32
         )
-        self.pipe(SAMPLE_AUDIO)  # warm the graph
+        # Warmup exercises the full audio-decode path; a mis-built environment
+        # should fail here at setup, not at the first request.
+        warmup = self.pipe(SAMPLE_AUDIO)
+        assert warmup["text"].strip(), "warmup transcript is empty"
 
     @fal.endpoint("/")
     def transcribe(self, request: Input) -> Output:

@@ -19,10 +19,11 @@ def test_processes_to_requested_format(app_client):
 
 
 def test_output_format_sets_content_type_and_cache_hits(app_client):
+    # First call primes the URL-hash cache on /data; the repeat must hit it
+    # regardless of test ordering or a fresh volume.
+    app_client.run("/", {"image_url": SAMPLE, "output_format": "jpeg"})
     response = app_client.run("/", {"image_url": SAMPLE, "output_format": "jpeg"})
     assert response["image"]["content_type"] == "image/jpeg"
-    # Same URL as the earlier test: the URL-hash cache on /data skips the
-    # transfer entirely, so this request must report a cache hit.
     report = httpx.get(response["report"]["url"], timeout=30).json()
     assert report["source"]["cache_hit"] is True
     assert report["download_ms"] < 2000
@@ -44,3 +45,4 @@ def test_bad_url_is_a_typed_422(app_client):
     assert excinfo.value.response.status_code == 422
     detail = excinfo.value.response.json()["detail"]
     assert detail[0]["loc"] == ["body", "image_url"]
+    assert detail[0]["type"] == "file_download_error"
