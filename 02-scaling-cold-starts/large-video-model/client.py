@@ -20,7 +20,7 @@ def main() -> None:
     app_id, prompt = sys.argv[1], sys.argv[2]
     for event in fal_client.stream(app_id, {"prompt": prompt}, path="/stream"):
         if event["type"] == "preview":
-            data = base64.b64decode(event["video"].split(",", 1)[1])
+            data = base64.b64decode(event["video"]["url"].split(",", 1)[1])
             pathlib.Path("preview_latest.mp4").write_bytes(data)
             bar = "#" * round(20 * event["progress"]) + "-" * (
                 20 - round(20 * event["progress"])

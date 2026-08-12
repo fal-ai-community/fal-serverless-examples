@@ -136,7 +136,7 @@ class _PreviewSession:
             # encode_video accepts a torch uint8 [T,H,W,3] tensor; .contiguous()
             # matters (av.VideoFrame.from_ndarray requirement).
             encode_video(frames.contiguous(), 24, path)
-            payload = base64.b64encode(open(path, "rb").read()).decode()
+            payload = open(path, "rb").read()
         finally:
             if os.path.exists(path):
                 os.unlink(path)
@@ -145,7 +145,15 @@ class _PreviewSession:
             "step": step,
             "total_steps": total,
             "progress": round((step + 1) / total, 3),
-            "video": f"data:video/mp4;base64,{payload}",
+            # File-shaped like Output.video in the terminal `result` event -
+            # generic clients (the fal playground included) then parse one
+            # shape for previews and the final video alike; only the url
+            # scheme differs (data: here, https: there).
+            "video": {
+                "url": "data:video/mp4;base64," + base64.b64encode(payload).decode(),
+                "content_type": "video/mp4",
+                "file_size": len(payload),
+            },
             "width": frames.shape[2],
             "height": frames.shape[1],
             "frames": int(frames.shape[0]),

@@ -111,7 +111,7 @@ A raw latent at step 3 of 8 looks like noise, so streaming it would be pointless
 
 **The encode runs on a worker thread.** The surprise is that the tiny VAE is not the expensive part: muxing those frames to mp4 through x264 costs **0.15–0.20 s** of CPU, four to six times the decode. So `on_step_end` never blocks the denoise loop — it stores the newest `x0` under a lock, dropping any predecessor that has not been decoded yet (latest-wins), and returns. One worker thread drains that slot, renders, and pushes an event onto a queue; the async SSE generator drains the queue and writes it to the wire. When generation ends, the generator freezes the queue and drains it once more, so a preview that was still encoding at the finish line still reaches the client — and nothing ever arrives after the terminal event.
 
-At the default `preview_every=1` you get **6 preview events**, steps 1 through 6: step 0 has no predecessor to extrapolate from, and the last step is left to the real result. Each event is a self-contained `data:video/mp4;base64,…` string — **41–208 KB** at the 768×512 smoke shape, **94–243 KB** at 1024×576×97f, climbing step by step as the picture sharpens and stops compressing so kindly — so a client can assign it straight to `video.src`.
+At the default `preview_every=1` you get **6 preview events**, steps 1 through 6: step 0 has no predecessor to extrapolate from, and the last step is left to the real result. Each event's `video.url` is a self-contained `data:video/mp4;base64,…` URI — **41–208 KB** at the 768×512 smoke shape, **94–243 KB** at 1024×576×97f, climbing step by step as the picture sharpens and stops compressing so kindly — so a client can assign it straight to `video.src`. The `video` object carries the same `{url, content_type, file_size}` shape as the final `result` event, so one parsing path handles previews and the finished clip alike.
 
 The final video is not a preview: it comes out of the full VAE at full resolution, with audio from the vocoder, and is uploaded to the fal CDN.
 
@@ -139,8 +139,8 @@ for event in fal_client.stream(
 
 | `type` | Fields | When |
 |---|---|---|
-| `preview` | `step`, `total_steps`, `progress`, `video` (`data:video/mp4;base64,…`), `width`, `height`, `frames` | after each sampled denoising step |
-| `result` | `video` (`{url, content_type, …}`), `seed`, `timings` | once, after the full-VAE decode and CDN upload |
+| `preview` | `step`, `total_steps`, `progress`, `video` (`{url: "data:video/mp4;base64,…", content_type, file_size}`), `width`, `height`, `frames` | after each sampled denoising step |
+| `result` | `video` (`{url: "https://…", content_type, …}`), `seed`, `timings` | once, after the full-VAE decode and CDN upload |
 | `error` | `detail`, `status_code` (422 for the out-of-memory guard, 500 otherwise) | instead of `result`, if generation or upload fails |
 
 Exactly one terminal event ends the stream — `result` or `error`, never a trailing preview. That guarantee exists because the response sets `x-fal-sse-last-event-as-body: 1`: a caller that POSTs to `/stream` without reading incrementally receives the *last* event as the entire response body, so the last event has to be the one worth having. Handle all three types; `client.py` and `viewer.html` both do.
