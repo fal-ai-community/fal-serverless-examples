@@ -208,15 +208,34 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         # self-contained (model_index.json + per-component packs + tokenizer +
         # scheduler), so this one call rebuilds the whole pipeline.
         t0 = time.perf_counter()
+        # transformers ties encoder.embed_tokens.weight to shared.weight, and
+        # the flagship classes deliberately leave the tied name out of the
+        # pack (flashpack_ignore_names). flashpack's loader assigns packed
+        # tensors by REPLACING each Parameter object, which silently breaks
+        # that tie: shared gets a real tensor while encoder.embed_tokens
+        # keeps the meta skeleton Parameter, and the pipeline loader's own
+        # .to(device) then crashes ("Cannot copy out of meta tensor"). Load
+        # the text encoder ourselves, restore the tie through the official
+        # embeddings API (module-level sharing), and hand the finished
+        # module to the pipeline loader - components passed as kwargs are
+        # used as-is and skip the broken path.
+        text_encoder = classes["FlashPackUMT5EncoderModel"].from_pretrained_flashpack(
+            str(PACK_DIR / "text_encoder"), device="cuda"
+        )
+        text_encoder.set_input_embeddings(text_encoder.shared)
         pipe = FlashPackWanPipeline.from_pretrained_flashpack(
-            str(PACK_DIR), device_map="cuda"
+            str(PACK_DIR), device_map="cuda", text_encoder=text_encoder
         )
         for component_name in ("transformer", "vae", "text_encoder"):
             module = getattr(pipe, component_name)
             leftover = [
                 name
                 for name, tensor in (
-                    list(module.named_parameters()) + list(module.named_buffers())
+                    # remove_duplicate=False: tied parameters share one
+                    # object only until an assignment replaces one side (see
+                    # above) - dedup would mask exactly that broken tie.
+                    list(module.named_parameters(remove_duplicate=False))
+                    + list(module.named_buffers(remove_duplicate=False))
                 )
                 if tensor.is_meta
             ]

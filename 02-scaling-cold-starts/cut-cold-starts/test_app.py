@@ -123,6 +123,49 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
     ), "Registration loop must use setattr twice for each class: once with __name__ and once with removeprefix('FlashPack')"
 
 
+def test_pipeline_load_receives_explicit_text_encoder():
+    """UMT5 ties encoder.embed_tokens.weight to shared.weight; the flagship
+    FlashPack classes deliberately leave the tied name out of the pack
+    (flashpack_ignore_names), and flashpack's loader assigns packed tensors
+    by REPLACING each Parameter object - silently breaking the tie. The
+    pipeline loader's own .to(device) then crashes on the leftover meta
+    tensor. The fix loads text_encoder itself, re-ties it, and passes it
+    into FlashPackWanPipeline.from_pretrained_flashpack as a kwarg (a
+    supplied component is used as-is and skips the broken path). Guard
+    against someone "simplifying" back to a single call with no
+    text_encoder kwarg."""
+    import ast
+
+    source = (HERE / "app.py").read_text()
+    tree = ast.parse(source)
+
+    def is_pipeline_target(value: ast.expr) -> bool:
+        if isinstance(value, ast.Name) and value.id == "FlashPackWanPipeline":
+            return True
+        if isinstance(value, ast.Subscript):
+            key = value.slice
+            return isinstance(key, ast.Constant) and key.value == "FlashPackWanPipeline"
+        return False
+
+    found_text_encoder_kwarg = False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "from_pretrained_flashpack"
+            and is_pipeline_target(node.func.value)
+            and any(kw.arg == "text_encoder" for kw in node.keywords)
+        ):
+            found_text_encoder_kwarg = True
+            break
+
+    assert found_text_encoder_kwarg, (
+        "FlashPackWanPipeline.from_pretrained_flashpack must receive an "
+        "explicit text_encoder= kwarg (loaded + re-tied beforehand) - the "
+        "single-call form silently breaks the UMT5 embed_tokens/shared tie"
+    )
+
+
 # --------------------------- live tests (harness) ---------------------------
 # The harness deploys each app*.py and runs this whole file against it with
 # HARNESS_APP_URL + HARNESS_VARIANT set; app_client skips otherwise.
