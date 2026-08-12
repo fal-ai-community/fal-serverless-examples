@@ -183,27 +183,32 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
 
         coords = None
         step = 0
-        with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.shape_model_dtype):
-            for _t, x_t, _ in ss_gen.generate_iter(
-                latent_shape, image.device, *cargs, **ckw
-            ):
-                step += 1
-                check_cancelled()
-                if step % params.geometry_every and step != total1:
-                    continue
-                shape_latent = x_t["shape"] if isinstance(x_t, dict) else x_t
-                ss = ss_dec(
-                    shape_latent.permute(0, 2, 1).contiguous().view(bs, 8, 16, 16, 16)
-                )
-                coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
-                grid_xyz = coords[:, 1:].cpu().numpy()
-                emit({
-                    "type": "geometry", "step": step, "total_steps": total1,
-                    "progress": round(0.05 + 0.45 * step / total1, 3),
-                    "voxels": encode_voxels(grid_xyz),
-                    "count": int(len(grid_xyz)), "grid_size": GRID_SIZE,
-                })
-        ss_gen.inference_steps = prev_steps
+        try:
+            with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.shape_model_dtype):
+                for _t, x_t, _ in ss_gen.generate_iter(
+                    latent_shape, image.device, *cargs, **ckw
+                ):
+                    step += 1
+                    check_cancelled()
+                    if step % params.geometry_every and step != total1:
+                        continue
+                    shape_latent = x_t["shape"] if isinstance(x_t, dict) else x_t
+                    ss = ss_dec(
+                        shape_latent.permute(0, 2, 1).contiguous().view(bs, 8, 16, 16, 16)
+                    )
+                    coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
+                    grid_xyz = coords[:, 1:].cpu().numpy()
+                    emit({
+                        "type": "geometry", "step": step, "total_steps": total1,
+                        "progress": round(0.05 + 0.45 * step / total1, 3),
+                        "voxels": encode_voxels(grid_xyz),
+                        "count": int(len(grid_xyz)), "grid_size": GRID_SIZE,
+                    })
+        finally:
+            # Restore even on cancellation/exception: these generators are
+            # shared across requests, and a leaked step count would silently
+            # apply to every later request on this warm container.
+            ss_gen.inference_steps = prev_steps
 
         # Final stage-1 coords, pruned/downsampled exactly like run() does.
         if pipeline.downsample_ss_dist > 0:
@@ -252,25 +257,30 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
 
         slat = None
         step = 0
-        with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.dtype):
-            for _t, x_t, _ in slat_gen.generate_iter(
-                latent_shape2, image.device, *cargs2, **ckw2
-            ):
-                step += 1
-                check_cancelled()
-                slat_latent = x_t
-                if step % params.colors_every and step != total2:
-                    continue
-                colors = voxel_colors(x_t)
-                emit({
-                    "type": "appearance", "step": step, "total_steps": total2,
-                    "progress": round(0.50 + 0.40 * step / total2, 3),
-                    "voxels": encode_voxels(grid_xyz, colors),
-                    "count": int(n_vox), "grid_size": GRID_SIZE,
-                })
-            slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
-            slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
-        slat_gen.inference_steps = prev_steps2
+        try:
+            with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.dtype):
+                for _t, x_t, _ in slat_gen.generate_iter(
+                    latent_shape2, image.device, *cargs2, **ckw2
+                ):
+                    step += 1
+                    check_cancelled()
+                    slat_latent = x_t
+                    if step % params.colors_every and step != total2:
+                        continue
+                    colors = voxel_colors(x_t)
+                    emit({
+                        "type": "appearance", "step": step, "total_steps": total2,
+                        "progress": round(0.50 + 0.40 * step / total2, 3),
+                        "voxels": encode_voxels(grid_xyz, colors),
+                        "count": int(n_vox), "grid_size": GRID_SIZE,
+                    })
+        finally:
+            # Restore even on cancellation/exception: these generators are
+            # shared across requests, and a leaked step count would silently
+            # apply to every later request on this warm container.
+            slat_gen.inference_steps = prev_steps2
+        slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
+        slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
 
         # ---- finalize: decode + GLB, exactly like run() --------------------
         emit({"type": "status", "stage": "finalizing", "progress": 0.90,
