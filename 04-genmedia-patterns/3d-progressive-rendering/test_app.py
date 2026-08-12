@@ -130,3 +130,80 @@ def test_stream_frames_reports_dead_worker_without_sentinel():
     last = json.loads(frames[-1][6:])
     assert last["type"] == "error"
     assert last["code"] == "worker_died"
+
+
+# --- live tests (harness only: app_client skips without HARNESS_APP_URL) ---
+
+import httpx  # noqa: E402  (module-level: harness deps include httpx)
+
+SAMPLE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
+
+
+def _fal_headers():
+    from fal.sdk import get_credentials
+    return get_credentials().to_headers()
+
+
+def test_generate_returns_valid_assets(app_client):
+    out = app_client.run("/", {"image_url": SAMPLE, "seed": 42})
+    assert out["seed"] == 42
+    glb_head = b""
+    with httpx.stream("GET", out["glb"]["url"], timeout=60) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes():
+            glb_head += chunk
+            if len(glb_head) >= 4:
+                break
+    assert glb_head[:4] == b"glTF"
+    assert httpx.head(out["gaussian_splat"]["url"], timeout=60).status_code < 400
+
+
+def test_stream_event_contract(app_client):
+    """The streaming contract: monotonic progress, geometry strictly before
+    appearance, decodable voxel frames, exactly one terminal event carrying
+    asset URLs."""
+    events = []
+    with httpx.stream(
+        "POST", app_client.url + "/stream",
+        json={"image_url": SAMPLE, "seed": 42, "geometry_every": 5, "colors_every": 10},
+        headers=_fal_headers(), timeout=600,
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    types = [e["type"] for e in events]
+    terminals = [t for t in types if t in ("complete", "error")]
+    assert terminals == ["complete"], f"stream ended badly: {types}"
+    assert types[-1] == "complete"
+
+    geometry = [e for e in events if e["type"] == "geometry"]
+    appearance = [e for e in events if e["type"] == "appearance"]
+    assert geometry and appearance
+    last_geometry = max(i for i, t in enumerate(types) if t == "geometry")
+    assert last_geometry < types.index("appearance")
+
+    progresses = [e["progress"] for e in events if "progress" in e]
+    assert progresses == sorted(progresses), "progress went backwards"
+
+    frame = geometry[-1]
+    rows = app_module.decode_voxels(frame["voxels"])
+    assert len(rows) == frame["count"] > 0
+    assert all(0 <= r[i] < frame["grid_size"] for r in rows[:100] for i in range(3))
+
+    final = events[-1]
+    with httpx.stream("GET", final["glb"]["url"], timeout=60) as r:
+        r.raise_for_status()
+        assert next(r.iter_bytes(4))[:4] == b"glTF"
+
+
+def test_stream_rejects_bad_image_before_streaming(app_client):
+    resp = httpx.post(
+        app_client.url + "/stream",
+        json={"image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"},
+        headers=_fal_headers(), timeout=120,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "image_url"]
