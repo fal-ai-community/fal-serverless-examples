@@ -26,6 +26,9 @@ _spec.loader.exec_module(shared)
 
 VARIANT = os.environ.get("HARNESS_VARIANT", "app")
 
+# The mirror convention: App.requirements in both apps must match this file.
+REQUIREMENTS = (Path(__file__).parent / "requirements.txt").read_text().split()
+
 
 # ---------------------------------------------------------------- unit: core
 
@@ -252,23 +255,8 @@ def test_trainer_module_loads_with_expected_settings():
     assert cls.skip_retry_conditions == ["timeout"]
     assert cls.max_concurrency == 1
     assert cls.host_kwargs["keep_alive"] == 0
-    assert cls.requirements == shared_requirements()
+    assert cls.requirements == REQUIREMENTS
     assert cls.local_python_modules == ["shared"]
-
-
-def shared_requirements():
-    return [
-        "fal==1.78.2",
-        "hf-transfer==0.1.9",
-        "diffusers==0.39.0",
-        "transformers==5.3.0",
-        "torch==2.12.1",
-        "accelerate==1.14.0",
-        "peft==0.19.1",
-        "safetensors==0.8.0",
-        "pillow==11.3.0",
-        "numpy==2.4.0",
-    ]
 
 
 def test_trainer_preflight_input_has_smoke_example():
@@ -283,9 +271,9 @@ def test_server_module_loads_with_expected_settings():
     server = _load_module("app")
     cls = server.KleinLoraServer
     assert cls.machine_type == ["GPU-L40", "GPU-H100"]
-    assert cls.requirements == shared_requirements()
-    assert server.GenerateInput.model_fields["lora_name"].default == shared.DEMO_LORA
-    scale = server.GenerateInput.model_fields["lora_scale"]
+    assert cls.requirements == REQUIREMENTS
+    assert server.Input.model_fields["lora_name"].default == shared.DEMO_LORA
+    scale = server.Input.model_fields["lora_scale"]
     assert scale.default == 1.0
     assert cls.host_kwargs["keep_alive"] == 300
     assert cls.startup_timeout == 1200

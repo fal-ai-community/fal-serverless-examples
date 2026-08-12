@@ -150,7 +150,7 @@ your first training.
 ## Next steps
 
 - **Serve thousands of these** — one adapter per user, LRU-cached on a warm
-  fleet with routing hints: example 04.3. Your `lora_file` URL is drop-in
+  fleet with routing hints: example 04.3. Your `diffusers_lora_file` URL is drop-in
   for its `/register`.
 - **Managed alternative**: [fal's hosted klein trainer](https://fal.ai/models/fal-ai/flux-2-klein-4b-base-trainer)
   is this pattern productized (same field vocabulary, no app to run).

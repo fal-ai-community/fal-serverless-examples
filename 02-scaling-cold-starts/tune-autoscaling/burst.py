@@ -26,6 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import fal
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import model  # noqa: E402  - sibling module, stdlib-only
 
@@ -34,8 +36,13 @@ SYNC_URL = "https://fal.run/{app}"
 ANALYTICS_URL = "https://api.fal.ai/v1/serverless/analytics"
 
 SCALE_KEYS = (
-    "keep_alive", "min_concurrency", "max_concurrency", "concurrency_buffer",
-    "concurrency_buffer_perc", "scaling_delay", "max_multiplexing",
+    "keep_alive",
+    "min_concurrency",
+    "max_concurrency",
+    "concurrency_buffer",
+    "concurrency_buffer_perc",
+    "scaling_delay",
+    "max_multiplexing",
 )
 
 
@@ -50,7 +57,9 @@ def select_app_config(apps_document: dict, app: str) -> dict:
     for entry in apps_document.get("apps", []):
         if entry.get("alias") == alias:
             return entry
-    known = ", ".join(sorted(e.get("alias", "?") for e in apps_document.get("apps", [])))
+    known = ", ".join(
+        sorted(e.get("alias", "?") for e in apps_document.get("apps", []))
+    )
     raise ValueError(f"{app!r} is not deployed (aliases seen: {known or 'none'})")
 
 
@@ -70,7 +79,8 @@ def read_live_config(app: str) -> dict:
     try:
         completed = subprocess.run(
             ["fal", "apps", "list", "--json"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError as error:
         raise RuntimeError(
@@ -128,8 +138,6 @@ def build_trace(
     recorded_at: str,
 ) -> dict:
     """Assemble trace@1. model.calibrate is the only reader of this shape."""
-    import fal
-
     return {
         "schema": model.TRACE_SCHEMA,
         "recorded_at": recorded_at,
@@ -187,20 +195,20 @@ def cross_check_analytics(app: str, headers: dict) -> dict:
         }
 
 
-def run_burst(app: str, arrivals: list[float], payload: dict, concurrency: int,
-              timeout: float) -> list[dict]:
+def run_burst(
+    app: str, arrivals: list[float], payload: dict, concurrency: int, timeout: float
+) -> list[dict]:
     url = SYNC_URL.format(app=app)
     headers = _auth_headers()
-    origin = time.monotonic()
-    records: list[dict] = []
+    origin = time.perf_counter()
 
-    def one(index: int, offset: float) -> dict:
-        delay = offset - (time.monotonic() - origin)
+    def fire_at(index: int, offset: float) -> dict:
+        delay = offset - (time.perf_counter() - origin)
         if delay > 0:
             time.sleep(delay)
-        arrived = time.monotonic() - origin
+        arrived = time.perf_counter() - origin
         status, body = fire(url, payload, headers, timeout)
-        completed = time.monotonic() - origin
+        completed = time.perf_counter() - origin
         return {
             "id": index,
             "arrived_s": round(arrived, 3),
@@ -212,36 +220,54 @@ def run_burst(app: str, arrivals: list[float], payload: dict, concurrency: int,
         }
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = [pool.submit(one, i, t) for i, t in enumerate(arrivals)]
-        for future in futures:
-            records.append(future.result())
+        futures = [pool.submit(fire_at, i, t) for i, t in enumerate(arrivals)]
+        records = [future.result() for future in futures]
     return sorted(records, key=lambda r: r["id"])
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", required=True, help="e.g. yourname/tune-autoscaling")
-    parser.add_argument("--pattern", default="spike", choices=["spike", "ramp", "steady"])
+    parser.add_argument(
+        "--pattern", default="spike", choices=["spike", "ramp", "steady"]
+    )
     parser.add_argument("--requests", type=int, default=20)
-    parser.add_argument("--duration", type=float, default=0.0,
-                       help="seconds the arrivals are spread over (ignored for spike)")
-    parser.add_argument("--concurrency", type=int, default=20,
-                       help="client-side worker pool size; keep >= requests "
-                            "for any pattern whose arrival schedule you want "
-                            "honoured - with fewer workers than requests, a "
-                            "task only starts waiting out its arrival offset "
-                            "once a worker frees up, so ramp and steady "
-                            "arrivals fire late and silently stop matching "
-                            "the pattern you asked for (not just spikes)")
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="seconds the arrivals are spread over (ignored for spike)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=20,
+        help="client-side worker pool size; keep >= requests "
+        "for any pattern whose arrival schedule you want "
+        "honoured - with fewer workers than requests, a "
+        "task only starts waiting out its arrival offset "
+        "once a worker frees up, so ramp and steady "
+        "arrivals fire late and silently stop matching "
+        "the pattern you asked for (not just spikes)",
+    )
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--rate", type=float, default=model.USD_PER_SECOND)
-    parser.add_argument("--prompt",
-                       default="a calico cat riding a bicycle through a sunlit "
-                               "wheat field, film photo")
-    parser.add_argument("--steps", type=int, default=4,
-                       help="fixed across the burst so service time is comparable")
-    parser.add_argument("--from-analytics", action="store_true",
-                       help="also cross-check against /v1/serverless/analytics")
+    parser.add_argument(
+        "--prompt",
+        default="a calico cat riding a bicycle through a sunlit "
+        "wheat field, film photo",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=4,
+        help="fixed across the burst so service time is comparable",
+    )
+    parser.add_argument(
+        "--from-analytics",
+        action="store_true",
+        help="also cross-check against /v1/serverless/analytics",
+    )
     parser.add_argument("--out", default="trace.json")
     args = parser.parse_args(argv)
 
@@ -263,8 +289,13 @@ def main(argv: list[str] | None = None) -> int:
 
     failed = [r for r in records if not (200 <= r["status"] < 300)]
     trace = build_trace(
-        app=args.app, config=config, pattern=args.pattern, requests=args.requests,
-        duration_s=args.duration, concurrency=args.concurrency, records=records,
+        app=args.app,
+        config=config,
+        pattern=args.pattern,
+        requests=args.requests,
+        duration_s=args.duration,
+        concurrency=args.concurrency,
+        records=records,
         usd_per_second=args.rate,
         recorded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
@@ -283,7 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     write_trace()
 
     if args.from_analytics:
-        trace["analytics_cross_check"] = cross_check_analytics(args.app, _auth_headers())
+        trace["analytics_cross_check"] = cross_check_analytics(
+            args.app, _auth_headers()
+        )
         write_trace()
 
     print(f"wrote {args.out}: {len(records)} requests, {len(failed)} failed")
@@ -301,12 +334,16 @@ def main(argv: list[str] | None = None) -> int:
     billable = model.billable_seconds(
         model.measured_windows(trace), keep_alive=float(config.get("keep_alive") or 0)
     )
-    print(f"  observed {calibration.observed_runners} runner(s), "
-          f"cold start {calibration.cold_start_s:.1f}s, "
-          f"service {calibration.service_s:.1f}s")
-    print(f"  billable {billable:.0f} runner-seconds "
-          f"-> ${model.cost_usd(billable, usd_per_second=args.rate):.4f} "
-          f"at ${args.rate * 3600:.2f}/h")
+    print(
+        f"  observed {calibration.observed_runners} runner(s), "
+        f"cold start {calibration.cold_start_s:.1f}s, "
+        f"service {calibration.service_s:.1f}s"
+    )
+    print(
+        f"  billable {billable:.0f} runner-seconds "
+        f"-> ${model.cost_usd(billable, usd_per_second=args.rate):.4f} "
+        f"at ${args.rate * 3600:.2f}/h"
+    )
     return 1 if failed else 0
 
 

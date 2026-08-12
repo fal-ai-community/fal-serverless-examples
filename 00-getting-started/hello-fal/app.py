@@ -2,7 +2,6 @@
 
 Catalog slot 00.1 (SERV-1284). One pydantic-typed endpoint: run it with
 `fal run`, ship it with `fal deploy`, verify it with the CI deploy-check.
-The full "one app, run three ways" walkthrough lands with SERV-1284.
 """
 import fal
 from pydantic import BaseModel, Field
@@ -20,15 +19,14 @@ class Output(BaseModel):
 
 
 class HelloFal(fal.App, keep_alive=60):
-    machine_type = "S"  # 1 GB CPU tier: same $/s as XS today, headroom for the runtime
+    machine_type = "S"  # 1 GB CPU tier - no GPU needed to greet; headroom for the runtime
     app_auth = "private"  # deploy requires an explicit auth mode; callers send a fal key
-    # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
     ]
 
     def setup(self) -> None:
-        """Nothing to load here - loading real model weights is 00.2's job."""
+        """Intentionally empty - real apps load model weights here, once per worker."""
 
     @fal.endpoint("/")
     def greet(self, request: Input) -> Output:

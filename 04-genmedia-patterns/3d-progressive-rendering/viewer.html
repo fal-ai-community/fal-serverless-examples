@@ -168,7 +168,7 @@ document.getElementById("go").onclick = async () => {
         } else if (ev.type === "complete") {
           status("done - seed " + ev.seed);
           document.getElementById("dl").innerHTML =
-            `<a href="${ev.glb.url}">GLB</a> · <a href="${ev.gaussian_splat.url}">splat</a>`;
+            `<a href="${ev.model_glb.url}">GLB</a> · <a href="${ev.gaussian_splat.url}">splat</a>`;
         } else if (ev.type === "error") {
           status("error: " + ev.message);
         }

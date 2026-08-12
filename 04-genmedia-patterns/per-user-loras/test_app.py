@@ -5,9 +5,11 @@ tests take the harness `app_client` fixture and skip unless HARNESS_APP_URL
 is set (harness/check.py sets it after the ephemeral deploy).
 """
 import importlib.util
+import os
 import struct
 from pathlib import Path
 
+import httpx
 import pytest
 
 _spec = importlib.util.spec_from_file_location(
@@ -134,18 +136,18 @@ class TestSyntheticSeed:
 # Integration tests - run by the harness against the live ephemeral deploy.
 # The app_client fixture skips every test below when HARNESS_APP_URL is unset.
 # ---------------------------------------------------------------------------
-import os  # noqa: E402
-
-import httpx  # noqa: E402
 
 
-def _direct_post(path: str, payload: dict) -> httpx.Response:
-    """Raw POST so header assertions are possible (app_client returns json only)."""
+def _direct_post(path: str, payload: dict, hint: str | None = None) -> httpx.Response:
+    """Raw POST so header assertions and routing hints are possible
+    (app_client sends and returns json only)."""
     import fal.sdk
 
     url = os.environ["HARNESS_APP_URL"].rstrip("/") + path
-    creds = fal.sdk.get_credentials()
-    return httpx.post(url, json=payload, headers=creds.to_headers(), timeout=120)
+    headers = fal.sdk.get_credentials().to_headers()
+    if hint is not None:
+        headers["X-Fal-Runner-Hint"] = hint
+    return httpx.post(url, json=payload, headers=headers, timeout=120)
 
 
 class TestGenerate:
@@ -197,9 +199,13 @@ class TestRegisterFlow:
         })
         assert first["serving"]["adapter_source"] in ("disk", "downloaded")
 
-        second = app_client.run("/", {
+        # Hint the repeat like a real client - unhinted, a second warm runner
+        # could take it, reload from disk, and flake both assertions.
+        resp = _direct_post("/", {
             "user_id": "it-synth-1", "prompt": "a blue bicycle", "seed": 6,
-        })
+        }, hint=first["serving"]["hint"])
+        resp.raise_for_status()
+        second = resp.json()
         assert second["serving"]["adapter_source"] == "gpu-cache"
         assert second["serving"]["worker_id"] == first["serving"]["worker_id"]
 

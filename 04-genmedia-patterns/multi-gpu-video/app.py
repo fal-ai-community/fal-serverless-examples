@@ -1,10 +1,10 @@
 """Multi-GPU video inference - WAN 2.2 A14B sharded across 4 GPUs with fal.distributed.
 
-One frontier text-to-video model, one video, four GPUs. DistributedRunner
-spawns a worker per GPU and initializes torch.distributed (NCCL) before
-setup() runs; diffusers context parallelism (Ulysses sequence parallelism)
-then splits every denoising step's sequence across the ranks, so all four
-GPUs cooperate on the same clip.
+Catalog slot 04.5 (SERV-1316). One frontier text-to-video model, one video,
+four GPUs. DistributedRunner spawns a worker per GPU and initializes
+torch.distributed (NCCL) before setup() runs; diffusers context parallelism
+(Ulysses sequence parallelism) then splits every denoising step's sequence
+across the ranks, so all four GPUs cooperate on the same clip.
 
 Model: Wan-AI/Wan2.2-T2V-A14B-Diffusers - Apache-2.0, ungated. The MoE pair
 of 14B expert transformers is ~70 GB in bf16: this is what "needs multi-GPU"
@@ -12,9 +12,11 @@ actually looks like.
 """
 import os
 import random
+import shutil
 import time
 import uuid
-from typing import Literal
+from pathlib import Path
+from typing import Any, Literal
 
 import fal
 from fal.distributed import DistributedRunner, DistributedWorker
@@ -47,7 +49,6 @@ class Input(BaseModel):
     negative_prompt: str = Field(
         default="",
         description="What to avoid in the video.",
-        examples=[""],
     )
     resolution: Literal["480p", "720p"] = Field(
         default="480p",
@@ -82,6 +83,8 @@ class Input(BaseModel):
     )
     seed: int | None = Field(
         default=None,
+        ge=0,
+        le=2**32 - 1,
         description="Random when omitted. Echoed back; same seed + same inputs reproduces the clip.",
     )
 
@@ -96,10 +99,11 @@ class Input(BaseModel):
 
 
 class Output(BaseModel):
+    # No sync_mode on purpose: multi-hundred-MB clips make data-URI transport inappropriate.
     video: File = Field(description="The generated clip (mp4, 16 fps) on the fal CDN.")
     seed: int = Field(description="The seed that produced this video.")
-    generation_seconds: float = Field(
-        description="Wall-clock seconds the four GPUs spent denoising this clip."
+    timings: dict[str, float] = Field(
+        description="Wall-clock seconds per phase; 'generate' is the four-GPU denoise."
     )
 
 
@@ -126,29 +130,42 @@ class WanWorker(DistributedWorker):
         pipe.enable_model_cpu_offload(device=self.device)
         self.pipe = pipe
 
-    def __call__(self, streaming: bool = False, **kwargs):
-        # `streaming` is force-injected by the runner - accept and ignore it.
+    def __call__(
+        self,
+        streaming: bool = False,  # force-injected by the runner - accept and ignore
+        *,
+        prompt: str,
+        negative_prompt: str,
+        height: int,
+        width: int,
+        num_frames: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        guidance_scale_2: float,
+        seed: int,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         import torch
         from diffusers.utils import export_to_video
 
         # Context parallelism needs identical inputs on every rank, so the
         # endpoint picks one seed and all ranks use it (unlike data
         # parallelism, where each rank would take a different seed).
-        generator = torch.Generator(device="cpu").manual_seed(kwargs["seed"])
+        generator = torch.Generator(device="cpu").manual_seed(seed)
         t0 = time.perf_counter()
         result = self.pipe(
-            prompt=kwargs["prompt"],
-            negative_prompt=kwargs["negative_prompt"],
-            height=kwargs["height"],
-            width=kwargs["width"],
-            num_frames=kwargs["num_frames"],
-            num_inference_steps=kwargs["num_inference_steps"],
-            guidance_scale=kwargs["guidance_scale"],
-            guidance_scale_2=kwargs["guidance_scale_2"],
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            guidance_scale_2=guidance_scale_2,
             generator=generator,
             output_type="np",
         )
-        generation_seconds = round(time.perf_counter() - t0, 1)
+        generate_seconds = round(time.perf_counter() - t0, 1)
 
         if self.rank != 0:
             # Ranks cooperated via NCCL inside the pipeline call; only rank 0
@@ -157,7 +174,7 @@ class WanWorker(DistributedWorker):
 
         path = f"/tmp/wan22-{uuid.uuid4().hex}.mp4"
         export_to_video(result.frames[0], path, fps=16)
-        return {"video_path": path, "generation_seconds": generation_seconds}
+        return {"video_path": path, "timings": {"generate": generate_seconds}}
 
 
 class MultiGpuVideo(fal.App, keep_alive=300):
@@ -182,14 +199,12 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     ]
 
     async def setup(self) -> None:
-        from pathlib import Path
-
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        # One-time on this account: download the fp32 repo and store a bf16
-        # copy on /data (half the bytes -> half the load time for all 4
-        # workers on every subsequent boot).
-        if not Path(CONVERTED_DIR, ".complete").exists():
+        # One-time per account; see CONVERTED_DIR above. The directory only
+        # ever appears via the atomic rename below, so existence implies a
+        # complete copy.
+        if not Path(CONVERTED_DIR).exists():
             import torch
             from diffusers import WanPipeline
             from huggingface_hub import snapshot_download
@@ -198,11 +213,16 @@ class MultiGpuVideo(fal.App, keep_alive=300):
             pipe = WanPipeline.from_pretrained(
                 MODEL_ID, revision=MODEL_REVISION, torch_dtype=torch.bfloat16
             )
-            tmp_dir = CONVERTED_DIR + ".tmp"
+            # Unique staging dir: /data is account-wide, so concurrent first
+            # boots must not write into the same path.
+            tmp_dir = f"{CONVERTED_DIR}.tmp.{uuid.uuid4().hex}"
             pipe.save_pretrained(tmp_dir, safe_serialization=True)
             del pipe
-            os.rename(tmp_dir, CONVERTED_DIR)  # rename keeps readers atomic
-            Path(CONVERTED_DIR, ".complete").touch()
+            try:
+                os.rename(tmp_dir, CONVERTED_DIR)
+            except OSError:
+                # Another boot won the race and already published its copy.
+                shutil.rmtree(tmp_dir)
 
         self.runner = DistributedRunner(worker_cls=WanWorker, world_size=NUM_GPUS)
         await self.runner.start(timeout=1800)
@@ -212,46 +232,37 @@ class MultiGpuVideo(fal.App, keep_alive=300):
         # default request shape (33 frames @ 480p) matters - attention kernels
         # autotune per shape, and a cold shape adds ~40 s to the first request.
         warmup = await self.runner.invoke(
-            {
-                "prompt": "warmup",
-                "negative_prompt": "",
-                "height": 480,
-                "width": 832,
-                "num_frames": 33,
-                "num_inference_steps": 2,
-                "guidance_scale": 3.5,
-                "guidance_scale_2": 4.0,
-                "seed": 0,
-            }
+            _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
         )
         assert "error" not in warmup, f"warmup failed: {warmup}"
         os.remove(warmup["video_path"])
 
     @fal.endpoint("/")
     async def generate(self, request: Input) -> Output:
-        seed = request.seed if request.seed is not None else random.randint(0, 2**31 - 1)
-        height, width = RESOLUTIONS[request.resolution]
-        result = await self.runner.invoke(
-            {
-                "prompt": request.prompt,
-                "negative_prompt": request.negative_prompt,
-                "height": height,
-                "width": width,
-                "num_frames": request.num_frames,
-                "num_inference_steps": request.num_inference_steps,
-                "guidance_scale": request.guidance_scale,
-                "guidance_scale_2": request.guidance_scale_2,
-                "seed": seed,
-            }
-        )
+        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        result = await self.runner.invoke(_worker_payload(request, seed))
         if "error" in result:
             # 5xx: not billed, and the platform retries on healthy hardware.
             raise HTTPException(status_code=500, detail=f"generation failed: {result['error']}")
 
-        video = File.from_path(result["video_path"], content_type="video/mp4")
-        os.remove(result["video_path"])
-        return Output(
-            video=video,
-            seed=seed,
-            generation_seconds=result["generation_seconds"],
-        )
+        try:
+            video = File.from_path(result["video_path"], content_type="video/mp4")
+        finally:
+            # keep_alive runners live on: never leave multi-MB clips in /tmp.
+            os.remove(result["video_path"])
+        return Output(video=video, seed=seed, timings=result["timings"])
+
+
+def _worker_payload(request: Input, seed: int) -> dict[str, Any]:
+    height, width = RESOLUTIONS[request.resolution]
+    return {
+        "prompt": request.prompt,
+        "negative_prompt": request.negative_prompt,
+        "height": height,
+        "width": width,
+        "num_frames": request.num_frames,
+        "num_inference_steps": request.num_inference_steps,
+        "guidance_scale": request.guidance_scale,
+        "guidance_scale_2": request.guidance_scale_2,
+        "seed": seed,
+    }

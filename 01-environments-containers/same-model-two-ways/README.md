@@ -32,7 +32,7 @@ Both files declare the same `Input`/`Output` and the same `setup()`. The only di
 
 **Way 1 — [`app.py`](app.py):** `requirements = ["fal==1.78.2", "torch==2.12.1", "transformers==5.3.0"]`. fal resolves and builds; [`requirements.txt`](requirements.txt) mirrors it exactly for local installs.
 
-**Way 2 — [`app_container.py`](app_container.py):** `image = ContainerImage.from_dockerfile("Dockerfile")` and `requirements` stays empty, because [`Dockerfile`](Dockerfile) bakes the same versions in.
+**Way 2 — [`app_container.py`](app_container.py):** `image = ContainerImage.from_dockerfile("Dockerfile")` — no `requirements` list, because [`Dockerfile`](Dockerfile) bakes the same versions in.
 
 ### Which to pick
 
@@ -93,6 +93,7 @@ curl -X POST https://queue.fal.run/<your-username>/transcribe-runtime \
 
 ## Next steps
 
+- **00.4 — bulletproof inputs**: `audio_url` goes straight to the model here; that example shows how to validate user media before inference.
 - **01.3 — dev → staging → prod**: promote whichever build path you picked across environments.
 - **02.1 — cut cold starts**: what to do about that image-pull wall clock.
 - Concept docs: [custom container images](https://fal.ai/docs/documentation/development/use-custom-container-image) · [managing dependencies](https://fal.ai/docs/documentation/getting-started/manage-dependencies)

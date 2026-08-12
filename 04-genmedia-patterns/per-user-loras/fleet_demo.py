@@ -1,9 +1,9 @@
 """Fleet demo: register N synthetic users, drive hinted traffic, print the
 routing story. This is the empirical validation for hint-steered cache
-affinity at scale (SERV-1273).
+affinity at scale.
 
 Usage:
-    pip install fal-client
+    pip install fal-client==1.0.0
     python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200
     python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200 --no-hints
 
@@ -26,25 +26,32 @@ PROMPTS = [
 ]
 
 
-def register_users(app: str, n: int, workers: int) -> list[str]:
-    users = [f"load-u{i:05d}" for i in range(n)]
+def user_ids(n: int) -> list[str]:
+    return [f"load-u{i:05d}" for i in range(n)]
+
+
+def register_users(app: str, users: list[str], workers: int) -> dict[str, str]:
+    """Register the users; return each server-issued routing hint."""
+    hints: dict[str, str] = {}
+    lock = threading.Lock()
 
     def _reg(uid: str) -> None:
-        fal_client.run(app, {"user_id": uid}, path="/register")
+        reg = fal_client.run(app, {"user_id": uid}, path="/register")
+        with lock:
+            hints[uid] = reg["hint"]
 
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
         done = 0
         for _ in pool.map(_reg, users):
             done += 1
             if done % 100 == 0:
-                print(f"registered {done}/{n}")
-    return users
+                print(f"registered {done}/{len(users)}")
+    return hints
 
 
-def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
-                  workers: int, seed: int, zipf: float,
-                  use_queue: bool = False) -> list[dict]:
-    rng = random.Random(seed)
+def drive_traffic(app: str, users: list[str], hints: dict[str, str],
+                  n_requests: int, use_hints: bool, workers: int, seed: int,
+                  zipf: float, use_queue: bool = False) -> tuple[list[dict], dict[str, int]]:
     # Zipf-skewed popularity: a few hot users, long tail. Within a keep_alive
     # window real avatar traffic is concentrated (active users iterate in
     # edit-generate loops), so the default exponent leans hot; lower --zipf
@@ -60,14 +67,22 @@ def drive_traffic(app: str, users: list[str], n_requests: int, use_hints: bool,
     stats_lock = threading.Lock()
 
     def _one(i: int) -> dict:
+        # Per-request RNG keyed on (seed, i): a shared generator would make
+        # draw order depend on thread interleaving and break --seed replays.
+        rng = random.Random(f"{seed}:{i}")
         uid = rng.choices(users, weights=weights, k=1)[0]
-        kwargs = {"hint": f"lora:{uid}"} if use_hints else {}
+        with stats_lock:
+            hint = hints.get(uid)
+        # Clients never compute hints: send the server-issued one when we have
+        # it (from /register, or captured off an earlier response below).
+        kwargs = {"hint": hint} if use_hints and hint else {}
         arguments = {"user_id": uid, "prompt": rng.choice(PROMPTS),
                      "num_inference_steps": 1, "seed": i, "sync_mode": True}
         # subscribe() = queue path (production default); run() = sync path.
         call = fal_client.subscribe if use_queue else fal_client.run
         serving = call(app, arguments, **kwargs)["serving"]
         with stats_lock:
+            hints[uid] = serving["hint"]
             prev = last_worker.get(uid)
             if prev is not None:
                 stickiness["repeats"] += 1
@@ -119,10 +134,11 @@ def main() -> None:
                     help="reuse users registered by a previous run")
     args = ap.parse_args()
 
-    users = [f"load-u{i:05d}" for i in range(args.users)]
+    users = user_ids(args.users)
+    hints: dict[str, str] = {}
     if not args.skip_register:
-        users = register_users(args.app, args.users, args.workers)
-    servings, stickiness = drive_traffic(args.app, users, args.requests,
+        hints = register_users(args.app, users, args.workers)
+    servings, stickiness = drive_traffic(args.app, users, hints, args.requests,
                                          use_hints=not args.no_hints,
                                          workers=args.workers, seed=args.seed,
                                          zipf=args.zipf, use_queue=args.queue)

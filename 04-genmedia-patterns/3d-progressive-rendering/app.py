@@ -10,10 +10,13 @@ event is GUARANTEED.
 import base64
 import json
 import queue
-import secrets
+import random
 import threading
+import traceback
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import fal
 from fal.container import ContainerImage
@@ -28,14 +31,72 @@ from pydantic import BaseModel, Field
 # LOSSLESS - no per-frame renormalization, no jitter between frames.
 GRID_SIZE = 64
 HEARTBEAT_SECONDS = 15.0  # well under typical 60-100s proxy idle timeouts
+MAX_PENDING_FRAMES = 8
 SSE_HEARTBEAT = ": keepalive\n\n"
+
+SAMPLE_IMAGE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
+HF_REVISION = "2e73555018d2741ccd486e56c24fac41155a1dc6"
+WEIGHTS_DIR = FAL_PERSISTENT_DIR / "sam-3d-objects" / HF_REVISION
+DOCKERFILE = Path(__file__).parent / "Dockerfile"
 
 
 class GenerationCancelled(Exception):
     """Raised inside the worker when the client has disconnected."""
 
 
-def encode_voxels(coords, colors=None) -> str:
+class Input(BaseModel):
+    image_url: str = Field(
+        description="Image containing the object to reconstruct in 3D.",
+        examples=[SAMPLE_IMAGE],
+    )
+    mask_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional binary mask isolating the object (white = object). "
+            "Without it the whole image is reconstructed as one object - "
+            "fine for object-centric photos, poor for cluttered scenes."
+        ),
+    )
+    seed: int | None = Field(
+        default=None, description="Random seed; omit for a random one."
+    )
+    stage1_steps: int | None = Field(
+        default=None, ge=4, le=50,
+        description="Geometry diffusion steps (default: model config, 25).",
+    )
+    stage2_steps: int | None = Field(
+        default=None, ge=4, le=50,
+        description="Appearance diffusion steps (default: model config, 25).",
+    )
+
+
+class StreamInput(Input):
+    geometry_every: int = Field(
+        default=1, ge=1, le=10,
+        description="Emit a geometry frame every N steps (1 = smoothest).",
+    )
+    colors_every: int = Field(
+        default=5, ge=1, le=25,
+        description=(
+            "Emit a colored appearance frame every N steps. Each frame costs "
+            "a Gaussian decode, so this is a latency knob, not just polish."
+        ),
+    )
+
+
+class Output(BaseModel):
+    # No sync_mode on purpose: these assets run to hundreds of MB, so
+    # data-URI transport is never appropriate here.
+    model_glb: File = Field(description="Final textured mesh (vertex colors), GLB.")
+    gaussian_splat: File = Field(description="Gaussian splat, PLY.")
+    seed: int = Field(description="Seed actually used.")
+
+
+def resolve_seed(seed: int | None) -> int:
+    return seed if seed is not None else random.randint(0, 2**32 - 1)
+
+
+def encode_voxels(coords: "np.ndarray", colors: "np.ndarray | None" = None) -> str:
     """Pack voxels as base64 of N x [x,y,z,r,g,b] uint8 rows (6 bytes/voxel).
 
     coords: (N,3) integer grid indices in [0, GRID_SIZE).
@@ -96,7 +157,7 @@ def put_terminal(q: queue.Queue, event: dict | None) -> None:
 
 
 def stream_frames(q: queue.Queue, worker_done: threading.Event,
-                  heartbeat_s: float = HEARTBEAT_SECONDS):
+                  heartbeat_s: float = HEARTBEAT_SECONDS) -> Iterator[str]:
     """Drain the queue into SSE frames. Heartbeats are SSE comments (clients'
     event parsers never see them). Ends at the None sentinel; if the worker
     died without one, emit a terminal error so 'finished' is never ambiguous
@@ -118,17 +179,16 @@ def stream_frames(q: queue.Queue, worker_done: threading.Event,
         yield sse_format(event)
 
 
-# ---------------------------------------------------------------------------
-# The streaming driver. This is the whole idea of the example:
-# the official pipeline's generators expose generate_iter(), a public
-# per-solver-step iterator (generate() is literally "loop generate_iter,
-# keep the last value") - so progressive output needs NO model fork, just
-# this driver that mirrors InferencePipeline.run() stage by stage.
-# ---------------------------------------------------------------------------
+def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
+                    params: StreamInput, emit: Callable[[dict], None],
+                    cancelled: threading.Event) -> dict:
+    """The streaming driver: mirror InferencePipeline.run() stage by stage,
+    emitting a frame per solver step via `emit`.
 
-
-def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
-                    emit, cancelled: threading.Event) -> dict:
+    The pipeline's generators expose generate_iter(), a public per-solver-step
+    iterator (generate() is literally "loop generate_iter, keep the last
+    value") - so progressive output needs no model fork.
+    """
     import numpy as np
     import torch
     from sam3d_objects.model.backbone.tdfy_dit.modules import sparse as sp
@@ -149,7 +209,7 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
               "message": "Preparing pipeline inputs"})
         # InferencePipelinePointMap conditions stage 1 on a MoGe depth
         # pointmap - without it the condition embedder KeyErrors on
-        # 'pointmap' (spike finding). Stage 2 does not take it.
+        # 'pointmap'. Stage 2 does not take it.
         pointmap_dict = pipeline.compute_pointmap(rgba, None)
         ss_input = pipeline.preprocess_image(
             rgba, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
@@ -162,10 +222,10 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
         ss_gen.no_shortcut = True
         ss_gen.reverse_fn.strength = pipeline.ss_cfg_strength
         ss_gen.reverse_fn.strength_pm = pipeline.ss_cfg_strength_pm
-        prev_steps = ss_gen.inference_steps
+        prev_ss_steps = ss_gen.inference_steps
         if params.stage1_steps:
             ss_gen.inference_steps = params.stage1_steps
-        total1 = ss_gen.inference_steps
+        total_ss_steps = ss_gen.inference_steps
 
         image = ss_input["image"]
         bs = image.shape[0]
@@ -176,7 +236,7 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
             }
         else:
             latent_shape = (bs,) + (4096, 8)
-        cargs, ckw = pipeline.get_condition_input(
+        cond_args, cond_kwargs = pipeline.get_condition_input(
             pipeline.condition_embedders["ss_condition_embedder"],
             ss_input, pipeline.ss_condition_input_mapping,
         )
@@ -186,11 +246,11 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
         try:
             with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.shape_model_dtype):
                 for _t, x_t, _ in ss_gen.generate_iter(
-                    latent_shape, image.device, *cargs, **ckw
+                    latent_shape, image.device, *cond_args, **cond_kwargs
                 ):
                     step += 1
                     check_cancelled()
-                    if step % params.geometry_every and step != total1:
+                    if step % params.geometry_every != 0 and step != total_ss_steps:
                         continue
                     shape_latent = x_t["shape"] if isinstance(x_t, dict) else x_t
                     ss = ss_dec(
@@ -199,8 +259,8 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
                     coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
                     grid_xyz = coords[:, 1:].cpu().numpy()
                     emit({
-                        "type": "geometry", "step": step, "total_steps": total1,
-                        "progress": round(0.05 + 0.45 * step / total1, 3),
+                        "type": "geometry", "step": step, "total_steps": total_ss_steps,
+                        "progress": round(0.05 + 0.45 * step / total_ss_steps, 3),
                         "voxels": encode_voxels(grid_xyz),
                         "count": int(len(grid_xyz)), "grid_size": GRID_SIZE,
                     })
@@ -208,7 +268,7 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
             # Restore even on cancellation/exception: these generators are
             # shared across requests, and a leaked step count would silently
             # apply to every later request on this warm container.
-            ss_gen.inference_steps = prev_steps
+            ss_gen.inference_steps = prev_ss_steps
 
         # Final stage-1 coords, pruned/downsampled exactly like run() does.
         if pipeline.downsample_ss_dist > 0:
@@ -221,17 +281,17 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
         slat_gen = models["slat_generator"]
         slat_gen.no_shortcut = True
         slat_gen.reverse_fn.strength = pipeline.slat_cfg_strength
-        prev_steps2 = slat_gen.inference_steps
+        prev_slat_steps = slat_gen.inference_steps
         if params.stage2_steps:
             slat_gen.inference_steps = params.stage2_steps
-        total2 = slat_gen.inference_steps
+        total_slat_steps = slat_gen.inference_steps
 
-        latent_shape2 = (bs,) + (coords.shape[0], 8)
-        cargs2, ckw2 = pipeline.get_condition_input(
+        slat_latent_shape = (bs,) + (coords.shape[0], 8)
+        slat_cond_args, slat_cond_kwargs = pipeline.get_condition_input(
             pipeline.condition_embedders["slat_condition_embedder"],
             slat_input, pipeline.slat_condition_input_mapping,
         )
-        cargs2 = cargs2 + (coords.cpu().numpy(),)
+        slat_cond_args = slat_cond_args + (coords.cpu().numpy(),)
         grid_xyz = coords[:, 1:].cpu().numpy()
         n_vox = coords.shape[0]
 
@@ -255,30 +315,30 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
                 return None
             return (0.5 + SH_C0 * per_voxel).clamp(0, 1).float().cpu().numpy()
 
-        slat = None
         step = 0
         try:
             with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.dtype):
                 for _t, x_t, _ in slat_gen.generate_iter(
-                    latent_shape2, image.device, *cargs2, **ckw2
+                    slat_latent_shape, image.device, *slat_cond_args, **slat_cond_kwargs
                 ):
                     step += 1
                     check_cancelled()
+                    # Track every step's latent BEFORE the throttle: the final
+                    # decode below needs the LAST one even when its frame is
+                    # skipped by colors_every.
                     slat_latent = x_t
-                    if step % params.colors_every and step != total2:
+                    if step % params.colors_every != 0 and step != total_slat_steps:
                         continue
                     colors = voxel_colors(x_t)
                     emit({
-                        "type": "appearance", "step": step, "total_steps": total2,
-                        "progress": round(0.50 + 0.40 * step / total2, 3),
+                        "type": "appearance", "step": step, "total_steps": total_slat_steps,
+                        "progress": round(0.50 + 0.40 * step / total_slat_steps, 3),
                         "voxels": encode_voxels(grid_xyz, colors),
                         "count": int(n_vox), "grid_size": GRID_SIZE,
                     })
         finally:
-            # Restore even on cancellation/exception: these generators are
-            # shared across requests, and a leaked step count would silently
-            # apply to every later request on this warm container.
-            slat_gen.inference_steps = prev_steps2
+            # Same restore rationale as stage 1.
+            slat_gen.inference_steps = prev_slat_steps
         slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
         slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
 
@@ -314,81 +374,20 @@ def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
         return outputs
 
 
-# ---------------------------------------------------------------------------
-# Inputs / outputs
-# ---------------------------------------------------------------------------
-
-SAMPLE_IMAGE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
-HF_REVISION = "2e73555018d2741ccd486e56c24fac41155a1dc6"
-WEIGHTS_DIR = FAL_PERSISTENT_DIR / "sam-3d-objects" / HF_REVISION
-DOCKERFILE = Path(__file__).parent / "Dockerfile"
-
-
-class GenerateInput(BaseModel):
-    image_url: str = Field(
-        description="Image containing the object to reconstruct in 3D.",
-        examples=[SAMPLE_IMAGE],
-    )
-    mask_url: str | None = Field(
-        default=None,
-        description=(
-            "Optional binary mask isolating the object (white = object). "
-            "Without it the whole image is reconstructed as one object - "
-            "fine for object-centric photos, poor for cluttered scenes."
-        ),
-    )
-    seed: int | None = Field(
-        default=None, description="Random seed; omit for a random one."
-    )
-    stage1_steps: int | None = Field(
-        default=None, ge=4, le=50,
-        description="Geometry diffusion steps (default: model config, 25).",
-    )
-    stage2_steps: int | None = Field(
-        default=None, ge=4, le=50,
-        description="Appearance diffusion steps (default: model config, 25).",
-    )
-
-
-class StreamInput(GenerateInput):
-    geometry_every: int = Field(
-        default=1, ge=1, le=10,
-        description="Emit a geometry frame every N steps (1 = smoothest).",
-    )
-    colors_every: int = Field(
-        default=5, ge=1, le=25,
-        description=(
-            "Emit a colored appearance frame every N steps. Each frame costs "
-            "a Gaussian decode, so this is a latency knob, not just polish."
-        ),
-    )
-
-
-class AssetOutput(BaseModel):
-    glb: File = Field(description="Final textured mesh (vertex colors), GLB.")
-    gaussian_splat: File = Field(description="Gaussian splat, PLY.")
-    seed: int = Field(description="Seed actually used.")
-
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-
-
 class SAM3DStreamApp(
     fal.App,
     name="sam-3d-progressive",
     keep_alive=60,  # raise for interactive use; see README "Cost & tuning"
-    kind="container",
-    image=ContainerImage.from_dockerfile(str(DOCKERFILE), builder="depot"),
-    max_concurrency=1,
-    min_concurrency=0,
 ):
     # SAM-3D's own prerequisite is >=32 GB VRAM, which rules out most
     # smaller tiers; H100 keeps both diffusion stages interactive.
     machine_type = "GPU-H100"
     app_auth = "private"
     request_timeout = 600
+    # The multi-GB CUDA image needs the faster depot builder.
+    image = ContainerImage.from_dockerfile(str(DOCKERFILE), builder="depot")
+    max_concurrency = 1
+    min_concurrency = 0
 
     def setup(self):
         import torch
@@ -408,7 +407,7 @@ class SAM3DStreamApp(
         # Mirrors the official notebook/inference.py `Inference` wrapper
         # (that helper is not part of the pip-installed package).
         # FAL_PERSISTENT_DIR is not a real pathlib.Path - OmegaConf.load
-        # rejects it with "Unexpected file type" (spike finding).
+        # rejects it with "Unexpected file type".
         config_path = Path(str(WEIGHTS_DIR)) / "checkpoints" / "pipeline.yaml"
         config = OmegaConf.load(config_path)
         config.rendering_engine = "pytorch3d"
@@ -418,29 +417,36 @@ class SAM3DStreamApp(
 
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        # No warmup generation on purpose: compile_model=False leaves no
+        # compile cache to prime, and a full two-stage pass would add ~16s to
+        # every cold start that the streaming UX already makes visible.
         print("[sam-3d-progressive] pipeline ready")
 
     # -- shared input/output plumbing --------------------------------------
 
-    def _load_rgba(self, input: GenerateInput):
+    def _load_rgba(self, request: Input) -> "np.ndarray":
         """Fetch image (+ optional mask) and merge to the RGBA the pipeline
         expects. Runs BEFORE any StreamingResponse is returned, so bad inputs
         are honest HTTP 422s, never mid-stream error events."""
         import numpy as np
 
         try:
-            rgb = np.array(FalImage(url=input.image_url).to_pil().convert("RGB"))
+            rgb = np.array(FalImage(url=request.image_url).to_pil().convert("RGB"))
         except Exception as exc:
             raise FieldException(
-                "image_url", "Could not fetch or decode the image."
+                field="image_url",
+                message="Could not fetch or decode the image.",
+                type="file_download_error",
             ) from exc
 
-        if input.mask_url:
+        if request.mask_url:
             try:
-                mask_pil = FalImage(url=input.mask_url).to_pil().convert("L")
+                mask_pil = FalImage(url=request.mask_url).to_pil().convert("L")
             except Exception as exc:
                 raise FieldException(
-                    "mask_url", "Could not fetch or decode the mask."
+                    field="mask_url",
+                    message="Could not fetch or decode the mask.",
+                    type="file_download_error",
                 ) from exc
             mask = (np.array(mask_pil.resize((rgb.shape[1], rgb.shape[0]))) > 127)
             mask = mask.astype(np.uint8) * 255
@@ -448,69 +454,70 @@ class SAM3DStreamApp(
             mask = np.full(rgb.shape[:2], 255, dtype=np.uint8)
         return np.concatenate([rgb, mask[..., None]], axis=-1)
 
-    def _export_assets(self, outputs: dict, request: Request):
+    def _export_assets(self, outputs: dict, fastapi_request: Request) -> tuple[File, File]:
         """Final assets travel by URL, never inline - the terminal event and
         the JSON endpoint share this rule."""
         with TemporaryDirectory() as tmp:
             splat_path = str(Path(tmp) / "splat.ply")
             outputs["gs"].save_ply(splat_path)
-            splat = File.from_path(splat_path, multipart=True, request=request)
+            splat = File.from_path(splat_path, multipart=True, request=fastapi_request)
 
             glb_path = str(Path(tmp) / "model.glb")
             outputs["glb"].export(glb_path)
             glb = File.from_path(
                 glb_path, content_type="model/gltf-binary",
-                multipart=True, request=request,
+                multipart=True, request=fastapi_request,
             )
         return glb, splat
 
     # -- endpoints ----------------------------------------------------------
 
     @fal.endpoint("/")
-    def generate(self, input: GenerateInput, request: Request) -> AssetOutput:
+    def generate(self, request: Input, fastapi_request: Request) -> Output:
         """Plain request/response: the whole pipeline, assets by URL.
         Use /stream to watch it happen."""
-        rgba = self._load_rgba(input)
-        seed = input.seed if input.seed is not None else secrets.randbits(31)
+        rgba = self._load_rgba(request)
+        seed = resolve_seed(request.seed)
         outputs = self.pipeline.run(
-            rgba, None, seed,
+            rgba,
+            mask=None,  # the mask is already merged into rgba's alpha
+            seed=seed,
             stage1_only=False,
             with_mesh_postprocess=False,
             with_texture_baking=False,
             with_layout_postprocess=False,
             use_vertex_color=True,
-            stage1_inference_steps=input.stage1_steps,
-            stage2_inference_steps=input.stage2_steps,
+            stage1_inference_steps=request.stage1_steps,
+            stage2_inference_steps=request.stage2_steps,
         )
-        glb, splat = self._export_assets(outputs, request)
-        return AssetOutput(glb=glb, gaussian_splat=splat, seed=seed)
+        glb, splat = self._export_assets(outputs, fastapi_request)
+        return Output(model_glb=glb, gaussian_splat=splat, seed=seed)
 
     @fal.endpoint("/stream")
-    def stream(self, input: StreamInput, request: Request):
+    def stream(self, request: StreamInput, fastapi_request: Request) -> StreamingResponse:
         """SSE progressive rendering. Every stream ends in exactly one
         terminal event: complete (asset URLs) or error (sanitized)."""
-        from concurrent.futures import ThreadPoolExecutor
+        rgba = self._load_rgba(request)  # bad inputs 422 BEFORE we stream
+        seed = resolve_seed(request.seed)
 
-        rgba = self._load_rgba(input)  # bad inputs 422 BEFORE we stream
-        seed = input.seed if input.seed is not None else secrets.randbits(31)
-
-        q: queue.Queue = queue.Queue(maxsize=8)
+        q: queue.Queue[dict | None] = queue.Queue(maxsize=MAX_PENDING_FRAMES)
         cancelled = threading.Event()
         worker_done = threading.Event()
 
-        def worker():
+        def worker() -> None:
             try:
                 put_progress(q, {"type": "status", "stage": "loading",
                                  "progress": 0.01, "message": "Starting"})
                 outputs = stream_generate(
-                    self.pipeline, rgba, seed, input,
+                    self.pipeline, rgba, seed, request,
                     emit=lambda ev: put_progress(q, ev),
                     cancelled=cancelled,
                 )
-                glb, splat = self._export_assets(outputs, request)
+                glb, splat = self._export_assets(outputs, fastapi_request)
                 put_terminal(q, {
                     "type": "complete", "progress": 1.0,
-                    "glb": {"url": glb.url, "content_type": "model/gltf-binary"},
+                    "model_glb": {"url": glb.url,
+                                  "content_type": "model/gltf-binary"},
                     "gaussian_splat": {"url": splat.url,
                                        "content_type": "application/octet-stream"},
                     "seed": seed,
@@ -518,25 +525,25 @@ class SAM3DStreamApp(
             except GenerationCancelled:
                 pass  # client left; nobody is reading
             except Exception:
-                import traceback
                 traceback.print_exc()  # full detail server-side ONLY
                 put_terminal(q, {"type": "error", "code": "generation_failed",
                                  "message": "3D generation failed; check app logs."})
             finally:
-                worker_done.set()
+                # Sentinel BEFORE the done flag: if worker_done were set
+                # first, a heartbeat timeout in the gap would misread a
+                # finished stream as worker_died.
                 put_terminal(q, None)  # end-of-stream sentinel, guaranteed
+                worker_done.set()
 
-        executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(worker)
+        threading.Thread(target=worker, daemon=True).start()
 
-        def frames():
+        def frames() -> Iterator[str]:
             try:
                 yield from stream_frames(q, worker_done)
             finally:
                 # Runs on normal completion AND client disconnect: signal the
-                # worker (it checks between steps) and release the thread.
+                # worker, which checks between solver steps.
                 cancelled.set()
-                executor.shutdown(wait=False, cancel_futures=True)
 
         return StreamingResponse(
             frames(),

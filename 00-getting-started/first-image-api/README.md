@@ -20,6 +20,8 @@ You want a text-to-image endpoint you own: your model choice, your API schema, y
 
 …and a generated playground UI: prompt textarea, image-size preset dropdown, steps slider, seed with a randomize button — all derived from the `Input` schema in [`app.py`](app.py).
 
+One shape note: this tutorial returns a single `image`; fal's hosted FLUX endpoints return `images` (a list), so expect the plural when you move between the two.
+
 ## Run it
 
 ```bash
@@ -54,7 +56,7 @@ The first-ever run downloads ~16 GB of weights into your account's `/data` cache
 fal deploy app.py
 ```
 
-This registers `first-image-api` and prints its playground and API URLs. Call it from anywhere ([calling your endpoints](https://fal.ai/docs/documentation/development/calling-your-endpoints)) — the queue API is the production default for multi-second generations:
+This registers `first-image-api` and prints its playground and API URLs. The app deploys with `app_auth = "private"`, so only your fal key can call it; production image endpoints also add content safety (prompt moderation, NSFW checks on outputs) that this tutorial omits. Call it from anywhere ([calling your endpoints](https://fal.ai/docs/documentation/development/calling-your-endpoints)) — the queue API is the production default for multi-second generations:
 
 **Python**
 

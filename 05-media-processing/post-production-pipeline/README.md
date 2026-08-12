@@ -16,13 +16,14 @@ A generated video isn't a shippable video. Every genmedia product ends up buildi
   ],
   "thumbnails": [ { "url": "https://v3b.fal.media/files/b/0aa50f72/NIpPIey7MPWjb6uo7ma2Z_….jpg", "content_type": "image/jpeg" } ],
   "captions_vtt": { "url": "https://v3b.fal.media/files/b/0aa50f61/HTF8mp_nSNKWU4sId7nwt_captions.vtt", "content_type": "text/vtt" },
+  "timings": { "download": …, "encode_wall": …, "thumbnails": …, "upload": … },
   "report": { "url": "https://v3b.fal.media/files/b/0aa50f61/Efmd1dZZ7zKC_V1mfeoZY_report.json", "content_type": "application/json" }
 }
 ```
 
 *Real output from a registered deploy (`rehan/post-production-pipeline`) — see the validation transcript in Deploy below.*
 
-Every rendition is an H.264 MP4 (AAC audio when the source has one) with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work.
+Every rendition is an H.264 MP4 (AAC audio when the source has one) with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work; the top-level `timings` field mirrors the stage timings in seconds.
 
 ## Run it
 
@@ -48,7 +49,7 @@ The playground gives `video_url` a drag-and-drop upload widget; the defaults enc
 
 **Captions are validated before you pay for encoding.** SRT comes inline (`captions_srt`) or by URL (`captions_url`, at most one); the app converts it to WebVTT first — a malformed file fails as a fast typed 422 (`invalid_media`) before any rendition is encoded — then soft-muxes it into every MP4 as a selectable track.
 
-**Outputs are typed toolkit objects on the fal CDN.** `Video`/`Image`/`File` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from fal's CDN (`v3.fal.media` / `v3b.fal.media` shards); retention follows your account's media lifecycle, and per-request retention is available via the `x-fal-object-lifecycle-preference` header (see [00.3 media-in-media-out](../../00-getting-started/media-in-media-out/)).
+**Outputs are typed toolkit objects on the fal CDN.** `File`/`Image` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from fal's CDN (`v3.fal.media` / `v3b.fal.media` shards); retention follows your account's media lifecycle. Per-request retention via the `x-fal-object-lifecycle-preference` header (see [00.3 media-in-media-out](../../00-getting-started/media-in-media-out/)) would additionally need the incoming FastAPI request forwarded to each upload call (`from_path(..., request=...)`) — this app skips that to keep the endpoint minimal.
 
 ## Deploy
 

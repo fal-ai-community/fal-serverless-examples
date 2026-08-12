@@ -6,7 +6,7 @@ HARNESS_APP_URL pointing at the live app - so tests stay tiny:
 
     def test_smoke(app_client):
         response = app_client.run("/", {"prompt": "..."})
-        assert response["result"]
+        assert response["message"]
 
 Run outside the harness (plain `pytest` anywhere inside the repo - the root
 conftest.py registers this fixture), it skips instead of failing, so example

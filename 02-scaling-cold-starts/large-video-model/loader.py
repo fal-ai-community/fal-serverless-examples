@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -55,18 +57,18 @@ def fetch_model() -> str:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     try:
         path = snapshot_download(
             MODEL_REPO, revision=MODEL_REV, local_dir=MODEL_DIR, local_files_only=True
         )
-        print(f"[loader] model cache hit in {time.time() - t0:.1f}s")
+        print(f"[loader] model cache hit in {time.perf_counter() - t0:.1f}s")
     except (LocalEntryNotFoundError, FileNotFoundError):
         print(f"[loader] cold download of {MODEL_REPO} (~88 GB) ...")
         path = snapshot_download(
             MODEL_REPO, revision=MODEL_REV, local_dir=MODEL_DIR, max_workers=32
         )
-        print(f"[loader] downloaded in {time.time() - t0:.1f}s")
+        print(f"[loader] downloaded in {time.perf_counter() - t0:.1f}s")
     return path
 
 
@@ -77,14 +79,13 @@ def fetch_taehv() -> Path:
         return dest
     _TAEHV_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=_TAEHV_DIR, delete=False) as tmp:
-        urllib.request.urlretrieve(TAEHV_WEIGHTS_URL, tmp.name)
-        digest = hashlib.sha256(Path(tmp.name).read_bytes()).hexdigest()
-        if digest != TAEHV_WEIGHTS_SHA:
-            os.unlink(tmp.name)
-            raise RuntimeError(f"taehv weights sha mismatch: {digest}")
-        os.rename(
-            tmp.name, dest
-        )  # atomic on /data: concurrent workers see all-or-nothing
+        with urllib.request.urlopen(TAEHV_WEIGHTS_URL, timeout=60) as resp:
+            shutil.copyfileobj(resp, tmp)
+    digest = hashlib.sha256(Path(tmp.name).read_bytes()).hexdigest()
+    if digest != TAEHV_WEIGHTS_SHA:
+        os.unlink(tmp.name)
+        raise RuntimeError(f"taehv weights sha mismatch: {digest}")
+    os.rename(tmp.name, dest)  # atomic on /data: concurrent workers see all-or-nothing
     return dest
 
 
@@ -94,12 +95,12 @@ def warm_page_cache(directory: str, parallelism: int = 32) -> float:
     /data serves 4 MB content-addressed chunks; parallel readers pull from
     multiple cache nodes at once (sequential ~1 GB/s vs parallel ~6-15 GB/s).
     """
-    t0 = time.time()
+    t0 = time.perf_counter()
     subprocess.run(
-        f"find {directory} -type f | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
+        f"find {shlex.quote(directory)} -type f | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
         shell=True,
         check=True,
     )
-    elapsed = time.time() - t0
+    elapsed = time.perf_counter() - t0
     print(f"[loader] page cache warm in {elapsed:.1f}s ({directory})")
     return elapsed

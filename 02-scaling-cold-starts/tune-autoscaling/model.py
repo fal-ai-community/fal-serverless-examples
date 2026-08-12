@@ -12,13 +12,16 @@ matches all three exactly (see test_app.py::PUBLISHED_CHARTS). Treat it as
 a model of the autoscaler, and note that scale-down dynamics are published
 nowhere at all - which is why this example measures them instead.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import math
 import sys
+from collections import deque
 from dataclasses import dataclass
+from typing import TypedDict
 
 # Published list price for GPU-H100 on fal.ai/pricing. The negotiated
 # "as low as" tier is $1.89/h; a reader on that tier should pass --rate.
@@ -103,7 +106,7 @@ TICK_S = 0.1
 _MAX_TICKS = 2_000_000  # runaway guard; 0.1s ticks = ~55 hours of sim time
 
 
-def _grid(value: float) -> float:
+def _snap_to_clock(value: float) -> float:
     """Quantize a derived timestamp to the tick clock's precision.
 
     `t` is always round(step * tick_s, 6). Derived times must be rounded the
@@ -141,9 +144,25 @@ def percentile(values: list[float], p: float) -> float:
     return ordered[max(0, min(rank, len(ordered) - 1))]
 
 
+class TimelineRow(TypedDict):
+    """One tick of runner states and queue depth; simulate() and
+    measured_timeline() share this shape so the two can be overlaid."""
+
+    t: float
+    setup: int
+    idle: int
+    running: int
+    queue_depth: int
+
+
+def live_runners(row: TimelineRow) -> int:
+    """Runners alive at this tick, whatever state they are in."""
+    return row["setup"] + row["idle"] + row["running"]
+
+
 @dataclass
 class SimResult:
-    timeline: list[dict]
+    timeline: list[TimelineRow]
     waits: list[float]
     windows: list[RunnerWindow]
 
@@ -176,10 +195,10 @@ def simulate(
     there is no third, residual chart).
     """
     pending = sorted(arrivals)
-    queue: list[tuple[float, int]] = []
+    queue: deque[tuple[float, int]] = deque()
     runners: list[dict] = []
     waits: dict[int, float] = {}
-    timeline: list[dict] = []
+    timeline: list[TimelineRow] = []
     next_arrival = 0
     next_request_id = 0
 
@@ -187,7 +206,9 @@ def simulate(
         # A min_concurrency runner is alive around the clock, so by the time a
         # burst arrives it booted long ago and is already READY. Only runners
         # the autoscaler starts in response to this burst pay a cold start.
-        ready_at = _grid(at) if prewarmed else _grid(at + cold_start_s)
+        ready_at = (
+            _snap_to_clock(at) if prewarmed else _snap_to_clock(at + cold_start_s)
+        )
         runner = {
             "id": f"sim-{len(runners):04d}",
             "setup_start": at,
@@ -230,9 +251,9 @@ def simulate(
                 and runner["ready_at"] <= t
                 and len(runner["inflight"]) < max_multiplexing
             ):
-                arrived_at, request_id = queue.pop(0)
+                arrived_at, request_id = queue.popleft()
                 waits[request_id] = t - arrived_at
-                runner["inflight"].append(_grid(t + service_s))
+                runner["inflight"].append(_snap_to_clock(t + service_s))
                 runner["last_activity"] = max(runner["last_activity"], t)
 
         in_flight = sum(len(r["inflight"]) for r in alive)
@@ -264,7 +285,7 @@ def simulate(
                 not runner["inflight"]
                 and runner["ready_at"] <= t
                 and (t - runner["last_activity"]) >= keep_alive
-                and len([r for r in alive if r["terminated_at"] is None]) > want
+                and sum(1 for r in alive if r["terminated_at"] is None) > want
             ):
                 runner["terminated_at"] = t
 
@@ -274,7 +295,9 @@ def simulate(
                 "t": t,
                 "setup": sum(1 for r in live if r["ready_at"] > t),
                 "running": sum(1 for r in live if r["inflight"]),
-                "idle": sum(1 for r in live if r["ready_at"] <= t and not r["inflight"]),
+                "idle": sum(
+                    1 for r in live if r["ready_at"] <= t and not r["inflight"]
+                ),
                 "queue_depth": len(queue),
             }
         )
@@ -287,24 +310,18 @@ def simulate(
         if settled and all((t - r["last_activity"]) >= keep_alive for r in live):
             break
     else:  # pragma: no cover - the guard should never trip in practice
-        raise RuntimeError("simulation did not settle; check keep_alive/min_concurrency")
+        raise RuntimeError(
+            "simulation did not settle; check keep_alive/min_concurrency"
+        )
 
     end_t = timeline[-1]["t"]
     windows = []
     for runner in runners:
         last = runner["last_activity"]
         if runner["terminated_at"] is None:
-            # Never scaled down, so it is alive for the whole window. Two
-            # kinds of runner can end up here: a prewarmed one (skipped
-            # above by construction - it holds the min_concurrency floor),
-            # or an ordinary demand runner that desired_runners() never
-            # actually asked to drop below (e.g. concurrency_buffer alone
-            # can hold `want` at 1 forever, even at zero load). Either way
-            # it is genuinely still alive at end_t, so it gets the same
-            # treatment. billable_seconds adds keep_alive to
-            # last_completion_s, so subtract it here to make the billed span
-            # exactly the window rather than the window plus a tail that
-            # never happened.
+            # Still alive at end_t (prewarmed floor, or a demand runner
+            # desired_runners() never dropped); billable_seconds re-adds
+            # keep_alive, so subtract it here to bill exactly the window.
             last = max(last, end_t - keep_alive)
         windows.append(
             RunnerWindow(
@@ -408,6 +425,17 @@ def calibrate(trace: dict) -> Calibration:
     )
 
 
+def _cold_request(requests: list[dict]) -> dict:
+    """The request whose setup_duration_s is authoritative for its runner.
+
+    Select by the cold flag, not list position: _by_runner preserves
+    whatever order it was given, and setup_duration_s is set once in setup()
+    and echoed by every response. Fall back to the first request if none is
+    flagged cold.
+    """
+    return next((r for r in requests if r["was_cold"]), requests[0])
+
+
 def measured_windows(trace: dict) -> list[RunnerWindow]:
     """One billed window per runner actually observed in the burst.
 
@@ -420,13 +448,7 @@ def measured_windows(trace: dict) -> list[RunnerWindow]:
     windows = []
     for runner_id, requests in _by_runner(_ok_requests(trace)).items():
         completions = [float(r["completed_s"]) for r in requests]
-        # Select by the cold flag, not list position: _by_runner preserves
-        # whatever order it was given, and a runner's cold request is the
-        # one whose setup_duration_s is authoritative (set once in setup()
-        # and echoed by every response). Fall back to the first request if
-        # none is flagged cold.
-        cold_first = next((r for r in requests if r["was_cold"]), requests[0])
-        setup_duration = float(cold_first["setup_duration_s"])
+        setup_duration = float(_cold_request(requests)["setup_duration_s"])
         windows.append(
             RunnerWindow(
                 runner_id=runner_id,
@@ -437,7 +459,7 @@ def measured_windows(trace: dict) -> list[RunnerWindow]:
     return windows
 
 
-def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
+def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRow]:
     """Runner states and queue depth over time, reconstructed from the trace.
 
     Same row shape as SimResult.timeline so the two can be overlaid. Note
@@ -451,17 +473,9 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
     grouped = _by_runner(ok)
     # Each runner's own reported setup duration, not the fleet median - this
     # is a reconstruction of what actually happened, runner by runner.
-    # Select by the cold flag rather than list position, same as
-    # measured_windows: _by_runner preserves whatever order it was given,
-    # not necessarily the cold request first. Fall back to the first
-    # request if none is flagged cold.
     ready_at = {
         runner_id: windows[runner_id].setup_start_s
-        + float(
-            next((r for r in requests if r["was_cold"]), requests[0])[
-                "setup_duration_s"
-            ]
-        )
+        + float(_cold_request(requests)["setup_duration_s"])
         for runner_id, requests in grouped.items()
     }
     busy: dict[str, list[tuple[float, float]]] = {rid: [] for rid in windows}
@@ -480,7 +494,7 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
     keep_alive = float(calibration.scale_config.get("keep_alive", 0))
     end = max(w.last_completion_s + keep_alive for w in windows.values())
 
-    timeline = []
+    timeline: list[TimelineRow] = []
     steps = int(math.ceil((end - start) / tick_s)) + 1
     for step in range(steps):
         t = round(start + step * tick_s, 6)
@@ -497,11 +511,18 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[dict]:
         queued = sum(
             1
             for r in ok
-            if float(r["arrived_s"]) <= t
+            if float(r["arrived_s"])
+            <= t
             < float(r["completed_s"]) - calibration.service_s
         )
         timeline.append(
-            {"t": t, "setup": setup, "idle": idle, "running": running, "queue_depth": queued}
+            {
+                "t": t,
+                "setup": setup,
+                "idle": idle,
+                "running": running,
+                "queue_depth": queued,
+            }
         )
     return timeline
 
@@ -577,26 +598,22 @@ def sweep(
                     max_multiplexing=max_multiplexing,
                     scaling_delay=float(base.get("scaling_delay", 0)),
                 )
-                # Prewarmed (min_concurrency) windows are billed only via the
-                # horizon-wide floor below - excluding them here is what
-                # keeps them from being counted a second time as per-burst
-                # demand.
+                # Prewarmed windows are billed only via the floor below
+                # (see the docstring).
                 demand_windows = [w for w in result.windows if not w.prewarmed]
                 demand_billable = billable_seconds(
-                    demand_windows, keep_alive=float(keep_alive), granularity=granularity
+                    demand_windows,
+                    keep_alive=float(keep_alive),
+                    granularity=granularity,
                 )
                 floor_s = min_concurrency * horizon_s
                 demand_s = demand_billable * bursts_in_horizon
                 total_s = floor_s + demand_s
-                # Round billable_s FIRST, then price that rounded value -
-                # not the unrounded total - so cost_usd is exactly
-                # billable_s * rate for the numbers this point actually
-                # prints (see the docstring above).
+                # Price the rounded billable_s, not total_s, so cost_usd ==
+                # billable_s * rate exactly (see the docstring).
                 billable_s = round(total_s, 3)
                 cost = cost_usd(billable_s, usd_per_second=rate)
-                peak = max(
-                    row["setup"] + row["idle"] + row["running"] for row in result.timeline
-                )
+                peak = max(live_runners(row) for row in result.timeline)
                 points.append(
                     {
                         "keep_alive": int(keep_alive),
@@ -616,7 +633,8 @@ def sweep(
                         "validated": peak <= calibration.observed_runners,
                         "measured": (
                             int(keep_alive) == int(base.get("keep_alive", -1))
-                            and int(min_concurrency) == int(base.get("min_concurrency", -1))
+                            and int(min_concurrency)
+                            == int(base.get("min_concurrency", -1))
                             and int(concurrency_buffer)
                             == int(base.get("concurrency_buffer", -1))
                         ),
@@ -727,25 +745,42 @@ def build_frontier(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--calibrate", required=True, metavar="TRACE",
-                       help="trace.json from burst.py")
-    parser.add_argument("--rate", type=float, default=None,
-                       help="USD per second; if omitted, inherits the "
-                            "trace's own recorded rate_usd_per_second (set "
-                            "by burst.py's --rate when the burst was "
-                            f"measured), falling back to {USD_PER_SECOND:.9f} "
-                            f"(the ${H100_USD_PER_HOUR}/h H100 list price) "
-                            "only if the trace carries no rate at all")
-    parser.add_argument("--billing-granularity", type=float, default=1.0,
-                       help="seconds each runner's billed time rounds up to (assumption)")
-    parser.add_argument("--bursts-per-hour", type=float, default=1.0,
-                       help="how often this burst repeats; scales cost_usd "
-                            "and billable_s directly (see --horizon-s)")
-    parser.add_argument("--horizon-s", type=float, default=3600.0,
-                       help="seconds the cost is totalled over (default 3600 = "
-                            "1h); a min_concurrency runner is billed for all of "
-                            "it, since it is alive around the clock regardless "
-                            "of when or how often the burst happens")
+    parser.add_argument(
+        "--calibrate", required=True, metavar="TRACE", help="trace.json from burst.py"
+    )
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=None,
+        help="USD per second; if omitted, inherits the "
+        "trace's own recorded rate_usd_per_second (set "
+        "by burst.py's --rate when the burst was "
+        f"measured), falling back to {USD_PER_SECOND:.9f} "
+        f"(the ${H100_USD_PER_HOUR}/h H100 list price) "
+        "only if the trace carries no rate at all",
+    )
+    parser.add_argument(
+        "--billing-granularity",
+        type=float,
+        default=1.0,
+        help="seconds each runner's billed time rounds up to (assumption)",
+    )
+    parser.add_argument(
+        "--bursts-per-hour",
+        type=float,
+        default=1.0,
+        help="how often this burst repeats; scales cost_usd "
+        "and billable_s directly (see --horizon-s)",
+    )
+    parser.add_argument(
+        "--horizon-s",
+        type=float,
+        default=3600.0,
+        help="seconds the cost is totalled over (default 3600 = "
+        "1h); a min_concurrency runner is billed for all of "
+        "it, since it is alive around the clock regardless "
+        "of when or how often the burst happens",
+    )
     parser.add_argument("--out", default="frontier.json")
     args = parser.parse_args(argv)
 
@@ -778,13 +813,17 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(document, handle, indent=2, sort_keys=True)
         handle.write("\n")
     cheapest = document["points"][document["pareto_front"][0]]
-    print(f"wrote {args.out}: {len(document['points'])} points, "
-          f"{len(document['pareto_front'])} on the front")
-    print(f"  cheapest on front: keep_alive={cheapest['keep_alive']} "
-          f"min_concurrency={cheapest['min_concurrency']} "
-          f"buffer={cheapest['concurrency_buffer']} "
-          f"-> ${cheapest['cost_usd']:.4f} over the {args.horizon_s:.0f}s horizon "
-          f"(not one burst), p95 wait {cheapest['p95_wait_s']:.1f}s")
+    print(
+        f"wrote {args.out}: {len(document['points'])} points, "
+        f"{len(document['pareto_front'])} on the front"
+    )
+    print(
+        f"  cheapest on front: keep_alive={cheapest['keep_alive']} "
+        f"min_concurrency={cheapest['min_concurrency']} "
+        f"buffer={cheapest['concurrency_buffer']} "
+        f"-> ${cheapest['cost_usd']:.4f} over the {args.horizon_s:.0f}s horizon "
+        f"(not one burst), p95 wait {cheapest['p95_wait_s']:.1f}s"
+    )
     return 0
 
 

@@ -11,8 +11,8 @@ SAMPLE = "hello from the promotion pipeline"
 def test_echoes_and_reports_its_environment(app_client):
     response = app_client.run("/", {"echo": SAMPLE})
     assert response["echo"] == SAMPLE
-    assert response["code_version"]
-    # A missing secret must degrade to "unset", not to a 500 - an app that
-    # only boots in the environment you remembered to configure is a
-    # promotion hazard.
-    assert response["stage"] == "unset" or response["environment_configured"]
+    # Pinned to app.py's CODE_VERSION: equality proves which revision answered.
+    assert response["code_version"] == "1.0.0"
+    # Passes with the secret set or missing; what it must catch is the two
+    # fields disagreeing (e.g. an empty-string secret).
+    assert (response["stage"] == "unset") == (not response["environment_configured"])

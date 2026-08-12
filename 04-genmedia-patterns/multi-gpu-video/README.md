@@ -29,7 +29,7 @@ is the real output of this example's validation run against a registered deploy
     "file_size": 841093
   },
   "seed": 7,
-  "generation_seconds": 282.2
+  "timings": {"generate": 282.2}
 }
 ```
 
@@ -112,9 +112,10 @@ Worker exceptions do **not** raise on the caller side - `runner.invoke()` return
 retries on healthy hardware). The warmup in `setup()` asserts on that key so a broken
 model never reports healthy - and it warms the default 480p/33-frame shape, because
 attention kernels autotune per shape and a cold shape adds ~40 s to the first request.
-One more honesty note: the runner serializes requests (one in flight at a time), which
-is why the app sets `max_concurrency = 1` - this endpoint scales by adding runners, not
-by stacking requests on one.
+One more honesty note: each runner handles one request at a time - fal's default
+`max_multiplexing = 1` admits a single request per runner, and the distributed workers
+process tasks serially - so this endpoint scales by adding runners (raise
+`max_concurrency` or use `fal apps scale`), not by stacking requests on one.
 
 ## Deploy
 

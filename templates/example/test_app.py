@@ -9,4 +9,4 @@ deploy/teardown plumbing lives in the harness.
 
 def test_smoke(app_client):
     response = app_client.run("/", {"prompt": "a calico cat riding a bicycle"})
-    assert response["result"]
+    assert response["message"] == "a calico cat riding a bicycle"

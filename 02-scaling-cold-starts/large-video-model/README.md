@@ -38,11 +38,12 @@ Response:
     "file_size": 311365
   },
   "seed": 42,
+  "num_frames": 57,
   "timings": { "generate_s": 2.9, "encode_s": 1.0 }
 }
 ```
 
-`seed` is echoed back whether you supplied it or not, and `timings` carries the server-side stage breakdown — `generate_s` for the denoise loop, `encode_s` for the mp4 + audio mux. The `content_type` is set explicitly: `File.from_path` defaults to `application/octet-stream`, which makes a browser download the clip rather than play it.
+`seed` is echoed back whether you supplied it or not, `num_frames` is the frame count actually generated (after snapping to the model's 8k+1 grid), and `timings` carries the server-side stage breakdown — `generate_s` for the denoise loop, `encode_s` for the mp4 + audio mux. The `content_type` is set explicitly: `File.from_path` defaults to `application/octet-stream`, which makes a browser download the clip rather than play it.
 
 ## Run it
 
@@ -140,7 +141,7 @@ for event in fal_client.stream(
 | `type` | Fields | When |
 |---|---|---|
 | `preview` | `step`, `total_steps`, `progress`, `video` (`{url: "data:video/mp4;base64,…", content_type, file_size}`), `width`, `height`, `frames` | after each sampled denoising step |
-| `result` | `video` (`{url: "https://…", content_type, …}`), `seed`, `timings` | once, after the full-VAE decode and CDN upload |
+| `result` | `video` (`{url: "https://…", content_type, …}`), `seed`, `num_frames`, `timings` | once, after the full-VAE decode and CDN upload |
 | `error` | `detail`, `status_code` (422 for the out-of-memory guard, 500 otherwise) | instead of `result`, if generation or upload fails |
 
 Exactly one terminal event ends the stream — `result` or `error`, never a trailing preview. That guarantee exists because the response sets `x-fal-sse-last-event-as-body: 1`: a caller that POSTs to `/stream` without reading incrementally receives the *last* event as the entire response body, so the last event has to be the one worth having. Handle all three types; `client.py` and `viewer.html` both do.
@@ -186,7 +187,7 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 - **`keep_alive=300`.** Five minutes. Video work arrives in bursts — a person iterating on a prompt sends ten requests in ten minutes — and re-warming means paying the boot row again. Shorten it for genuinely sporadic traffic; the autoscaling math (and when `min_concurrency` beats a long `keep_alive`) is [02.2](../tune-autoscaling/)'s subject.
 - **`startup_timeout=1800`** covers exactly one boot in the app's lifetime. Measured cold boot is 392 s and the slowest *warm* boot we saw was 299 s — the margin is for the unlucky node, not for the normal case.
 - **`preview_every`.** The distilled schedule is a fixed 8 steps, so this knob is coarser than it looks: `1` → 6 previews, `2` → 3, `3` → 2, `4` → 1. Anything above `2` undersells the feature. Previews cost the denoise loop almost nothing (the decode and encode run on the worker thread), so raising it saves bandwidth, not GPU time.
-- **Shape.** `1024x576` at 97 frames is the shape worth demoing — ~11 s from request to final video, with six previews landing between 3.4 s and 6.8 s, where the 768×512 smoke shape is over almost before it starts. 121 frames at the same width costs the same 7.7 s of denoising and one more second of muxing, so the top of the accepted envelope is not a cliff. `num_frames` is snapped down to the model's 8k+1 grid by `snap_frames()`, so callers never get a 422 for asking for 60 frames.
+- **Shape.** `1024x576` at 97 frames is the shape worth demoing — ~11 s from request to final video, with six previews landing between 3.4 s and 6.8 s, where the 768×512 smoke shape is over almost before it starts. 121 frames at the same width costs the same 7.7 s of denoising and one more second of muxing, so the top of the accepted envelope is not a cliff. `num_frames` is snapped down to the model's 8k+1 grid by `snap_frames()`, so callers never get a 422 for asking for 60 frames — the response's `num_frames` reports the count actually generated.
 - **Oversized requests fail safely.** A CUDA OOM becomes a typed 422 (`fal.exceptions.AppException`), deliberately *not* a 503 — a 503 tells the platform to restart the runner, throwing away 88 GB of warm weights over one bad request.
 - **Untested direction:** an fp8 or otherwise quantized DiT would cut the largest line in the sizing table and could open up smaller, cheaper machine types. We did not measure it, so this example makes no claim about it.
 

@@ -7,7 +7,7 @@ in the trigger phrase at training time, so it transfers to new subjects).
 Runs anywhere with a FAL_KEY (hosted endpoint) - or point --endpoint at
 your own 00.2 deployment (e.g. <username>/first-image-api).
 
-    pip install fal-client
+    pip install fal-client==1.0.0
     python make_dataset.py --out paper-diorama-16.zip
 """
 import argparse

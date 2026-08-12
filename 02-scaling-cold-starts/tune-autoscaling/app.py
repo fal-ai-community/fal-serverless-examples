@@ -1,4 +1,4 @@
-"""The burst target for catalog slot 02.2 (SERV-1294).
+"""Catalog slot 02.2 (SERV-1294) - the burst target.
 
 Same model as 00.2 (FLUX.2 [klein] 4B), with two differences that exist so
 one real burst can be measured without any extra credential:
@@ -12,18 +12,17 @@ one real burst can be measured without any extra credential:
      a cold start, and setup_duration_s IS the cold start, measured on the
      runner rather than inferred from a client-side timer.
 
-The scaling knobs below deliberately reproduce the UN-TUNED config the
-burst in trace.json was measured under - they are not a recommendation.
-keep_alive=300 in particular is on no Pareto-optimal point in frontier.json
-and README.md's "Cost & tuning" calls it a tax for a burst shaped like this
-one; it stays at 300 here anyway, because changing it would desynchronise
-this file from the committed trace and break a reader's ability to
-redeploy this exact app and reproduce that measurement. See README.md's
-"Cost & tuning" for what the frontier says to change, and why, once you've
-reproduced the baseline. min_concurrency and concurrency_buffer are both 0,
-which also keeps the CI deploy-check to exactly one runner - the only one
-harness/check.py can observe and confirm stopped.
+The scaling knobs below reproduce the UN-TUNED config trace.json was
+measured under - not a recommendation (README.md's "Cost & tuning" says
+what to change instead) - because changing them would desynchronise this
+file from the committed trace and break a reader's ability to redeploy this
+exact app and reproduce that measurement. min_concurrency and
+concurrency_buffer are both 0, which also keeps the CI deploy-check to
+exactly one runner - the only one harness/check.py can observe and confirm
+stopped.
 """
+
+import os
 import random
 import time
 import uuid
@@ -38,7 +37,9 @@ MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
 class Input(BaseModel):
     prompt: str = Field(
         description="What to generate.",
-        examples=["a calico cat riding a bicycle through a sunlit wheat field, film photo"],
+        examples=[
+            "a calico cat riding a bicycle through a sunlit wheat field, film photo"
+        ],
     )
     image_size: ImageSizeInput = Field(
         default="landscape_4_3",
@@ -57,10 +58,19 @@ class Input(BaseModel):
     seed: int | None = Field(
         default=None, description="Random when omitted; the response echoes it."
     )
+    sync_mode: bool = Field(
+        default=False,
+        description=(
+            "Return the image as a data URI instead of a hosted CDN URL - "
+            "skips the upload round-trip for latency-sensitive callers."
+        ),
+    )
 
 
 class Output(BaseModel):
-    image: Image = Field(description="The generated image, as a CDN URL.")
+    image: Image = Field(
+        description="The generated image: a CDN URL, or a data URI in sync_mode."
+    )
     seed: int = Field(description="The seed that produced this image.")
     served_by: str = Field(
         description="Opaque per-runner id. Distinct values in one burst = distinct runners."
@@ -73,7 +83,7 @@ class Output(BaseModel):
     )
 
 
-class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's measured config, see the docstring
+class TuneAutoscaling(fal.App, keep_alive=300):
     machine_type = "GPU-H100"  # PINNED: GPU-L40 has no published price
     app_auth = "private"
     startup_timeout = 1200  # the account's first-ever boot pulls ~16 GB to /data
@@ -97,9 +107,7 @@ class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's me
 
     def setup(self) -> None:
         """Load -> warmup, timing itself so the runner can report its own cold start."""
-        import os
-
-        started = time.monotonic()
+        started = time.perf_counter()
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # before any HF download
 
         import torch
@@ -116,11 +124,10 @@ class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's me
             guidance_scale=1.0,
         )
 
-        # Identity and timing for the measurement. requests_served is what
-        # makes was_cold meaningful: only the first request on this runner
-        # paid for the setup above.
+        # requests_served is what makes was_cold meaningful: only the first
+        # request on this runner paid for the setup above.
         self.worker_id = uuid.uuid4().hex[:12]
-        self.setup_duration_s = time.monotonic() - started
+        self.setup_duration_s = time.perf_counter() - started
         self.requests_served = 0
 
     @fal.endpoint("/")
@@ -131,7 +138,9 @@ class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's me
         self.requests_served += 1
 
         size = get_image_size(request.image_size)
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         result = self.pipe(
             prompt=request.prompt,
             height=size.height,
@@ -140,8 +149,9 @@ class TuneAutoscaling(fal.App, keep_alive=300):  # 300s: matches trace.json's me
             guidance_scale=1.0,  # klein is guidance-distilled; keep at 1.0
             generator=torch.Generator("cuda").manual_seed(seed),
         )
+        repository = "in_memory" if request.sync_mode else "fal_v3"
         return Output(
-            image=Image.from_pil(result.images[0], repository="fal_v3"),
+            image=Image.from_pil(result.images[0], repository=repository),
             seed=seed,
             served_by=self.worker_id,
             was_cold=was_cold,

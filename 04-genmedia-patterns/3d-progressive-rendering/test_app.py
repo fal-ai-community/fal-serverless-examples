@@ -5,15 +5,17 @@ Two kinds, both run by CI:
     every PR by the static job (numpy-dependent ones skip when numpy is
     absent);
   * live tests that consume the real SSE stream on an ephemeral deploy
-    (harness/check.py) - added in Task 5.
+    (harness/check.py).
 """
 import base64
 import importlib.util
 import json
 import queue
 import threading
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 
 _spec = importlib.util.spec_from_file_location(
@@ -113,7 +115,6 @@ def test_stream_frames_emits_heartbeat_on_silence():
     done = threading.Event()
 
     def finish_later():
-        import time
         time.sleep(0.15)
         q.put(None)
 
@@ -134,9 +135,7 @@ def test_stream_frames_reports_dead_worker_without_sentinel():
 
 # --- live tests (harness only: app_client skips without HARNESS_APP_URL) ---
 
-import httpx  # noqa: E402  (module-level: harness deps include httpx)
-
-SAMPLE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
+SAMPLE = app_module.SAMPLE_IMAGE
 
 
 def _fal_headers():
@@ -148,7 +147,7 @@ def test_generate_returns_valid_assets(app_client):
     out = app_client.run("/", {"image_url": SAMPLE, "seed": 42})
     assert out["seed"] == 42
     glb_head = b""
-    with httpx.stream("GET", out["glb"]["url"], timeout=60) as r:
+    with httpx.stream("GET", out["model_glb"]["url"], timeout=60) as r:
         r.raise_for_status()
         for chunk in r.iter_bytes():
             glb_head += chunk
@@ -194,7 +193,7 @@ def test_stream_event_contract(app_client):
     assert all(0 <= r[i] < frame["grid_size"] for r in rows[:100] for i in range(3))
 
     final = events[-1]
-    with httpx.stream("GET", final["glb"]["url"], timeout=60) as r:
+    with httpx.stream("GET", final["model_glb"]["url"], timeout=60) as r:
         r.raise_for_status()
         assert next(r.iter_bytes(4))[:4] == b"glTF"
 

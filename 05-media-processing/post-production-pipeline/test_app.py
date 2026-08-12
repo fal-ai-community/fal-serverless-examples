@@ -7,8 +7,10 @@ Three kinds, all run by CI:
   * webhook-receiver verification tests (skipped unless `cryptography`
     is installed - it is a client-side dep, not an app dep).
 """
+import hashlib
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -148,7 +150,7 @@ def test_full_pipeline_ladder_captions_thumbnails(app_client):
             "video_url": SAMPLE,
             "ladder": [1080, 720, 480],
             "captions_srt": app_module.SAMPLE_SRT,
-            "thumbnail_count": 2,
+            "num_thumbnails": 2,
         },
     )
     renditions = response["renditions"]
@@ -172,6 +174,9 @@ def test_full_pipeline_ladder_captions_thumbnails(app_client):
     assert response["captions_vtt"] is not None
     assert "WEBVTT" in fetch(response["captions_vtt"]["url"]).text
 
+    assert set(response["timings"]) == {"download", "encode_wall", "thumbnails", "upload"}
+    assert response["timings"]["encode_wall"] > 0
+
     report = fetch(response["report"]["url"]).json()
     assert report["source"]["has_audio"] is False
     assert report["ladder"]["skipped_no_upscale"] == []
@@ -184,7 +189,7 @@ def test_audio_source_transcodes_and_never_upscales(app_client):
     and the audio must survive into the rendition."""
     response = app_client.run(
         "/",
-        {"video_url": AUDIO_SAMPLE, "ladder": [2160, 360], "thumbnail_count": 1},
+        {"video_url": AUDIO_SAMPLE, "ladder": [2160, 360], "num_thumbnails": 1},
     )
     assert [r["label"] for r in response["renditions"]] == ["360p"]
     assert len(response["thumbnails"]) == 1
@@ -244,9 +249,6 @@ def _receiver_module():
 
 def _signed_delivery(timestamp: int | None = None):
     """Forge a delivery exactly the way fal's dispatcher signs one."""
-    import hashlib as _hashlib
-    import time as _time
-
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     private = Ed25519PrivateKey.generate()
@@ -255,9 +257,9 @@ def _signed_delivery(timestamp: int | None = None):
          "status": "OK", "error": None, "payload": {"renditions": []}},
         sort_keys=True,
     ).encode()
-    ts = str(timestamp if timestamp is not None else int(_time.time()))
+    ts = str(timestamp if timestamp is not None else int(time.time()))
     message = "\n".join(
-        ["req-1", "user-1", ts, _hashlib.sha256(body).hexdigest()]
+        ["req-1", "user-1", ts, hashlib.sha256(body).hexdigest()]
     ).encode()
     headers = {
         "x-fal-webhook-request-id": "req-1",
