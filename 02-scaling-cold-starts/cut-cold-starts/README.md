@@ -27,7 +27,7 @@ A real smoke response from a live deploy of `app.py` (`prompt` + `seed` from the
 }
 ```
 
-Quoted verbatim from `.superpowers/sdd/bench-runs/attempt5-step5.log` (the "smoke response:" line) — the log line is truncated right after `"generation_ms"`, so that field is elided above rather than invented; per `TextToVideoOutput`, it always reports server-side model time in milliseconds (denoise + decode, excluding upload). The `url` is a real fal CDN link from that run, but fal CDN files have limited retention — treat it as illustrative, not a live asset; don't expect it to resolve.
+Quoted verbatim from the 2026-08-12 validation run's harness log (`harness/check.py` prints each smoke response; run it against this example to produce your own) — that log line was truncated right after `"generation_ms"`, so the field is elided above rather than invented; per `TextToVideoOutput`, it always reports server-side model time in milliseconds (denoise + decode, excluding upload). The `url` is a real fal CDN link from that run, but fal CDN files have limited retention — treat it as illustrative, not a live asset; don't expect it to resolve.
 
 ## Run it
 
