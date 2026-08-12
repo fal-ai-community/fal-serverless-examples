@@ -87,7 +87,7 @@ class TextToVideoOutput(BaseModel):
     )
     seed: int = Field(description="The seed that produced this video.")
     generation_ms: int = Field(
-        description="Server-side model time (denoise + decode), excluding upload."
+        description="Server-side model time for this request: denoise + VAE decode + mp4 encode, excluding upload."
     )
 
 
@@ -206,7 +206,9 @@ class ColdStartOptimized(fal.App, keep_alive=60):
 
         # LEVER 2 - every boot: the pack streams /data -> GPU. The pack dir is
         # self-contained (model_index.json + per-component packs + tokenizer +
-        # scheduler), so this one call rebuilds the whole pipeline.
+        # scheduler), so the load stage below rebuilds the whole pipeline from
+        # the pack: the text encoder explicitly (see the tie-restoration
+        # comment below), then the remaining components via one pipeline call.
         t0 = time.perf_counter()
         # transformers ties encoder.embed_tokens.weight to shared.weight, and
         # the flagship classes deliberately leave the tied name out of the

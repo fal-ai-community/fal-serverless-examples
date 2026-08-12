@@ -10,7 +10,7 @@ Measured 2026-08-12 (UTC) on GPU-H100: `setup()` drops from ~275 s on every sing
 
 ![Sample output: calico cat surfing, 17 frames @ 16 fps](assets/sample-output.gif)
 
-This is the exact output of the smoke request below (`num_frames=17`, `num_inference_steps=8`, `seed=42` — the same seed reproduces this exact video); the full-resolution still is in [`assets/sample-output.jpg`](assets/sample-output.jpg).
+This is the exact output of the smoke request below (`num_frames=17`, `num_inference_steps=8`, `seed=42` — seed 42 is the seed that produced this video; the same request regenerates a comparable clip, but video output is not bit-identical across workers); the full-resolution still is in [`assets/sample-output.jpg`](assets/sample-output.jpg).
 
 A real smoke response from a live deploy of `app.py` (`prompt` + `seed` from the endpoint's `Field` examples, `num_frames=17`, `num_inference_steps=8` — the fast/cheap shape used for CI and local checks):
 
@@ -27,7 +27,7 @@ A real smoke response from a live deploy of `app.py` (`prompt` + `seed` from the
 }
 ```
 
-Quoted verbatim from the 2026-08-12 validation run's harness log (`harness/check.py` prints each smoke response; run it against this example to produce your own) — that log line was truncated right after `"generation_ms"`, so the field is elided above rather than invented; per `TextToVideoOutput`, it always reports server-side model time in milliseconds (denoise + decode, excluding upload). The `url` is a real fal CDN link from that run, but fal CDN files have limited retention — treat it as illustrative, not a live asset; don't expect it to resolve.
+Quoted verbatim from the 2026-08-12 validation run's harness log (`harness/check.py` prints each smoke response; run it against this example to produce your own) — that log line was truncated right after `"generation_ms"`, so the field is elided above rather than invented; per `TextToVideoOutput`, it always reports server-side model time in milliseconds (denoise + VAE decode + mp4 encode, excluding upload). The `url` is a real fal CDN link from that run, but fal CDN files have limited retention — treat it as illustrative, not a live asset; don't expect it to resolve.
 
 ## Run it
 
@@ -62,10 +62,10 @@ fal run app.py        # optimized: /data + FlashPack + compiled caches
 fal deploy app.py
 ```
 
-This registers `cut-cold-starts` and prints its playground and API URLs.
+This registers `cold-start-optimized` (fal derives the registered name from the `App` class name, `ColdStartOptimized`, not the filename) and prints its playground and API URLs. Deploying `app_baseline.py` the same way registers `cold-start-baseline`.
 
 ```bash
-curl -X POST https://queue.fal.run/<your-username>/cut-cold-starts \
+curl -X POST https://queue.fal.run/<your-username>/cold-start-optimized \
   -H "Authorization: Key $FAL_KEY" -H "Content-Type: application/json" \
   -d '{"prompt": "A calico cat surfing a small wave at golden hour, cinematic", "num_frames": 17, "num_inference_steps": 8, "seed": 42}'
 ```
@@ -88,7 +88,7 @@ First-boot economics: the first deploy ever made under your account for a given 
 | setup() total | 275.25 | 275.93 | 467.95 | 132.58 | 96.46 |
 | spawn -> healthy | 302.1 | 303.9 | 520.3 | 267.3 | 114.7 |
 
-Reproduce with `bench.py` (needs fal credentials configured):
+Reproduce with `bench.py` (needs fal credentials configured, and must run from a clone of this repo with `pip install -r harness/requirements.txt` — `bench.py` imports the harness modules):
 
 ```bash
 HARNESS_STARTUP_TIMEOUT=2700 python 02-scaling-cold-starts/cut-cold-starts/bench.py --variant app_baseline --runs 2
@@ -99,7 +99,7 @@ HARNESS_STARTUP_TIMEOUT=2700 python 02-scaling-cold-starts/cut-cold-starts/bench
 
 **Other disclosures that travel with this table:**
 
-- **Warm HF cache.** `HF_HOME=/data/.cache/huggingface` was already warm on the account these numbers were measured from (the model's weights were already resident). Every "download" figure above — the first-boot column's pack build (179.79 s) and the baseline's `download + load weights` (46.09 s / 41.48 s) — reflects fal's platform-warm, `/data`-backed HF cache, not a genuinely cold fetch over the network. A first-ever account would see these specific cells meaningfully higher; nothing else in the table is affected.
+- **Warm HF cache.** `HF_HOME=/data/.cache/huggingface` was already warm on the accounts these numbers were measured from (the model's weights were already resident) — the baseline and steady-state runs came from one account, the dedicated first-boot run from a second account, both real H100 runs of identical code, and the warm-cache disclosure held on both. Every "download" figure above — the first-boot column's pack build (179.79 s) and the baseline's `download + load weights` (46.09 s / 41.48 s) — reflects fal's platform-warm, `/data`-backed HF cache, not a genuinely cold fetch over the network. A first-ever account would see these specific cells meaningfully higher; nothing else in the table is affected.
 - **First boot is one-time per account per pack version.** The 520.3 s first-boot row happens once — the next time `PACK_VERSION` changes, or on a brand-new account, it happens again. Every other cold start any account ever pays is the steady-state row.
 - **Stage granularity comes from in-app timers, not the platform.** Ephemeral runners are only visible over REST as scheduling states (e.g. "waiting for allocation") plus a coarse running/healthy signal — there's no platform-side breakdown of what a boot spent its time on. Every stage row above comes from timers inside `setup()` itself (the `stage()` helper, surfaced via `/setup-report`), which is also why `bench.py` calls that endpoint after every run instead of trying to parse platform logs.
 

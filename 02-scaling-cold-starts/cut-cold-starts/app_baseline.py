@@ -64,7 +64,7 @@ class TextToVideoOutput(BaseModel):
     )
     seed: int = Field(description="The seed that produced this video.")
     generation_ms: int = Field(
-        description="Server-side model time (denoise + decode), excluding upload."
+        description="Server-side model time for this request: denoise + VAE decode + mp4 encode, excluding upload."
     )
 
 
