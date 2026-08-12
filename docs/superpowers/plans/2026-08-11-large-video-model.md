@@ -18,7 +18,7 @@
 - Every required `Input` field carries `Field(examples=[...])` — examples[0] is both the README sample and the CI smoke payload; it must complete warm in < 120 s.
 - README follows `templates/example/README.md` §4-A section order exactly.
 - No performance claims except ONE stamped measured table (02.2 precedent), values from the validated deploy.
-- Never cite internal registry code anywhere; public sources only.
+- Never cite internal code anywhere; public sources only.
 - Model/weights (pinned): `diffusers/LTX-2.3-Distilled-Diffusers` @ `432e0d3c2d1769aaa4d295f9243f7062bf6b47ee` (~88 GB on disk measured by the spike; ungated). Tiny VAE: madebyollin/taehv branch `2026_03_11_taeltx23_wide` @ `32ac0146b11007cda5a57b60a3b35653361fb8a4` (`taehv.py` + `taeltx2_3_wide.pth`, 60 MB) and `taeltx2_3.pth` (24 MB, same content on main @ `e589fddc076e77f5ba8cd6baabe4ba3260b261cd`).
 - Distilled call contract (from the model card + `diffusers/pipelines/ltx2/utils.py`): `sigmas=DISTILLED_SIGMA_VALUES, num_inference_steps=8, guidance_scale=1.0`, LTX-2.3 behavior via `use_cross_timestep=True`.
 - Callback contract (diffusers 0.39.0 `pipeline_ltx2.py:1409-1421`): `callback_on_step_end(pipe, i, t, callback_kwargs)` → MUST return a dict; `callback_kwargs["latents"]` is video latents, post-step, packed `[B, S, D]`, at `pipe.scheduler.sigmas[i+1]`; audio latents are NOT reachable.
@@ -1170,9 +1170,8 @@ Supporting sheets from the recipe A/B (different seed):
 - x0 / wide **with** denormalization (wrong — blurred): https://v3b.fal.media/files/b/0aa5f3e0/ALAFnVLFCk8LVQp1xATRU_sheet_x0_wide.png
 - `raw` (un-extrapolated) latents / wide — noise until step 6: https://v3b.fal.media/files/b/0aa5f3fe/dxr6b27R1GSpct3abLzyp_sheet_raw_wide.png
 
-Downloaded locally for review at
-`<scratchpad>/spike/sheets_ab/`, `sheets_wide_nodenorm/`, `sheets_wide/`, `sheets_standard/`
-(scratchpad path: `/tmp/claude-1000/-home-relic-fal-serverless-examples--claude-worktrees-video-model-intermediate-decoding-12b16f/86787203-ce83-4809-8c7c-dfe12297c5ac/scratchpad/spike/`).
+Downloaded locally for review under the session scratchpad
+(`spike/sheets_ab/`, `sheets_wide_nodenorm/`, `sheets_wide/`, `sheets_standard/` — throwaway, not committed; the CDN URLs above are the durable copies).
 
 ### Teardown
 

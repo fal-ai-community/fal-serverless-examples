@@ -11,7 +11,9 @@ import httpx
 
 
 def test_invoke_contract(app_client):
-    response = app_client.run("/", {"prompt": "a red fox trotting through fresh snow at golden hour"})
+    response = app_client.run(
+        "/", {"prompt": "a red fox trotting through fresh snow at golden hour"}
+    )
     assert response["video"]["url"].startswith("https://")
     # The README documents this exact shape; File.from_path would otherwise
     # hand back application/octet-stream and the temp file's random name.
@@ -37,7 +39,7 @@ def test_stream_previews(app_client):
         assert response.headers["content-type"].startswith("text/event-stream")
         for line in response.iter_lines():
             if line.startswith("data: "):
-                events.append(json.loads(line[len("data: "):]))
+                events.append(json.loads(line[len("data: ") :]))
 
     previews = [e for e in events if e["type"] == "preview"]
     assert len(previews) >= 2, f"expected >=2 previews, got {len(previews)}"
@@ -48,3 +50,7 @@ def test_stream_previews(app_client):
     assert b"ftyp" in header, "preview payload is not an mp4"
     assert events[-1]["type"] == "result"
     assert events[-1]["video"]["url"].startswith("https://")
+    # Same contract as "/": from_path_async must carry the explicit
+    # content_type/file_name too, or clients get application/octet-stream.
+    assert events[-1]["video"]["content_type"] == "video/mp4"
+    assert events[-1]["video"]["file_name"] == "output.mp4"
