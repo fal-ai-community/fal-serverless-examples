@@ -126,7 +126,8 @@ rather than a smaller tier.
 
 On the live deployed endpoint (network + export + CDN upload included, not
 just the bare pipeline) a full `/` request measured **9-29s** warm end to
-end, and a full `/stream` run with `geometry_every=5` measured **≈21s**.
+end, and a full `/stream` run at default settings (`geometry_every=1`,
+`colors_every=5`) measured **≈21s** end-to-end.
 
 Worked example: at fal's current H100 pricing (list **$4.50/hr**, usage-based
 discounts as low as **$1.89/hr**, as of 2026-08-11 — see
