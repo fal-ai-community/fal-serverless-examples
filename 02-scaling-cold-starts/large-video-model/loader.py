@@ -29,17 +29,19 @@ MODEL_DIR = "/data/models/ltx-2.3-distilled-diffusers"
 # Tiny video VAE for previews - madebyollin/taehv, MIT.
 # Pinned to the branch that carries the LTX-2.3 "wide" decoder weights.
 _TAEHV_REF = "32ac0146b11007cda5a57b60a3b35653361fb8a4"
-TAEHV_WEIGHTS_URL = (
-    f"https://raw.githubusercontent.com/madebyollin/taehv/{_TAEHV_REF}/taeltx2_3_wide.pth"
+TAEHV_WEIGHTS_URL = f"https://raw.githubusercontent.com/madebyollin/taehv/{_TAEHV_REF}/taeltx2_3_wide.pth"
+TAEHV_WEIGHTS_SHA = (
+    "007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339"  # spike-verified
 )
-TAEHV_WEIGHTS_SHA = "007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339"  # spike-verified
 _TAEHV_DIR = Path("/data/models/taehv")
 
 
 def tune_hf_env() -> None:
     """Parallelize Hugging Face Xet downloads. Call before importing huggingface_hub."""
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
-    os.environ.setdefault("HF_XET_CHUNK_CACHE_SIZE_BYTES", "1000000000000")  # 1 TB on /data
+    os.environ.setdefault(
+        "HF_XET_CHUNK_CACHE_SIZE_BYTES", "1000000000000"
+    )  # 1 TB on /data
     os.environ.setdefault("HF_XET_NUM_CONCURRENT_RANGE_GETS", "32")
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")  # non-Xet repos
 
@@ -80,7 +82,9 @@ def fetch_taehv() -> Path:
         if digest != TAEHV_WEIGHTS_SHA:
             os.unlink(tmp.name)
             raise RuntimeError(f"taehv weights sha mismatch: {digest}")
-        os.rename(tmp.name, dest)  # atomic on /data: concurrent workers see all-or-nothing
+        os.rename(
+            tmp.name, dest
+        )  # atomic on /data: concurrent workers see all-or-nothing
     return dest
 
 

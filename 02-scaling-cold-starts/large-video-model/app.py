@@ -14,11 +14,10 @@ from pathlib import Path
 from typing import Literal
 
 import fal
+import loader
 from fal.toolkit import File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-
-import loader
 
 # height, width - both divisible by 32 (pipeline requirement)
 RESOLUTIONS: dict[str, tuple[int, int]] = {
@@ -42,12 +41,22 @@ class _PreviewSession:
     """
 
     def __init__(
-        self, app: "LargeVideoModel", height: int, width: int, num_frames: int, every: int
+        self,
+        app: "LargeVideoModel",
+        height: int,
+        width: int,
+        num_frames: int,
+        every: int,
     ):
         import queue as _queue
         import threading
 
-        self.app, self.height, self.width, self.num_frames = app, height, width, num_frames
+        self.app, self.height, self.width, self.num_frames = (
+            app,
+            height,
+            width,
+            num_frames,
+        )
         self.every = every
         self.events: "_queue.Queue[dict]" = _queue.Queue()
         self.done = threading.Event()
@@ -114,7 +123,8 @@ class _PreviewSession:
             # _denormalize_latents here (saturates its input clamp; spike-verified).
             rgb = tae.decode_video(  # NTCHW in, NTCHW [0,1] out, first 7 frames trimmed
                 lat.permute(0, 2, 1, 3, 4).to(torch.bfloat16),
-                parallel=True, show_progress_bar=False,
+                parallel=True,
+                show_progress_bar=False,
             )
             rgb = torch.nn.functional.interpolate(  # half-res previews: ~4x smaller events
                 rgb[0].float(), scale_factor=0.5, mode="area"
@@ -168,12 +178,18 @@ class Input(BaseModel):
         default="768x512", description="Output size (width x height)."
     )
     num_frames: int = Field(
-        default=57, ge=9, le=121,
+        default=57,
+        ge=9,
+        le=121,
         description="Frame count at 24 fps; snapped to the model's 8k+1 grid.",
     )
-    seed: int | None = Field(default=None, description="Reproducible seed; random if unset.")
+    seed: int | None = Field(
+        default=None, description="Reproducible seed; random if unset."
+    )
     preview_every: int = Field(
-        default=1, ge=1, le=4,
+        default=1,
+        ge=1,
+        le=4,
         description="Stream a preview every N denoising steps (/stream only).",
     )
 
@@ -188,8 +204,12 @@ class Output(BaseModel):
 class LargeVideoModel(fal.App, keep_alive=300):
     machine_type = "GPU-H200"  # ~70 GB resident bf16 weights - see README "GPU sizing"
     app_auth = "private"
-    startup_timeout = 1800  # first-ever boot downloads ~88 GB to /data (spike: 392 s cold)
-    local_python_modules = ["loader"]  # pure-python, safe to import in the deploying env
+    startup_timeout = (
+        1800  # first-ever boot downloads ~88 GB to /data (spike: 392 s cold)
+    )
+    local_python_modules = [
+        "loader"
+    ]  # pure-python, safe to import in the deploying env
     # taehv.py imports torch at module top; local_python_modules would make CI's
     # torch-less env import it at deploy time. app_files ships it by path instead;
     # the explicit context_dir keeps it example-relative regardless of the loader
@@ -224,7 +244,9 @@ class LargeVideoModel(fal.App, keep_alive=300):
         self.timings["page_cache_s"] = round(loader.warm_page_cache(model_dir), 1)
 
         t0 = time.time()
-        self.pipe = LTX2Pipeline.from_pretrained(model_dir, torch_dtype=torch.bfloat16).to("cuda")
+        self.pipe = LTX2Pipeline.from_pretrained(
+            model_dir, torch_dtype=torch.bfloat16
+        ).to("cuda")
         self.tiny_vae = TAEHV(str(tae_path)).to("cuda", torch.bfloat16)
         self.timings["load_s"] = round(time.time() - t0, 1)
 
@@ -236,7 +258,9 @@ class LargeVideoModel(fal.App, keep_alive=300):
         self.timings["warmup_s"] = round(time.time() - t0, 1)
         print(f"[setup] {self.timings}")
 
-    def _generate(self, request: Input, preview_cb) -> tuple[str, int, dict[str, float]]:
+    def _generate(
+        self, request: Input, preview_cb
+    ) -> tuple[str, int, dict[str, float]]:
         """Run one distilled 8-step generation; returns (mp4 path, seed, timings)."""
         import tempfile
 
@@ -246,7 +270,9 @@ class LargeVideoModel(fal.App, keep_alive=300):
 
         height, width = RESOLUTIONS[request.resolution]
         num_frames = snap_frames(request.num_frames)
-        seed = request.seed if request.seed is not None else int(time.time_ns() % 2**31)
+        seed = (
+            request.seed if request.seed is not None else int(time.time_ns() % 2**31)
+        )
         timings: dict[str, float] = {}
 
         t0 = time.time()
@@ -319,7 +345,11 @@ class LargeVideoModel(fal.App, keep_alive=300):
             # a GPU generation running with nobody to read them.
             height, width = RESOLUTIONS[request.resolution]
             session = _PreviewSession(
-                self, height, width, snap_frames(request.num_frames), request.preview_every
+                self,
+                height,
+                width,
+                snap_frames(request.num_frames),
+                request.preview_every,
             )
             loop = asyncio.get_running_loop()
             job = loop.run_in_executor(

@@ -22,9 +22,13 @@ def main() -> None:
         if event["type"] == "preview":
             data = base64.b64decode(event["video"].split(",", 1)[1])
             pathlib.Path("preview_latest.mp4").write_bytes(data)
-            bar = "#" * round(20 * event["progress"]) + "-" * (20 - round(20 * event["progress"]))
-            print(f"[{bar}] step {event['step'] + 1}/{event['total_steps']}"
-                  f" - preview_latest.mp4 updated ({len(data) // 1024} KB)")
+            bar = "#" * round(20 * event["progress"]) + "-" * (
+                20 - round(20 * event["progress"])
+            )
+            print(
+                f"[{bar}] step {event['step'] + 1}/{event['total_steps']}"
+                f" - preview_latest.mp4 updated ({len(data) // 1024} KB)"
+            )
         elif event["type"] == "result":
             urllib.request.urlretrieve(event["video"]["url"], "final.mp4")
             print(f"done: final.mp4 (seed {event['seed']}, {event['timings']})")
