@@ -119,6 +119,192 @@ def stream_frames(q: queue.Queue, worker_done: threading.Event,
 
 
 # ---------------------------------------------------------------------------
+# The streaming driver. This is the whole idea of the example:
+# the official pipeline's generators expose generate_iter(), a public
+# per-solver-step iterator (generate() is literally "loop generate_iter,
+# keep the last value") - so progressive output needs NO model fork, just
+# this driver that mirrors InferencePipeline.run() stage by stage.
+# ---------------------------------------------------------------------------
+
+
+def stream_generate(pipeline, rgba, seed: int, params: "StreamInput",
+                    emit, cancelled: threading.Event) -> dict:
+    import numpy as np
+    import torch
+    from sam3d_objects.model.backbone.tdfy_dit.modules import sparse as sp
+    from sam3d_objects.pipeline.inference_utils import (
+        downsample_sparse_structure,
+        prune_sparse_structure,
+    )
+
+    SH_C0 = 0.28209479177387814  # SH degree-0 constant: rgb = 0.5 + C0 * f_dc
+
+    def check_cancelled():
+        if cancelled.is_set():
+            raise GenerationCancelled()
+
+    models = pipeline.models
+    with pipeline.device:
+        emit({"type": "status", "stage": "preprocessing", "progress": 0.03,
+              "message": "Preparing pipeline inputs"})
+        # InferencePipelinePointMap conditions stage 1 on a MoGe depth
+        # pointmap - without it the condition embedder KeyErrors on
+        # 'pointmap' (spike finding). Stage 2 does not take it.
+        pointmap_dict = pipeline.compute_pointmap(rgba, None)
+        ss_input = pipeline.preprocess_image(
+            rgba, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
+        )
+        slat_input = pipeline.preprocess_image(rgba, pipeline.slat_preprocessor)
+        torch.manual_seed(seed)
+
+        # ---- stage 1: geometry (sparse structure) -------------------------
+        ss_gen, ss_dec = models["ss_generator"], models["ss_decoder"]
+        ss_gen.no_shortcut = True
+        ss_gen.reverse_fn.strength = pipeline.ss_cfg_strength
+        ss_gen.reverse_fn.strength_pm = pipeline.ss_cfg_strength_pm
+        prev_steps = ss_gen.inference_steps
+        if params.stage1_steps:
+            ss_gen.inference_steps = params.stage1_steps
+        total1 = ss_gen.inference_steps
+
+        image = ss_input["image"]
+        bs = image.shape[0]
+        if pipeline.is_mm_dit():
+            latent_shape = {
+                k: (bs,) + (v.pos_emb.shape[0], v.input_layer.in_features)
+                for k, v in ss_gen.reverse_fn.backbone.latent_mapping.items()
+            }
+        else:
+            latent_shape = (bs,) + (4096, 8)
+        cargs, ckw = pipeline.get_condition_input(
+            pipeline.condition_embedders["ss_condition_embedder"],
+            ss_input, pipeline.ss_condition_input_mapping,
+        )
+
+        coords = None
+        step = 0
+        with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.shape_model_dtype):
+            for _t, x_t, _ in ss_gen.generate_iter(
+                latent_shape, image.device, *cargs, **ckw
+            ):
+                step += 1
+                check_cancelled()
+                if step % params.geometry_every and step != total1:
+                    continue
+                shape_latent = x_t["shape"] if isinstance(x_t, dict) else x_t
+                ss = ss_dec(
+                    shape_latent.permute(0, 2, 1).contiguous().view(bs, 8, 16, 16, 16)
+                )
+                coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
+                grid_xyz = coords[:, 1:].cpu().numpy()
+                emit({
+                    "type": "geometry", "step": step, "total_steps": total1,
+                    "progress": round(0.05 + 0.45 * step / total1, 3),
+                    "voxels": encode_voxels(grid_xyz),
+                    "count": int(len(grid_xyz)), "grid_size": GRID_SIZE,
+                })
+        ss_gen.inference_steps = prev_steps
+
+        # Final stage-1 coords, pruned/downsampled exactly like run() does.
+        if pipeline.downsample_ss_dist > 0:
+            coords = prune_sparse_structure(
+                coords, max_neighbor_axes_dist=pipeline.downsample_ss_dist
+            )
+        coords, _ = downsample_sparse_structure(coords)
+
+        # ---- stage 2: appearance (structured latent) ----------------------
+        slat_gen = models["slat_generator"]
+        slat_gen.no_shortcut = True
+        slat_gen.reverse_fn.strength = pipeline.slat_cfg_strength
+        prev_steps2 = slat_gen.inference_steps
+        if params.stage2_steps:
+            slat_gen.inference_steps = params.stage2_steps
+        total2 = slat_gen.inference_steps
+
+        latent_shape2 = (bs,) + (coords.shape[0], 8)
+        cargs2, ckw2 = pipeline.get_condition_input(
+            pipeline.condition_embedders["slat_condition_embedder"],
+            slat_input, pipeline.slat_condition_input_mapping,
+        )
+        cargs2 = cargs2 + (coords.cpu().numpy(),)
+        grid_xyz = coords[:, 1:].cpu().numpy()
+        n_vox = coords.shape[0]
+
+        def voxel_colors(x_t) -> "np.ndarray | None":
+            """Decode an intermediate slat to per-voxel float [0,1] colors via
+            the Gaussian decoder's degree-0 SH. Costs one decode - which is
+            why colors_every is a knob. Returns None if the gaussian layout
+            doesn't map cleanly onto voxels (then frames stay gray)."""
+            st = sp.SparseTensor(coords=coords, feats=x_t[0]).to(image.device)
+            st = st * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
+            g = models["slat_decoder_gs"](st)[0]
+            fdc = getattr(g, "_features_dc", None)
+            if fdc is None:
+                return None
+            fdc = fdc.reshape(fdc.shape[0], -1)[:, :3]
+            if fdc.shape[0] == n_vox:
+                per_voxel = fdc
+            elif fdc.shape[0] % n_vox == 0:
+                per_voxel = fdc.view(n_vox, -1, 3).mean(dim=1)
+            else:
+                return None
+            return (0.5 + SH_C0 * per_voxel).clamp(0, 1).float().cpu().numpy()
+
+        slat = None
+        step = 0
+        with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.dtype):
+            for _t, x_t, _ in slat_gen.generate_iter(
+                latent_shape2, image.device, *cargs2, **ckw2
+            ):
+                step += 1
+                check_cancelled()
+                slat_latent = x_t
+                if step % params.colors_every and step != total2:
+                    continue
+                colors = voxel_colors(x_t)
+                emit({
+                    "type": "appearance", "step": step, "total_steps": total2,
+                    "progress": round(0.50 + 0.40 * step / total2, 3),
+                    "voxels": encode_voxels(grid_xyz, colors),
+                    "count": int(n_vox), "grid_size": GRID_SIZE,
+                })
+            slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
+            slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
+        slat_gen.inference_steps = prev_steps2
+
+        # ---- finalize: decode + GLB, exactly like run() --------------------
+        emit({"type": "status", "stage": "finalizing", "progress": 0.90,
+              "message": "Decoding mesh + gaussians, exporting GLB"})
+        check_cancelled()
+        outputs = pipeline.decode_slat(slat, pipeline.decode_formats)
+        outputs = pipeline.postprocess_slat_output(
+            outputs, with_mesh_postprocess=False, with_texture_baking=False,
+            use_vertex_color=True,
+        )
+
+        glb = outputs.get("glb")
+        if glb is not None and hasattr(glb, "vertices"):
+            verts = np.asarray(glb.vertices, dtype=np.float32)
+            faces = np.asarray(glb.faces, dtype=np.uint32)
+            colors_u8 = None
+            visual = getattr(glb, "visual", None)
+            if visual is not None and getattr(visual, "vertex_colors", None) is not None:
+                colors_u8 = np.asarray(visual.vertex_colors, dtype=np.uint8)[:, :3]
+            # A frame, not an asset: cap the inline preview.
+            if len(verts) <= 200_000:
+                emit({
+                    "type": "mesh_preview",
+                    "vertices": base64.b64encode(verts.tobytes()).decode("ascii"),
+                    "faces": base64.b64encode(faces.tobytes()).decode("ascii"),
+                    "colors": None if colors_u8 is None
+                    else base64.b64encode(colors_u8.tobytes()).decode("ascii"),
+                    "vertex_count": int(len(verts)),
+                    "face_count": int(len(faces)),
+                })
+        return outputs
+
+
+# ---------------------------------------------------------------------------
 # Inputs / outputs
 # ---------------------------------------------------------------------------
 
@@ -288,3 +474,67 @@ class SAM3DStreamApp(
         )
         glb, splat = self._export_assets(outputs, request)
         return AssetOutput(glb=glb, gaussian_splat=splat, seed=seed)
+
+    @fal.endpoint("/stream")
+    def stream(self, input: StreamInput, request: Request):
+        """SSE progressive rendering. Every stream ends in exactly one
+        terminal event: complete (asset URLs) or error (sanitized)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        rgba = self._load_rgba(input)  # bad inputs 422 BEFORE we stream
+        seed = input.seed if input.seed is not None else secrets.randbits(31)
+
+        q: queue.Queue = queue.Queue(maxsize=8)
+        cancelled = threading.Event()
+        worker_done = threading.Event()
+
+        def worker():
+            try:
+                put_progress(q, {"type": "status", "stage": "loading",
+                                 "progress": 0.01, "message": "Starting"})
+                outputs = stream_generate(
+                    self.pipeline, rgba, seed, input,
+                    emit=lambda ev: put_progress(q, ev),
+                    cancelled=cancelled,
+                )
+                glb, splat = self._export_assets(outputs, request)
+                put_terminal(q, {
+                    "type": "complete", "progress": 1.0,
+                    "glb": {"url": glb.url, "content_type": "model/gltf-binary"},
+                    "gaussian_splat": {"url": splat.url,
+                                       "content_type": "application/octet-stream"},
+                    "seed": seed,
+                })
+            except GenerationCancelled:
+                pass  # client left; nobody is reading
+            except Exception:
+                import traceback
+                traceback.print_exc()  # full detail server-side ONLY
+                put_terminal(q, {"type": "error", "code": "generation_failed",
+                                 "message": "3D generation failed; check app logs."})
+            finally:
+                worker_done.set()
+                put_terminal(q, None)  # end-of-stream sentinel, guaranteed
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        executor.submit(worker)
+
+        def frames():
+            try:
+                yield from stream_frames(q, worker_done)
+            finally:
+                # Runs on normal completion AND client disconnect: signal the
+                # worker (it checks between steps) and release the thread.
+                cancelled.set()
+                executor.shutdown(wait=False, cancel_futures=True)
+
+        return StreamingResponse(
+            frames(),
+            media_type="text/event-stream",
+            headers={
+                # Optional fal-gateway nicety: plain synchronous calls to
+                # /stream get the LAST event (complete/error) as the body.
+                "x-fal-sse-last-event-as-body": "1",
+                "Cache-Control": "no-cache",
+            },
+        )
