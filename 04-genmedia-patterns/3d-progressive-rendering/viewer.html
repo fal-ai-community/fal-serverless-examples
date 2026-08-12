@@ -83,6 +83,8 @@ function showVoxels(rows, gridSize) {
   voxelMesh.count = n;
   voxelMesh.instanceMatrix.needsUpdate = true;
   if (voxelMesh.instanceColor) voxelMesh.instanceColor.needsUpdate = true;
+  return rows.length > MAX_INSTANCES
+    ? ` (showing ${MAX_INSTANCES} of ${rows.length} voxels)` : "";
 }
 
 function showMeshPreview(ev) {
@@ -131,40 +133,49 @@ document.getElementById("go").onclick = async () => {
   // EventSource can't POST or set headers, so: fetch + manual SSE parse.
   // Events arrive in arbitrary chunk boundaries - buffer and split on the
   // blank line, exactly what the old docs snippet forgot.
-  const resp = await fetch(url + "/stream", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": "Key " + key },
-    body: JSON.stringify({ image_url: document.getElementById("img").value }),
-  });
-  if (!resp.ok) { status("HTTP " + resp.status + ": " + await resp.text()); return; }
+  try {
+    const resp = await fetch(url + "/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Key " + key },
+      body: JSON.stringify({ image_url: document.getElementById("img").value }),
+    });
+    if (!resp.ok) { status("HTTP " + resp.status + ": " + await resp.text()); return; }
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buf.indexOf("\n\n")) >= 0) {
-      const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
-      if (!chunk.startsWith("data: ")) continue; // comment heartbeats etc.
-      const ev = JSON.parse(chunk.slice(6));
-      if (ev.type === "geometry" || ev.type === "appearance") {
-        showVoxels(decodeVoxels(ev.voxels), ev.grid_size);
-        status(`${ev.type} ${ev.step}/${ev.total_steps} - ${ev.count} voxels`);
-      } else if (ev.type === "mesh_preview") {
-        showMeshPreview(ev); status("mesh preview");
-      } else if (ev.type === "status") {
-        status(ev.message);
-      } else if (ev.type === "complete") {
-        status("done - seed " + ev.seed);
-        document.getElementById("dl").innerHTML =
-          `<a href="${ev.glb.url}">GLB</a> · <a href="${ev.gaussian_splat.url}">splat</a>`;
-      } else if (ev.type === "error") {
-        status("error: " + ev.message);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        if (!chunk.startsWith("data: ")) continue; // comment heartbeats etc.
+        let ev;
+        try {
+          ev = JSON.parse(chunk.slice(6));
+        } catch (err) {
+          console.warn("bad event frame", chunk); continue;
+        }
+        if (ev.type === "geometry" || ev.type === "appearance") {
+          const suffix = showVoxels(decodeVoxels(ev.voxels), ev.grid_size);
+          status(`${ev.type} ${ev.step}/${ev.total_steps} - ${ev.count} voxels${suffix}`);
+        } else if (ev.type === "mesh_preview") {
+          showMeshPreview(ev); status("mesh preview");
+        } else if (ev.type === "status") {
+          status(ev.message);
+        } else if (ev.type === "complete") {
+          status("done - seed " + ev.seed);
+          document.getElementById("dl").innerHTML =
+            `<a href="${ev.glb.url}">GLB</a> · <a href="${ev.gaussian_splat.url}">splat</a>`;
+        } else if (ev.type === "error") {
+          status("error: " + ev.message);
+        }
       }
     }
+  } catch (err) {
+    status("stream failed: " + err.message);
   }
 };
 </script>
