@@ -20,16 +20,19 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 import fal
-from fal.toolkit import Video
+from fal.toolkit import File, synchronized_inductor_cache
 from pydantic import BaseModel, Field, field_validator
 
 import wan_flashpack
 
 MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-WIDTH, HEIGHT = 832, 480      # WAN 2.1 1.3B's native resolution, fixed so
-WARMUP_FRAME_COUNTS = (17, 81)  # compile warmup covers every serving shape
+# Resolution is fixed at WAN 2.1 1.3B's native 832x480 so warmup at both frame
+# extremes covers every shape the compiled transformer will ever serve.
+WIDTH, HEIGHT = 832, 480
+WARMUP_FRAME_COUNTS = (17, 81)
 FPS = 16
 
 # Everything this app persists lives under one versioned /data prefix. Bump
@@ -38,13 +41,14 @@ FPS = 16
 PACK_VERSION = "v1"
 PACK_DIR = Path(f"/data/examples/cut-cold-starts/wan21-t2v-13b-bf16-{PACK_VERSION}")
 INDUCTOR_CACHE_KEY = f"cut-cold-starts-wan21-13b/{PACK_VERSION}"
+STALE_BUILD_MAX_AGE_S = 3600
 # Written (atomically) only after BOTH caches exist: the FlashPack pack on
 # /data AND the synced kernel cache. A worker that crashes mid-setup leaves
 # no marker, so the next boot honestly reports itself as cache-building.
 READY_MARKER = PACK_DIR / f".ready-{INDUCTOR_CACHE_KEY.replace('/', '-')}"
 
 
-class TextToVideoInput(BaseModel):
+class Input(BaseModel):
     prompt: str = Field(
         description="What to generate. WAN 2.1 rewards detailed, cinematic prompts.",
         examples=["A calico cat surfing a small wave at golden hour, cinematic"],
@@ -62,8 +66,8 @@ class TextToVideoInput(BaseModel):
     )
     num_inference_steps: int = Field(
         default=28,
-        ge=4,
-        le=50,
+        ge=1,
+        le=40,
         description="Denoising steps - the quality/latency dial.",
         examples=[8],
     )
@@ -81,34 +85,33 @@ class TextToVideoInput(BaseModel):
         return v
 
 
-class TextToVideoOutput(BaseModel):
-    video: Video = Field(
+class Output(BaseModel):
+    video: File = Field(
         description="The generated MP4 (832x480 @ 16 fps) on the fal CDN."
     )
     seed: int = Field(description="The seed that produced this video.")
-    generation_ms: int = Field(
-        description="Server-side model time for this request: denoise + VAE decode + mp4 encode, excluding upload."
+    timings: dict[str, float] = Field(
+        description="Server-side stage timings, seconds (excluding upload)."
     )
-
-
-class StageTiming(BaseModel):
-    name: str = Field(description="Setup stage name.")
-    seconds: float = Field(description="Wall-clock duration of the stage.")
 
 
 class SetupReportInput(BaseModel):
     """No parameters - POST an empty JSON object."""
 
 
-class SetupReport(BaseModel):
-    variant: str = Field(description="'baseline' or 'optimized'.")
+class SetupReportOutput(BaseModel):
+    variant: Literal["baseline", "optimized"] = Field(
+        description="Which app variant produced this report."
+    )
     gpu: str = Field(description="GPU this worker booted on.")
     built_caches_this_boot: bool = Field(
         description="True when this boot found no readiness marker and built "
         "cache state (/data pack and/or compiled kernels). Steady-state boots "
         "find the marker, reuse both, and report False."
     )
-    stages: list[StageTiming] = Field(description="Per-stage setup timings, in order.")
+    timings: dict[str, float] = Field(
+        description="Per-stage setup timings in order, seconds."
+    )
     total_seconds: float = Field(description="Total setup() wall-clock time.")
 
 
@@ -118,7 +121,7 @@ class ColdStartOptimized(fal.App, keep_alive=60):
     startup_timeout = 2700  # covers the account's first-ever boot (download + pack + compile)
     local_python_modules = ["wan_flashpack"]
     requirements = [
-        "fal==1.78.2",
+        "fal==1.78.2",  # keep in sync with harness/requirements.txt
         "flashpack==0.4.0",
         "diffusers==0.39.0",
         "transformers==5.3.0",
@@ -130,17 +133,14 @@ class ColdStartOptimized(fal.App, keep_alive=60):
 
     def setup(self) -> None:
         """Pack once to /data, stream via FlashPack, compile against the shared cache."""
-        stages: list[dict] = []
+        timings: dict[str, float] = {}
         setup_start = time.perf_counter()
 
         def stage(name: str, start: float) -> None:
-            stages.append(
-                {"name": name, "seconds": round(time.perf_counter() - start, 2)}
-            )
+            timings[name] = round(time.perf_counter() - start, 2)
 
         t0 = time.perf_counter()
         import torch
-        from fal.toolkit import synchronized_inductor_cache
 
         # Builds the FlashPack WAN classes and installs the sys.modules entry
         # that transformers introspection and the pack's model_index.json
@@ -154,9 +154,10 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         # LEVER 1 - first boot per ACCOUNT (not per worker): download the fp32
         # repo, rebuild at serving dtypes, pack with FlashPack. The pack is
         # written to LOCAL disk and published to /data as one bulk copy +
-        # atomic rename: chunked writes straight to /data run at ~0.1 MB/s
-        # (measured), and the rename means concurrently booting workers can
-        # never observe a half-written pack - the loser of the race cleans up.
+        # atomic rename: chunked writes straight to /data are pathologically
+        # slow (measured figure and provenance in the README), and the rename
+        # means concurrently booting workers can never observe a half-written
+        # pack - the loser of the race cleans up.
         if not PACK_DIR.is_dir():
             t0 = time.perf_counter()
             from diffusers.schedulers import UniPCMultistepScheduler
@@ -189,7 +190,7 @@ class ColdStartOptimized(fal.App, keep_alive=60):
             t0 = time.perf_counter()
             PACK_DIR.parent.mkdir(parents=True, exist_ok=True)
             for stale in PACK_DIR.parent.glob(".build-*"):  # crashed builds
-                if time.time() - stale.stat().st_mtime > 3600:
+                if time.time() - stale.stat().st_mtime > STALE_BUILD_MAX_AGE_S:
                     shutil.rmtree(stale, ignore_errors=True)
             publish_dir = PACK_DIR.parent / f".build-{uuid.uuid4().hex}"
             shutil.copytree(local_dir, publish_dir)
@@ -279,12 +280,12 @@ class ColdStartOptimized(fal.App, keep_alive=60):
             marker_tmp.write_text("ok")
             marker_tmp.rename(READY_MARKER)
 
-        self.setup_stages = stages
+        self.setup_timings = timings
         self.setup_total = round(time.perf_counter() - setup_start, 2)
         self.gpu_name = torch.cuda.get_device_name(0)
 
     @fal.endpoint("/")
-    def generate(self, request: TextToVideoInput) -> TextToVideoOutput:
+    def generate(self, request: Input) -> Output:
         import torch
         from diffusers.utils import export_to_video
 
@@ -302,17 +303,17 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "video.mp4"
             export_to_video(frames, str(path), fps=FPS)
-            generation_ms = int((time.perf_counter() - t0) * 1000)
-            video = Video.from_path(path)
-        return TextToVideoOutput(video=video, seed=seed, generation_ms=generation_ms)
+            timings = {"generate_s": round(time.perf_counter() - t0, 2)}
+            video = File.from_path(path, content_type="video/mp4")
+        return Output(video=video, seed=seed, timings=timings)
 
     @fal.endpoint("/setup-report")
-    def setup_report(self, request: SetupReportInput) -> SetupReport:
+    def setup_report(self, request: SetupReportInput) -> SetupReportOutput:
         """What this worker's cold start actually spent its time on."""
-        return SetupReport(
+        return SetupReportOutput(
             variant="optimized",
             gpu=self.gpu_name,
             built_caches_this_boot=self.built_caches_this_boot,
-            stages=[StageTiming(**s) for s in self.setup_stages],
+            timings=self.setup_timings,
             total_seconds=self.setup_total,
         )

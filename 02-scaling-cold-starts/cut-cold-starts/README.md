@@ -1,4 +1,4 @@
-# Cut cold starts by Nx: FlashPack + /data + compiled caches
+# Cut cold starts: FlashPack + /data + compiled caches
 
 Every GPU serverless cold start pays three costs before a model can serve a single request: pulling weights off the Hub, deserializing them through CPU into GPU memory, and compiling kernels for the shapes it will run. On this example's model (WAN 2.1 text-to-video), the third cost dominates — `torch.compile` alone eats roughly three-quarters of a from-scratch boot, dwarfing the download. Anyone who scales to zero between bursts, autoscales under bursty traffic, or just doesn't want every fresh worker to re-pay that tax hits this problem. This example deploys the same model twice — once with every cold-start lever pulled, once with none — so the before/after is a real measured deploy, not a claim.
 
@@ -12,22 +12,22 @@ Measured 2026-08-12 (UTC) on GPU-H100: `setup()` drops from ~275 s on every sing
 
 This is the exact output of the smoke request below (`num_frames=17`, `num_inference_steps=8`, `seed=42` — seed 42 is the seed that produced this video; the same request regenerates a comparable clip, but video output is not bit-identical across workers); the full-resolution still is in [`assets/sample-output.jpg`](assets/sample-output.jpg).
 
-A real smoke response from a live deploy of `app.py` (`prompt` + `seed` from the endpoint's `Field` examples, `num_frames=17`, `num_inference_steps=8` — the fast/cheap shape used for CI and local checks):
+The smoke response from a live deploy of `app.py` has this shape (`prompt` + `seed` from the endpoint's `Field` examples, `num_frames=17`, `num_inference_steps=8` — the fast/cheap shape used for CI and local checks; `<...>` values vary per run):
 
-```json
+```text
 {
   "video": {
-    "url": "https://v3b.fal.media/files/b/0aa5fdda/dvvzDUMrGuV76CNzhfubf_video.mp4",
-    "content_type": "application/octet-stream",
+    "url": "https://<cdn-host>.fal.media/files/<id>/video.mp4",
+    "content_type": "video/mp4",
     "file_name": "video.mp4",
-    "file_size": 122630
+    "file_size": <bytes>
   },
   "seed": 42,
-  "generation_ms": …
+  "timings": {"generate_s": <seconds>}
 }
 ```
 
-Quoted verbatim from the 2026-08-12 validation run's harness log (`harness/check.py` prints each smoke response; run it against this example to produce your own) — that log line was truncated right after `"generation_ms"`, so the field is elided above rather than invented; per `TextToVideoOutput`, it always reports server-side model time in milliseconds (denoise + VAE decode + mp4 encode, excluding upload). The `url` is a real fal CDN link from that run, but fal CDN files have limited retention — treat it as illustrative, not a live asset; don't expect it to resolve.
+`seed` echoes the request so results reproduce, and `timings.generate_s` reports server-side model time in seconds (denoise + VAE decode + mp4 encode, excluding upload). `harness/check.py` prints each real smoke response — run it against this example to see one, including a live fal CDN `url` (CDN files have limited retention, so don't treat any pasted link as a durable asset).
 
 ## Run it
 
@@ -49,7 +49,7 @@ fal run app.py        # optimized: /data + FlashPack + compiled caches
 
 **Lever 3 — `synchronized_inductor_cache` (compiled kernels).** `torch.compile(self.pipe.transformer, dynamic=True)` runs inside `fal.toolkit.synchronized_inductor_cache(INDUCTOR_CACHE_KEY)`: the first boot compiles for real and syncs kernels to `/data` on context exit (`compile + warmup (shared inductor cache)`, 198.75 s — nearly identical to the baseline's uncached 202.9 s / 208.19 s, because it's doing the same work); every later boot unpacks the cached kernels instead of recompiling, cutting compile+warmup by more than half (202.9–208.2 s → 77.8–90.6 s). `machine_type = "GPU-H100"` is pinned to exactly one type, not a fallback list, because inductor caches are per GPU type — a cache built on an H100 doesn't help an L40 boot.
 
-**`wan_flashpack.py`.** The four classes it defines (`FlashPackWanTransformer3DModel`, `FlashPackAutoencoderKLWan`, `FlashPackUMT5EncoderModel`, `FlashPackWanPipeline`) are the verbatim flagship pattern from FlashPack's own WAN test — [`tests/test_wan_pipeline.py`](https://github.com/fal-ai/flashpack/blob/main/tests/test_wan_pipeline.py) in [github.com/fal-ai/flashpack](https://github.com/fal-ai/flashpack) — not a fal-specific rewrite. Getting that pattern to run on fal surfaces two integration wrinkles the docs don't cover yet (no fal concept doc exists for FlashPack; SERV-1286 tracks the docs-side follow-up):
+**`wan_flashpack.py`.** The four classes it defines (`FlashPackWanTransformer3DModel`, `FlashPackAutoencoderKLWan`, `FlashPackUMT5EncoderModel`, `FlashPackWanPipeline`) are the verbatim flagship pattern from FlashPack's own WAN test — [`tests/test_wan_pipeline.py`](https://github.com/fal-ai/flashpack/blob/main/tests/test_wan_pipeline.py) in [github.com/fal-ai/flashpack](https://github.com/fal-ai/flashpack) — not a fal-specific rewrite. Getting that pattern to run on fal surfaces two integration wrinkles fal's docs don't cover yet:
 
 1. **The module needs a real `sys.modules` entry.** This example ships `wan_flashpack.py` to the runner via `local_python_modules` (cloudpickle by-value), which reconstructs the module *without* a `sys.modules` entry. Two consumers need one anyway: transformers reads `sys.modules[cls.__module__]` when instantiating any `PreTrainedModel` subclass, and diffusers' pipeline loader resolves component classes via `importlib.import_module("wan_flashpack")`. `_publish_classes()` installs the entry at runtime, reusing it if the module was imported normally (local runs, tests) — see the docstring and function at the top of [`wan_flashpack.py`](wan_flashpack.py).
 2. **diffusers strips the "FlashPack" prefix on load.** diffusers' `get_class_obj_and_candidates()` (pipeline_loading_utils.py, diffusers 0.39) strips a `"FlashPack"` prefix from the class names recorded in the pack's `model_index.json` before resolving them — `"FlashPackUMT5EncoderModel"` gets looked up as `"UMT5EncoderModel"`. The registration loop at the bottom of [`wan_flashpack.py`](wan_flashpack.py)'s `get_classes()` registers every class under **both** names so either resolution path lands on the FlashPack-mixed-in subclass, not diffusers' plain upstream class.

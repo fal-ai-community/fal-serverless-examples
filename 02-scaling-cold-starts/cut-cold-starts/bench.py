@@ -35,7 +35,7 @@ from harness.check import (  # noqa: E402
 )
 
 
-def bench_once(app_file: Path) -> dict:
+def bench_once(app_file: Path) -> tuple[dict, str | None]:
     from fal.app import wrap_app
 
     app_cls = load_app_class(app_file)
@@ -57,14 +57,19 @@ def bench_once(app_file: Path) -> dict:
             url.rstrip("/") + "/setup-report", json={}, headers=headers, timeout=60
         )
         response.raise_for_status()
-        return {"spawn_to_healthy_s": spawn_to_healthy_s, **response.json()}
+        report = {"spawn_to_healthy_s": spawn_to_healthy_s, **response.json()}
     finally:
         if poller.runner_id is None and watcher.runner_id:
             poller.runner_id = watcher.runner_id
         leaked = teardown(spawn_info, poller, headers)
         watcher.stop()
         if leaked:
-            print(f"ERROR: leaked runner {leaked} - terminate it manually")
+            # A leaked runner keeps billing until terminated by hand.
+            print(
+                f"ERROR: leaked runner {leaked} - terminate it manually",
+                file=sys.stderr,
+            )
+    return report, leaked
 
 
 def format_table(runs: list[dict]) -> str:
@@ -75,9 +80,9 @@ def format_table(runs: list[dict]) -> str:
     """
     stage_names: list[str] = []
     for run in runs:
-        for stage in run["stages"]:
-            if stage["name"] not in stage_names:
-                stage_names.append(stage["name"])
+        for name in run["timings"]:
+            if name not in stage_names:
+                stage_names.append(name)
 
     def label(i: int, run: dict) -> str:
         kind = "first boot" if run.get("built_caches_this_boot") else "steady"
@@ -87,10 +92,10 @@ def format_table(runs: list[dict]) -> str:
     divider = "|---" * (len(runs) + 1) + "|"
     rows = []
     for name in stage_names:
-        cells = []
-        for run in runs:
-            match = [s["seconds"] for s in run["stages"] if s["name"] == name]
-            cells.append(str(match[0]) if match else "-")
+        cells = [
+            str(run["timings"][name]) if name in run["timings"] else "-"
+            for run in runs
+        ]
         rows.append(f"| {name} | " + " | ".join(cells) + " |")
     rows.append(
         "| setup() total | "
@@ -111,14 +116,17 @@ def main() -> int:
 
     app_file = EXAMPLE_DIR / f"{args.variant}.py"
     runs = []
+    exit_code = 0
     for index in range(args.runs):
         print(f"--- {args.variant} run {index + 1}/{args.runs}")
-        report = bench_once(app_file)
+        report, leaked = bench_once(app_file)
+        if leaked:
+            exit_code = 1
         print(json.dumps(report))
         runs.append(report)
     print()
     print(format_table(runs))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

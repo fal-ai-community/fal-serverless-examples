@@ -10,18 +10,21 @@ import random
 import tempfile
 import time
 from pathlib import Path
+from typing import Literal
 
 import fal
-from fal.toolkit import Video
+from fal.toolkit import File
 from pydantic import BaseModel, Field, field_validator
 
 MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-WIDTH, HEIGHT = 832, 480      # WAN 2.1 1.3B's native resolution, fixed so
-WARMUP_FRAME_COUNTS = (17, 81)  # compile warmup covers every serving shape
+# Resolution is fixed at WAN 2.1 1.3B's native 832x480 so warmup at both frame
+# extremes covers every shape the compiled transformer will ever serve.
+WIDTH, HEIGHT = 832, 480
+WARMUP_FRAME_COUNTS = (17, 81)
 FPS = 16
 
 
-class TextToVideoInput(BaseModel):
+class Input(BaseModel):
     prompt: str = Field(
         description="What to generate. WAN 2.1 rewards detailed, cinematic prompts.",
         examples=["A calico cat surfing a small wave at golden hour, cinematic"],
@@ -39,8 +42,8 @@ class TextToVideoInput(BaseModel):
     )
     num_inference_steps: int = Field(
         default=28,
-        ge=4,
-        le=50,
+        ge=1,
+        le=40,
         description="Denoising steps - the quality/latency dial.",
         examples=[8],
     )
@@ -58,44 +61,43 @@ class TextToVideoInput(BaseModel):
         return v
 
 
-class TextToVideoOutput(BaseModel):
-    video: Video = Field(
+class Output(BaseModel):
+    video: File = Field(
         description="The generated MP4 (832x480 @ 16 fps) on the fal CDN."
     )
     seed: int = Field(description="The seed that produced this video.")
-    generation_ms: int = Field(
-        description="Server-side model time for this request: denoise + VAE decode + mp4 encode, excluding upload."
+    timings: dict[str, float] = Field(
+        description="Server-side stage timings, seconds (excluding upload)."
     )
-
-
-class StageTiming(BaseModel):
-    name: str = Field(description="Setup stage name.")
-    seconds: float = Field(description="Wall-clock duration of the stage.")
 
 
 class SetupReportInput(BaseModel):
     """No parameters - POST an empty JSON object."""
 
 
-class SetupReport(BaseModel):
-    variant: str = Field(description="'baseline' or 'optimized'.")
+class SetupReportOutput(BaseModel):
+    variant: Literal["baseline", "optimized"] = Field(
+        description="Which app variant produced this report."
+    )
     gpu: str = Field(description="GPU this worker booted on.")
     built_caches_this_boot: bool = Field(
         description="Always False for the baseline: it has no caches to build."
     )
-    stages: list[StageTiming] = Field(description="Per-stage setup timings, in order.")
+    timings: dict[str, float] = Field(
+        description="Per-stage setup timings in order, seconds."
+    )
     total_seconds: float = Field(description="Total setup() wall-clock time.")
 
 
 class ColdStartBaseline(fal.App, keep_alive=60):
-    machine_type = "GPU-H100"
+    machine_type = "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
     app_auth = "private"
     startup_timeout = 2700  # ~29 GB Hub download + CPU deserialize + full compile
     # Identical pins to app.py so both share one cached environment and the
     # benchmark isolates the levers, not pip-install noise. requirements.txt
     # mirrors this list exactly (static check enforces it).
     requirements = [
-        "fal==1.78.2",
+        "fal==1.78.2",  # keep in sync with harness/requirements.txt
         "flashpack==0.4.0",
         "diffusers==0.39.0",
         "transformers==5.3.0",
@@ -107,13 +109,11 @@ class ColdStartBaseline(fal.App, keep_alive=60):
 
     def setup(self) -> None:
         """Everything from scratch, every boot: download, deserialize, compile."""
-        stages: list[dict] = []
+        timings: dict[str, float] = {}
         setup_start = time.perf_counter()
 
         def stage(name: str, start: float) -> None:
-            stages.append(
-                {"name": name, "seconds": round(time.perf_counter() - start, 2)}
-            )
+            timings[name] = round(time.perf_counter() - start, 2)
 
         t0 = time.perf_counter()
         import torch
@@ -155,12 +155,12 @@ class ColdStartBaseline(fal.App, keep_alive=60):
             )
         stage("compile + warmup (no cache)", t0)
 
-        self.setup_stages = stages
+        self.setup_timings = timings
         self.setup_total = round(time.perf_counter() - setup_start, 2)
         self.gpu_name = torch.cuda.get_device_name(0)
 
     @fal.endpoint("/")
-    def generate(self, request: TextToVideoInput) -> TextToVideoOutput:
+    def generate(self, request: Input) -> Output:
         import torch
         from diffusers.utils import export_to_video
 
@@ -178,17 +178,17 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "video.mp4"
             export_to_video(frames, str(path), fps=FPS)
-            generation_ms = int((time.perf_counter() - t0) * 1000)
-            video = Video.from_path(path)
-        return TextToVideoOutput(video=video, seed=seed, generation_ms=generation_ms)
+            timings = {"generate_s": round(time.perf_counter() - t0, 2)}
+            video = File.from_path(path, content_type="video/mp4")
+        return Output(video=video, seed=seed, timings=timings)
 
     @fal.endpoint("/setup-report")
-    def setup_report(self, request: SetupReportInput) -> SetupReport:
+    def setup_report(self, request: SetupReportInput) -> SetupReportOutput:
         """What this worker's cold start actually spent its time on."""
-        return SetupReport(
+        return SetupReportOutput(
             variant="baseline",
             gpu=self.gpu_name,
             built_caches_this_boot=False,
-            stages=[StageTiming(**s) for s in self.setup_stages],
+            timings=self.setup_timings,
             total_seconds=self.setup_total,
         )

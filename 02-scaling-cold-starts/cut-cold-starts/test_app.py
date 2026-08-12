@@ -5,9 +5,10 @@ The harness deploys every app*.py in this folder and runs this file against
 each; HARNESS_VARIANT says which one is live. Free tests exercise the shared
 module logic that must hold before any GPU is spent.
 """
+import ast
+import importlib.util
 import os
 import sys
-import types
 from pathlib import Path
 
 import httpx
@@ -44,7 +45,6 @@ def test_publish_classes_creates_missing_module_entry():
         mod = wan_flashpack._publish_classes(name, {"Marker": dict})
         assert sys.modules[name] is mod
         assert mod.Marker is dict
-        import importlib
         assert importlib.import_module(name) is mod
     finally:
         sys.modules.pop(name, None)
@@ -62,7 +62,6 @@ def test_publish_classes_is_idempotent_on_real_modules():
 def test_module_top_level_is_import_light():
     """Static CI loads app files with only fal+httpx+pytest installed; the
     heavy imports must all live inside get_classes()."""
-    import ast
     tree = ast.parse((HERE / "wan_flashpack.py").read_text())
     top_level_imports = set()
     for node in tree.body:
@@ -78,8 +77,6 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
     before resolving class names (pipeline_loading_utils.py, diffusers 0.39).
     Verify the registration loop registers each class under both the full name
     and the bare name without the prefix, so either resolution path works."""
-    import ast
-
     source = (HERE / "wan_flashpack.py").read_text()
     tree = ast.parse(source)
 
@@ -110,6 +107,7 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
                             isinstance(second_arg, ast.Call)
                             and isinstance(second_arg.func, ast.Attribute)
                             and second_arg.func.attr == "removeprefix"
+                            and isinstance(second_arg.func.value, ast.Attribute)
                             and second_arg.func.value.attr == "__name__"
                         ):
                             has_removeprefix_setattr = True
@@ -134,8 +132,6 @@ def test_pipeline_load_receives_explicit_text_encoder():
     supplied component is used as-is and skips the broken path). Guard
     against someone "simplifying" back to a single call with no
     text_encoder kwarg."""
-    import ast
-
     source = (HERE / "app.py").read_text()
     tree = ast.parse(source)
 
@@ -175,14 +171,15 @@ def test_small_seeded_generation(app_client):
     response = app_client.run("/", SMALL_REQUEST)
     assert response["seed"] == 42, "seed must echo back for reproducibility"
     assert response["video"]["url"].startswith("https://"), response["video"]
-    assert response["generation_ms"] > 0
+    assert response["video"]["content_type"] == "video/mp4", response["video"]
+    assert response["timings"]["generate_s"] > 0
 
 
 def test_setup_report_matches_variant(app_client):
     report = app_client.run("/setup-report", {})
     assert report["variant"] == EXPECTED_VARIANT[variant()]
     assert report["total_seconds"] > 0
-    stage_names = [s["name"] for s in report["stages"]]
+    stage_names = list(report["timings"])
     assert stage_names, "setup() must record its stages"
     if report["variant"] == "optimized":
         assert any("FlashPack" in name for name in stage_names), stage_names
@@ -200,8 +197,6 @@ def test_rejects_non_4k_plus_1_frames(app_client):
 def _load_bench():
     """Load bench.py under a unique module name: plain `import bench` could
     collide with another example's bench.py in a whole-repo pytest run."""
-    import importlib.util
-
     spec = importlib.util.spec_from_file_location(
         "cut_cold_starts_bench", HERE / "bench.py"
     )
@@ -219,10 +214,10 @@ def test_bench_table_formats_stages_in_order():
             "variant": "optimized",
             "gpu": "H100",
             "built_caches_this_boot": False,
-            "stages": [
-                {"name": "imports", "seconds": 5.0},
-                {"name": "load weights (FlashPack, /data -> GPU)", "seconds": 9.5},
-            ],
+            "timings": {
+                "imports": 5.0,
+                "load weights (FlashPack, /data -> GPU)": 9.5,
+            },
             "total_seconds": 90.0,
         },
         {
@@ -230,11 +225,11 @@ def test_bench_table_formats_stages_in_order():
             "variant": "optimized",
             "gpu": "H100",
             "built_caches_this_boot": True,
-            "stages": [
-                {"name": "imports", "seconds": 5.2},
-                {"name": "download + build FlashPack pack (first boot only)", "seconds": 400.0},
-                {"name": "load weights (FlashPack, /data -> GPU)", "seconds": 12.0},
-            ],
+            "timings": {
+                "imports": 5.2,
+                "download + build FlashPack pack (first boot only)": 400.0,
+                "load weights (FlashPack, /data -> GPU)": 12.0,
+            },
             "total_seconds": 650.0,
         },
     ]
