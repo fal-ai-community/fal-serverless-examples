@@ -47,7 +47,7 @@ $("go").onclick = async () => {
       if (ev.type === "preview") {
         bar.value = ev.progress;
         status.textContent = `step ${ev.step + 1}/${ev.total_steps} - live tiny-VAE preview`;
-        video.src = ev.video;              // data:video/mp4;base64,... - swaps in place
+        video.src = ev.video.url;          // data:video/mp4;base64,... - swaps in place
       } else if (ev.type === "result") {
         bar.value = 1; video.src = ev.video.url; video.muted = false; video.loop = false;
         status.textContent = `done - seed ${ev.seed} (final has audio)`;

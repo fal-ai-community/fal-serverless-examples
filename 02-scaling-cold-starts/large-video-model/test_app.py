@@ -45,9 +45,15 @@ def test_stream_previews(app_client):
     assert len(previews) >= 2, f"expected >=2 previews, got {len(previews)}"
     steps = [p["step"] for p in previews]
     assert steps == sorted(set(steps)), "preview steps must be strictly increasing"
-    header = base64.b64decode(previews[0]["video"].split(",", 1)[1])[:64]
-    assert previews[0]["video"].startswith("data:video/mp4;base64,")
-    assert b"ftyp" in header, "preview payload is not an mp4"
+    # Previews carry the same File-shaped `video` object as the terminal result
+    # event (url/content_type/file_size), so clients parse one shape for both -
+    # the url is a data URI instead of a CDN link.
+    preview_video = previews[0]["video"]
+    assert preview_video["url"].startswith("data:video/mp4;base64,")
+    assert preview_video["content_type"] == "video/mp4"
+    payload = base64.b64decode(preview_video["url"].split(",", 1)[1])
+    assert b"ftyp" in payload[:64], "preview payload is not an mp4"
+    assert preview_video["file_size"] == len(payload)
     assert events[-1]["type"] == "result"
     assert events[-1]["video"]["url"].startswith("https://")
     # Same contract as "/": from_path_async must carry the explicit
