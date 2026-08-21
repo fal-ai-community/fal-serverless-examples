@@ -30,15 +30,9 @@ Your code runs on fal's cloud, not your machine. `fal run` prints two URLs — t
 
 ## Examples
 
-The folders are numbered, and going through them in order is a guided tour, from your first app to production serving. New folders are added over time, so the numbering has gaps:
+The numbered folders, [**`00-getting-started/`**](00-getting-started/) through [**`05-media-processing/`**](05-media-processing/), are a guided tour from your first app to production serving. Each folder's README lists what's inside. New folders are added over time, so the numbering has gaps.
 
-- [**`00-getting-started/`**](00-getting-started/) — your first app, your first image API, moving media in and out, validating inputs.
-- [**`01-environments-containers/`**](01-environments-containers/) — fal's runtime vs your own Dockerfile, and dev → staging → prod.
-- [**`02-scaling-cold-starts/`**](02-scaling-cold-starts/) — cutting cold starts, tuning autoscaling, serving very large models.
-- [**`04-genmedia-patterns/`**](04-genmedia-patterns/) — image, video, and 3D in production: per-user LoRAs, LoRA training, multi-GPU inference, progressive 3D.
-- [**`05-media-processing/`**](05-media-processing/) — the CPU work around the models: transcoding, thumbnails, captions.
-
-Each folder's README lists what's inside. [`llms.txt`](llms.txt) is an index of the catalog for AI tools.
+[`llms.txt`](llms.txt) is an index of the catalog for AI tools.
 
 _Every example comes with a test that CI runs against a real fal deploy ([`harness/`](harness/)), on Python **3.11**. Found something broken anyway? [Open an issue](https://github.com/fal-ai-community/fal-serverless-examples/issues)._
 
