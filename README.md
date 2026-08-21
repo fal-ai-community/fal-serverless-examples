@@ -12,7 +12,7 @@ This is a collection of examples for [fal Serverless](https://fal.ai/docs/docume
 
 ## Usage
 
-First, sign up for an account at [fal.ai](https://fal.ai/), then install the `fal` package and log in:
+fal Serverless is a private offering — [talk to the fal team](https://fal.ai/enterprise#contact-sales) to get access for your account. Once you have it, install the `fal` package and log in:
 
 ```bash
 pip install fal==1.78.2
