@@ -1,6 +1,6 @@
 """Media in, media out - files, CDN, and persistent storage on fal.
 
-Catalog slot 00.3 (SERV-1302). No model here on purpose: this example is
+No model here on purpose: this example is
 about how media moves through a fal app - URL in, safe bounded download,
 /data caching, processing on a cheap CPU machine, and typed outputs on
 fal's CDN with the content type you asked for.

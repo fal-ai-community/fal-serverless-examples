@@ -1,6 +1,6 @@
 """Serve a 20+ GB video model - LTX-2.3 22B distilled on one H200.
 
-Catalog slot 02.3 (SERV-1303). The three lessons:
+The three lessons:
   1. loader.py - parallel download + page-cache pre-read for ~88 GB of weights
   2. GPU sizing - ~70 GB resident bf16 needs H200-class VRAM (see README math)
   3. /stream    - intermediate-step tiny-VAE previews over SSE

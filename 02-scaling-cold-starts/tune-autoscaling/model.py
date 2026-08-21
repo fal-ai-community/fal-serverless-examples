@@ -1,4 +1,4 @@
-"""Autoscaler + billing model for catalog slot 02.2 (SERV-1294).
+"""Autoscaler + billing model for the tune-autoscaling example.
 
 Stdlib only, on purpose: this repo requires requirements.txt to mirror
 App.requirements exactly, so any dependency here would ship to the GPU

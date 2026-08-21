@@ -2,8 +2,6 @@
 
 Every fal app has to answer one question before it can run: **where does the environment come from?** You can list your dependencies and let fal build it, or you can ship a Dockerfile. Most guides show you *how* to write the Dockerfile. This one deploys the *same* model both ways and tells you **which to pick, and why** — because for a lot of apps, the answer is "you don't need the Dockerfile".
 
-> Catalog slot `01.1` ([SERV-1285](https://linear.app/features-and-labels/issue/SERV-1285)).
-
 ## What you get
 
 Two deployments of `openai/whisper-tiny.en` that are indistinguishable to callers except for one honest field:
@@ -89,11 +87,11 @@ curl -X POST https://queue.fal.run/<your-username>/transcribe-runtime \
 
 - Both variants run on `L` (4 vCPU / 15 GB) — whisper-tiny is 39M parameters and needs no GPU. Rates: [fal pricing](https://fal.ai/pricing).
 - The container variant's *build* is a one-time cost per Dockerfile content hash; later deploys of an unchanged Dockerfile skip the build entirely.
-- `keep_alive=60` suits bursty transcription. Raise it if calls arrive in clusters; see 02.2 for the autoscaling math.
+- `keep_alive=60` suits bursty transcription. Raise it if calls arrive in clusters; see [tune-autoscaling](../../02-scaling-cold-starts/tune-autoscaling/) for the autoscaling math.
 
 ## Next steps
 
-- **00.4 — bulletproof inputs**: `audio_url` goes straight to the model here; that example shows how to validate user media before inference.
-- **01.3 — dev → staging → prod**: promote whichever build path you picked across environments.
-- **02.1 — cut cold starts**: what to do about that image-pull wall clock.
+- **[bulletproof-inputs](../../00-getting-started/bulletproof-inputs/)**: `audio_url` goes straight to the model here; that example shows how to validate user media before inference.
+- **[dev-staging-prod](../dev-staging-prod/)**: promote whichever build path you picked across environments.
+- **[cut-cold-starts](../../02-scaling-cold-starts/cut-cold-starts/)**: what to do about that image-pull wall clock.
 - Concept docs: [custom container images](https://fal.ai/docs/documentation/development/use-custom-container-image) · [managing dependencies](https://fal.ai/docs/documentation/getting-started/manage-dependencies)

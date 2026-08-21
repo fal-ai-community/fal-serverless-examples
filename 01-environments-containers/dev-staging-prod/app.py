@@ -1,4 +1,4 @@
-"""Catalog slot 01.3 (SERV-1299). Dev -> staging -> prod.
+"""Dev -> staging -> prod.
 
 Deliberately boring app: it reports back exactly what each environment gave
 it (secret value + code version), so a promotion or rollback can be proven

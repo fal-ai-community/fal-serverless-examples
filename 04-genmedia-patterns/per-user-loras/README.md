@@ -2,7 +2,7 @@
 
 Your product trains one LoRA per user — an avatar style, a brand look, a fine-tuned identity for every paying customer. Serving them naively means either a deployment per user (thousands of cold fleets) or reloading adapters on every request (one slow fleet). This example runs **one warm FLUX.2 [klein] 4B fleet for the whole user base**: adapters live on `/data`, a KV store maps user → adapter, each runner keeps a small GPU LRU of loaded adapters — and each runner advertises its currently-hot users via [fal routing hints](https://fal.ai/docs/documentation/serverless/optimize-routing-behavior) so the router can prefer a runner that already has the adapter loaded. A hint is pure, best-effort affinity: any runner can serve any user; a hinted miss just pays the adapter load instead of failing. How much lift affinity adds on top of the scheduler's own runner reuse depends on your fleet size, cache pressure, and traffic shape — this example ships the measurement tool (`fleet_demo.py`) so you can answer that for your own workload instead of trusting anyone's benchmark.
 
-> Catalog slot `04.3` ([SERV-1306](https://linear.app/features-and-labels/issue/SERV-1306)). Base model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — Apache-2.0 and ungated. The eight featured demo users below are real, license-verified LoRAs (Apache-2.0/MIT): five were trained with [example 04.4's recipe](../train-serve-lora/) — the train→serve loop this example completes — and three are community/fal adapters kept deliberately, so the fleet spans all four LoRA key-format families. The "thousands" come from synthetic adapters the app generates on demand.
+> Base model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — Apache-2.0 and ungated. The eight featured demo users below are real, license-verified LoRAs (Apache-2.0/MIT): five were trained with the [train-serve-lora](../train-serve-lora/) recipe — the train→serve loop this example completes — and three are community/fal adapters kept deliberately, so the fleet spans all four LoRA key-format families. The "thousands" come from synthetic adapters the app generates on demand.
 
 ## What you get
 
@@ -44,11 +44,11 @@ Eight featured users, eight visibly different styles from one warm fleet — and
 
 | `user_id` | Adapter | License | Size | Format family |
 |---|---|---|---|---|
-| `ukiyo-e` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/ukiyo-e) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
-| `stained-glass` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/stained-glass) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
-| `claymation` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/claymation) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
-| `neon-noir` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/neon-noir) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
-| `blueprint` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/blueprint) · trained with [04.4](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `ukiyo-e` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/ukiyo-e) · trained with [train-serve-lora](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `stained-glass` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/stained-glass) · trained with [train-serve-lora](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `claymation` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/claymation) · trained with [train-serve-lora](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `neon-noir` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/neon-noir) · trained with [train-serve-lora](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
+| `blueprint` | [rehan-fal/klein-style-fleet](https://huggingface.co/rehan-fal/klein-style-fleet/tree/main/blueprint) · trained with [train-serve-lora](../train-serve-lora/) | Apache-2.0 | 91 MB | diffusers-native |
 | `wild-africa` | [zfrsgtcu/flux-wild-africa](https://huggingface.co/zfrsgtcu/flux-wild-africa) | MIT | 46 MB | ai-toolkit |
 | `mikkoani` | [mikkoph/mikkoani-klein4b](https://huggingface.co/mikkoph/mikkoani-klein4b) | Apache-2.0 | 92 MB | kohya |
 | `spritesheet` | [fal/flux-2-klein-4b-spritesheet-lora](https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora) | Apache-2.0 | 76 MB | raw-PEFT (fal trainer) |
@@ -71,7 +71,7 @@ The first-ever run downloads the base model (~16 GB) plus the eight featured ada
 
 **Clients never compute hints.** Every response carries the header `x-fal-runner-hint: lora:<user_id>` — capture it and pass it back as the `hint=` option on your next request for that user. One line of client code turns a stateless queue into cache-affine routing.
 
-**`/register` is the product loop.** POST a `user_id` plus a LoRA URL or Hugging Face repo id (this is what a training job emits — see 04.4), and the app downloads it to `/data` (size-capped, safetensors-validated, temp-file + atomic rename so concurrent runners never see partial files) and writes the KV index. Omit the URL and the app generates a small deterministic synthetic adapter instead — that's how `fleet_demo.py` creates a thousand users without training a thousand LoRAs. Registration failures are typed 422s (`lora_too_large`, `lora_invalid_format`, `lora_download_failed`, `lora_incompatible`); the eight featured ids are reserved and can't be re-registered (`user_reserved`). GPU OOM during a load is deliberately **not** a 422 — it propagates as a retryable failure.
+**`/register` is the product loop.** POST a `user_id` plus a LoRA URL or Hugging Face repo id (this is what a training job emits — see [train-serve-lora](../train-serve-lora/)), and the app downloads it to `/data` (size-capped, safetensors-validated, temp-file + atomic rename so concurrent runners never see partial files) and writes the KV index. Omit the URL and the app generates a small deterministic synthetic adapter instead — that's how `fleet_demo.py` creates a thousand users without training a thousand LoRAs. Registration failures are typed 422s (`lora_too_large`, `lora_invalid_format`, `lora_download_failed`, `lora_incompatible`); the eight featured ids are reserved and can't be re-registered (`user_reserved`). GPU OOM during a load is deliberately **not** a 422 — it propagates as a retryable failure.
 
 **Warmup goes through the LoRA path.** `setup()` ends by activating a featured adapter and generating once — a runner that can't serve adapters never enters the pool.
 
@@ -156,7 +156,6 @@ Three things to know before reading your own numbers. First, hints are **best-ef
 
 ## Next steps
 
-- **04.4 — Train a LoRA → serve it**: the training side of this loop; its output URL is exactly what `/register` accepts.
-- **02.1 — Cut cold starts**: `torch.compile` and compiled caches — deliberately skipped here so heterogeneous adapters can't trigger recompiles; the advanced path is diffusers' [LoRA hotswapping](https://huggingface.co/docs/diffusers/main/tutorials/using_peft_for_inference).
-- **06.2 — Async queue + webhooks**: wire this endpoint into a product backend.
+- **[train-serve-lora](../train-serve-lora/)**: the training side of this loop; its output URL is exactly what `/register` accepts.
+- **[cut-cold-starts](../../02-scaling-cold-starts/cut-cold-starts/)**: `torch.compile` and compiled caches — deliberately skipped here so heterogeneous adapters can't trigger recompiles; the advanced path is diffusers' [LoRA hotswapping](https://huggingface.co/docs/diffusers/main/tutorials/using_peft_for_inference).
 - Concept docs: [optimize routing behavior](https://fal.ai/docs/documentation/serverless/optimize-routing-behavior) · [use the KV store](https://fal.ai/docs/documentation/serverless/use-kv-store) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage) · [scale your application](https://fal.ai/docs/documentation/deployment/scale-your-application)

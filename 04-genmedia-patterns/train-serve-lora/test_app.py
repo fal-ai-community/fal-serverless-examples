@@ -1,4 +1,4 @@
-"""Tests for 04.4 train-serve-lora.
+"""Tests for train-serve-lora.
 
 Two layers, one file (repo convention):
 

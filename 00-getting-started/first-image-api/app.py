@@ -1,6 +1,6 @@
 """Your first image API - FLUX.2 [klein] 4B on a fal GPU.
 
-Catalog slot 00.2 (SERV-1293). A real text-to-image API: weights load once
+A real text-to-image API: weights load once
 per worker in setup(), a warmup generation runs before the first request,
 and the endpoint returns a CDN-hosted image the playground renders.
 
@@ -87,7 +87,7 @@ class FirstImageApi(fal.App, keep_alive=300):
 
         # COMPILE would go here. Skipped in this first example - torch.compile
         # plus shared inductor caches are cold-start engineering, covered by
-        # example 02.1 with the trade-off measured.
+        # the cut-cold-starts example with the trade-off measured.
 
         # WARMUP: pay CUDA init and kernel autotune now, not on the first
         # user request. One step at full resolution is enough.
@@ -103,7 +103,7 @@ class FirstImageApi(fal.App, keep_alive=300):
     def generate(self, request: Input) -> Output:
         import torch
 
-        # Sizes pass through unclamped; validation patterns are 00.4 bulletproof-inputs' topic.
+        # Sizes pass through unclamped; validation patterns are bulletproof-inputs' topic.
         size = get_image_size(request.image_size)
         seed = request.seed if request.seed is not None else random.randint(0, MAX_SEED)
         result = self.pipe(

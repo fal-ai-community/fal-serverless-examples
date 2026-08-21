@@ -149,10 +149,6 @@ Knobs, in the order they matter:
 
 ## Next steps
 
-- [Stream progressive results with SSE](../../03-streaming-realtime/) - the
-  minimal version of this pattern (03.1)
-- [LOD processor for 3D assets](../../05-media-processing/) - post-process
-  the GLB this example produces (05.2)
 - Hosted [fal-ai/sam-3/3d-objects](https://fal.ai/models/fal-ai/sam-3/3d-objects)
   for request/response without deploying; TRELLIS.2-4B / Hunyuan3D 3.x if you
   want maximum asset fidelity over progressive UX

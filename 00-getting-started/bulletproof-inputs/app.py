@@ -1,6 +1,6 @@
 """Bulletproof inputs - typed 422s, bomb gates, and safe URL ingestion.
 
-Catalog slot 00.4 (SERV-1309). Every public endpoint eventually meets a
+Every public endpoint eventually meets a
 hostile input: a URL pointing at your own metadata service, a 400 MB
 "thumbnail", a 200x200 PNG that decodes to 144 megapixels, a 200 KB zip
 that unpacks to 200 GB. This example is the gauntlet those inputs hit

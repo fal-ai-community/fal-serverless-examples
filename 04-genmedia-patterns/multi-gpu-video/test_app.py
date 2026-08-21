@@ -1,4 +1,4 @@
-"""Free unit tests (static job) + one live harness test for 04.5.
+"""Free unit tests (static job) + one live harness test.
 
 The live test runs only under harness/check.py (the app_client fixture
 skips otherwise), so plain `pytest` costs nothing. One live generation

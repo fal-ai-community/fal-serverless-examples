@@ -2,8 +2,6 @@
 
 Your endpoint is fine at steady traffic and falls over on launch day. fal gives you seven knobs to fix that — `keep_alive`, `min_concurrency`, `concurrency_buffer`, `concurrency_buffer_perc`, `max_concurrency`, `scaling_delay`, `max_multiplexing` — and the docs tell you what each one *means*. They don't tell you which values to pick, what the wrong pick costs, or how to find out for your own app. This example measures one real burst, then models the configurations that would be too expensive to measure.
 
-> Catalog slot `02.2` ([SERV-1294](https://linear.app/features-and-labels/issue/SERV-1294)).
-
 ## What you get
 
 A FLUX.2 [klein] endpoint that tells you who served every request, so a burst against it is self-measuring:
@@ -146,6 +144,5 @@ python chart.py --trace trace.json --frontier frontier.json --out charts/
 
 ## Next steps
 
-- **02.1 — cut cold starts:** the 127.6 s this example treats as fixed is 02.1's whole subject.
-- **08.5 — track usage & cost per app:** the same dollars, observed after the fact from the platform APIs.
+- [**cut-cold-starts**](../cut-cold-starts/): the 127.6 s this example treats as fixed is its whole subject.
 - Concept docs: [scaling parameter reference](https://docs.fal.ai/documentation/deployment/scale-your-application) · [cold start & scaling](https://docs.fal.ai/documentation/serverless/optimizations/cold-start-scaling) · [serverless pricing](https://docs.fal.ai/documentation/serverless/pricing)

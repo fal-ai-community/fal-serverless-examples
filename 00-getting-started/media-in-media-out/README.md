@@ -2,8 +2,6 @@
 
 Every real fal app moves files: users send media in, models send media out, and in between you need downloads that can't be abused, caching that doesn't re-fetch the world, and outputs a browser can actually render. This example is that plumbing, isolated — no model, just a fast image processor on a **CPU machine** that demonstrates how media flows through fal serverless.
 
-> Catalog slot `00.3` ([SERV-1302](https://linear.app/features-and-labels/issue/SERV-1302)).
-
 ## What you get
 
 ```json
@@ -33,7 +31,7 @@ fal run app.py        # prints playground + API URLs; Ctrl-C to stop
 
 **Media in — the `_url` convention.** Inputs arrive as URL strings; the `image_url` field name is what gives the playground its drag-and-drop upload widget (uploads become URLs before your code ever runs). See [handle inputs & outputs](https://fal.ai/docs/documentation/development/handle-inputs-and-outputs).
 
-**Bounded download, cached on `/data`.** `download_file` refuses anything over 20 MB (a `DownloadError` becomes a typed 422 pointing at `image_url`) and every fetch goes through the SDK's SSRF-guarded HTTP path — two protections you get for free. What the SDK does *not* do is skip repeat transfers, so the example adds the cache itself: downloads land in a URL-hashed directory on [`/data` persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage), and a repeat request for the same URL reuses the file — across workers, deploys, and CI runs. The `report.source.cache_hit` and `download_ms` fields make it visible: hundreds of ms on first fetch, ~zero after. (Hardening beyond this — decompression-bomb policy, typed error taxonomies — is 00.4's subject; this example does gate absurd pixel counts before decode. HEIC/AVIF inputs are out of scope here.)
+**Bounded download, cached on `/data`.** `download_file` refuses anything over 20 MB (a `DownloadError` becomes a typed 422 pointing at `image_url`) and every fetch goes through the SDK's SSRF-guarded HTTP path — two protections you get for free. What the SDK does *not* do is skip repeat transfers, so the example adds the cache itself: downloads land in a URL-hashed directory on [`/data` persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage), and a repeat request for the same URL reuses the file — across workers, deploys, and CI runs. The `report.source.cache_hit` and `download_ms` fields make it visible: hundreds of ms on first fetch, ~zero after. (Hardening beyond this — decompression-bomb policy, typed error taxonomies — is [bulletproof-inputs](../bulletproof-inputs/)' subject; this example does gate absurd pixel counts before decode. HEIC/AVIF inputs are out of scope here.)
 
 **Media out — `output_format` → content type.** The format you ask for is the content type you get: `Image.from_pil(processed, format="webp")` uploads to fal's CDN and stamps `content_type: image/webp`. Outputs are typed `fal.toolkit.Image`/`File` — the `File` report shows that anything can ride the same pipeline, not just images.
 
@@ -61,6 +59,6 @@ curl -X POST https://queue.fal.run/<your-username>/media-in-media-out \
 
 ## Next steps
 
-- **00.4 — Bulletproof inputs**: the full hardening this example only gestures at (typed error taxonomies, archive gates, validation policy — note the SDK's `download_file` is already SSRF-guarded).
-- **00.2 — Your first image API**: put a model behind this same file plumbing.
+- **[bulletproof-inputs](../bulletproof-inputs/)**: the full hardening this example only gestures at (typed error taxonomies, archive gates, validation policy — note the SDK's `download_file` is already SSRF-guarded).
+- **[first-image-api](../first-image-api/)**: put a model behind this same file plumbing.
 - Concept docs: [inputs & outputs](https://fal.ai/docs/documentation/development/handle-inputs-and-outputs) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage) · [fal.toolkit](https://fal.ai/docs/api-reference/python-sdk/fal-toolkit)

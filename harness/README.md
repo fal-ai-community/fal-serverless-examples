@@ -2,9 +2,7 @@
 
 Keeps the catalog honest: **every example must actually deploy and serve** — CI re-verifies it so nothing here can silently rot (the known failure mode of the old examples was "copy it and it breaks").
 
-Tracked in [SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310).
-
-> **Scope decision (2026-07-21, Rehan):** CI checks correctness only — deploy + health + smoke + tests. The earlier measurement layer (cold start / p50/p95 / cost written to per-example `numbers.json`) was descoped after comparing with modal-examples' CI (exit-code correctness only). The full measurement harness lives in git history (`harness/measure.py`, PR #1) and was E2E-validated before removal — recover it from there if measured numbers come back into scope.
+CI checks correctness only — deploy + health + smoke + tests; it does not measure performance.
 
 ## Contract
 

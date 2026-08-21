@@ -1,6 +1,6 @@
-"""Train a FLUX.2-klein LoRA on fal serverless - the trainer half of 04.4.
+"""Train a FLUX.2-klein LoRA on fal serverless - the trainer half of this example.
 
-Catalog slot 04.4 (SERV-1312). The interesting part is the settings block:
+The interesting part is the settings block:
 this is the long-job pattern the docs imply but never assemble in one place.
 
   keep_alive=0                       a training job pays for exactly what it
@@ -111,7 +111,7 @@ class TrainOutput(BaseModel):
     diffusers_lora_file: File = Field(
         description=(
             "The trained adapter (diffusers-native keys) on the CDN - portable: "
-            "drop-in for 04.3's /register or fal's hosted klein LoRA endpoints."
+            "drop-in for per-user-loras' /register or fal's hosted klein LoRA endpoints."
         )
     )
     data_path: str = Field(description="Where the adapter landed on /data.")
