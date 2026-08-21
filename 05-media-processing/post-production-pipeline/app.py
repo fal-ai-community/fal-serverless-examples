@@ -1,6 +1,6 @@
 """Post-production pipeline - transcode ladder, thumbnails, captions on CPU.
 
-Catalog slot 05.1 (SERV-1282). Every genmedia product rebuilds this layer by
+Catalog slot 05.1. Every genmedia product rebuilds this layer by
 hand: the model's raw MP4 has to become delivery renditions, poster frames,
 and captioned files before it can ship. No model here - just ffmpeg on a CPU
 machine, in a pinned container, with fal's queue + webhooks as the async

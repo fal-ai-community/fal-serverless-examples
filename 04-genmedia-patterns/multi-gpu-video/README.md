@@ -10,14 +10,14 @@ still work that way). This example serves the same class of model with none of t
 and diffusers context parallelism splits every denoising step across four H100s -
 one prompt, one video, four GPUs cooperating.
 
-> Catalog slot `04.5` ([SERV-1316](https://linear.app/features-and-labels/issue/SERV-1316))
+> Catalog slot `04.5`.
 
 ## What you get
 
 A text prompt in; a CDN-hosted mp4 (16 fps) out, with the seed echoed so the same inputs
 reproduce the same clip. This
 [720p sample clip](https://v3b.fal.media/files/b/0aa5f482/O2ywRcibrXZ1YRCIu27CA_wan22-1d96a465e70c4e76ba364350cd034fc4.mp4)
-is the real output of this example's validation run against a registered deploy
+is the real output of a live deploy of this example
 (720p, 81 frames, 27 steps, seed 7), response verbatim:
 
 ```json
@@ -53,7 +53,7 @@ fal run app.py
 ```
 
 The first-ever boot on your account downloads the ~126 GB fp32 weights and stores a bf16
-copy on [`/data`](https://docs.fal.ai/serverless/data-storage) (roughly half an hour,
+copy on [`/data`](https://fal.ai/docs/documentation/development/use-persistent-storage) (roughly half an hour,
 once). Every boot after that loads the converted copy and is serving in a few minutes.
 `fal run` prints the playground and API URLs when the app is up.
 
@@ -162,9 +162,9 @@ curl -X POST https://queue.fal.run/<your-username>/multi-gpu-video \
   -d '{"prompt": "a red panda napping on a mossy branch, soft morning light", "resolution": "720p", "num_frames": 81, "num_inference_steps": 27}'
 ```
 
-That 720p call is also this example's validation protocol: deploy, run it once, confirm
-the returned mp4 plays. (Last run 2026-08-11 - it produced the sample clip at the top of
-this page.)
+That 720p call is also the quickest way to verify your own deploy: run it once and
+confirm the returned mp4 plays (a run on 2026-08-11 produced the sample clip at the top
+of this page).
 
 ## Cost & tuning
 
@@ -179,9 +179,8 @@ this page.)
   fast path; WAN's native quality settings (720p, 81 frames, 27 steps) use the same
   endpoint and seed semantics.
 
-Measured on real 4x GPU-H100 runs (CI harness + gating spike deploys 2026-08-04/05,
-registered-deploy validation 2026-08-11; fal 1.78.2, diffusers 0.39.0) - one-time
-measurements, not a guarantee:
+Measured on real 4x GPU-H100 runs (2026-08-04/05 and 2026-08-11; fal 1.78.2,
+diffusers 0.39.0) - one-time measurements, not a guarantee:
 
 | Config | Wall-clock |
 |---|---|
@@ -196,8 +195,8 @@ through the queue with generous client timeouts rather than synchronous HTTP.
 
 ## Next steps
 
-- [Tier 04 - Genmedia patterns](../README.md) - the neighboring video, LoRA, and audio
-  serving examples as they land
+- [Tier 04 - Genmedia patterns](../README.md) - the neighboring LoRA and 3D
+  serving examples
 - [Streaming progress over SSE](https://docs.fal.ai/serverless/distributed/streaming) -
   add preview frames from rank 0 with `add_streaming_result`
 - [Tier 02 - Scaling & cold starts](../../02-scaling-cold-starts/README.md) - compiled

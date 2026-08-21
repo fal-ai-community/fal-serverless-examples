@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Deploy-check harness - see harness/README.md and SERV-1310.
+"""Deploy-check harness - see harness/README.md.
 
 Ephemeral-deploys each example, waits for it to become healthy, fires one
 smoke request against its endpoint, runs the example's test_app.py against
 the live app, and tears everything down. Exits non-zero if any example fails
 to deploy, respond, or pass its tests - CI doubles as example rot detection.
 
-Scope decision (2026-07-21, project owner): CI checks correctness only.
-The earlier measurement layer (cold start / latency / cost -> numbers.json)
-was descoped; see CONTEXT.md "Hard-won facts" for the record. Recover it from
-git history (harness/measure.py, PR #1) if numbers ever come back.
+CI checks correctness only - deploy + health + smoke + tests; it does not
+measure or publish performance numbers.
 
 Auth: FAL_KEY env var (CI) or a stored `fal auth login` session (local); the
 same code path serves both via fal.sdk.get_credentials().

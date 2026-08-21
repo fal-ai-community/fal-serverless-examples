@@ -1,4 +1,4 @@
-"""Catalog slot 02.2 (SERV-1294) - the burst target.
+"""Catalog slot 02.2 - the burst target.
 
 Same model as 00.2 (FLUX.2 [klein] 4B), with two differences that exist so
 one real burst can be measured without any extra credential:

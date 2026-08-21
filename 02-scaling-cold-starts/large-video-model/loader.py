@@ -33,7 +33,7 @@ MODEL_DIR = "/data/models/ltx-2.3-distilled-diffusers"
 _TAEHV_REF = "32ac0146b11007cda5a57b60a3b35653361fb8a4"
 TAEHV_WEIGHTS_URL = f"https://raw.githubusercontent.com/madebyollin/taehv/{_TAEHV_REF}/taeltx2_3_wide.pth"
 TAEHV_WEIGHTS_SHA = (
-    "007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339"  # spike-verified
+    "007788e6b9cb7f77e8589ae30ba7456b119d38b0d017e1d349c1c1d11e3d6339"  # verified against the pinned ref
 )
 _TAEHV_DIR = Path("/data/models/taehv")
 

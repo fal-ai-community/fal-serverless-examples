@@ -1,4 +1,4 @@
-"""Catalog slot NN.N (SERV-XXXX). <Example name> - fal app.
+"""Catalog slot NN.N. <Example name> - fal app.
 
 Template: rename the class and endpoint verb; replace the Input/Output fields,
 setup(), the endpoint body, and these notes.

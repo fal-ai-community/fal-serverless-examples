@@ -1,10 +1,8 @@
 # Deploy-check harness
 
-Keeps the catalog honest: **every example must actually deploy and serve** — CI re-verifies it so nothing here can silently rot (the known failure mode of the old examples was "copy it and it breaks").
+Keeps the catalog honest: **every example must actually deploy and serve** — CI re-verifies it so nothing here can silently rot (the classic failure mode of example repos is "copy it and it breaks").
 
-Tracked in [SERV-1310](https://linear.app/features-and-labels/issue/SERV-1310).
-
-> **Scope decision (2026-07-21, Rehan):** CI checks correctness only — deploy + health + smoke + tests. The earlier measurement layer (cold start / p50/p95 / cost written to per-example `numbers.json`) was descoped after comparing with modal-examples' CI (exit-code correctness only). The full measurement harness lives in git history (`harness/measure.py`, PR #1) and was E2E-validated before removal — recover it from there if measured numbers come back into scope.
+> **Scope:** CI checks correctness only — deploy + health + smoke + tests. It deliberately does not measure or publish performance numbers; any measured claim in an example README comes from a reproducible run documented there.
 
 ## Contract
 
@@ -54,6 +52,6 @@ A preflight call fails the whole run in seconds (with a real error) on bad crede
 
 ## Notes
 
-- Runs cost real compute time: CI triggers are PRs touching example/harness code, manual dispatch, and a weekly cron (enable after the first green run) — `.github/workflows/check.yml`.
+- Runs cost real compute time: CI triggers are PRs touching example/harness code, manual dispatch, and an optional weekly cron (commented out in the workflow; requires the `FAL_KEY` environment secret) — `.github/workflows/check.yml`.
 - Deps are pinned in `harness/requirements.txt`. `fal` is pinned deliberately: check.py guards against a v1.78.2 behavior where a deploy that fails before emitting a URL would hang the SDK's own `AppClient.connect()` forever (the spawn worker's exception is discarded upstream), and relies on REST `/runners/{id}` because ephemeral runners are invisible to the gRPC runner lists.
 - Python 3.11 required (matches CI and the runner env — fal ships cloudpickled code, so client and runner Python versions must agree).

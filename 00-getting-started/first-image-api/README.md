@@ -2,7 +2,7 @@
 
 You want a text-to-image endpoint you own: your model choice, your API schema, your infrastructure — not a black-box third-party API. This example deploys **FLUX.2 [klein] 4B** behind a typed HTTP endpoint on a fal GPU: weights load once per worker, every request hits a warm model, and callers get back a CDN-hosted image.
 
-> Catalog slot `00.2` ([SERV-1293](https://linear.app/features-and-labels/issue/SERV-1293)). Model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — **Apache-2.0 and ungated**, so you can ship what this tutorial teaches commercially, with no Hugging Face token anywhere. (The klein **9B** variants are gated and non-commercial — don't swap them in.)
+> Catalog slot `00.2`. Model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — **Apache-2.0 and ungated**, so you can ship what this tutorial teaches commercially, with no Hugging Face token anywhere. (The klein **9B** variants are gated and non-commercial — don't swap them in.)
 
 ## What you get
 

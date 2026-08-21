@@ -1,10 +1,10 @@
 # <Example name>
 
-<!-- Section order is the quality bar (design doc S4-A). Keep it. -->
+<!-- Section order is the quality bar. Keep it. -->
 
 One paragraph: the problem this solves and who hits it.
 
-> Catalog slot `NN.n` ([SERV-xxxx](https://linear.app/features-and-labels/issue/SERV-xxxx)).
+> Catalog slot `NN.n`.
 
 ## What you get
 

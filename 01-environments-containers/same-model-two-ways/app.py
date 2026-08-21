@@ -1,6 +1,6 @@
 """Same model, way 1: the fal runtime.
 
-Catalog slot 01.1 (SERV-1285). This file and app_container.py serve the
+Catalog slot 01.1. This file and app_container.py serve the
 IDENTICAL model with the identical schema - the only difference is how the
 environment gets built. This one lists dependencies and lets fal build the
 environment; the other one ships a Dockerfile.

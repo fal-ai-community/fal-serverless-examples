@@ -2,7 +2,7 @@
 
 ## What this adds/changes
 
-<!-- One example per PR. Link the "Propose an example" issue if this is a new example. -->
+<!-- One example per PR. Link the issue proposing it if this is a new example. -->
 
 ## Validation
 

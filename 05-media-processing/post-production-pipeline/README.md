@@ -2,7 +2,7 @@
 
 A generated video isn't a shippable video. Every genmedia product ends up building the same layer by hand: rendition ladders so playback doesn't buffer, poster thumbnails for the feed, captions muxed in for accessibility — then a queue and a webhook so the backend hears about it. This example is that layer as one deployable fal app: ffmpeg on a cheap CPU machine, with fal's queue as the queue.
 
-> Catalog slot `05.1` ([SERV-1282](https://linear.app/features-and-labels/issue/SERV-1282)).
+> Catalog slot `05.1`.
 
 ## What you get
 
@@ -21,7 +21,7 @@ A generated video isn't a shippable video. Every genmedia product ends up buildi
 }
 ```
 
-*Real output from a registered deploy (`rehan/post-production-pipeline`) — see the validation transcript in Deploy below.*
+*Real output from a live deploy of this example (`rehan/post-production-pipeline`) — see the full transcript in Deploy below.*
 
 Every rendition is an H.264 MP4 (AAC audio when the source has one) with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work; the top-level `timings` field mirrors the stage timings in seconds.
 
@@ -86,7 +86,7 @@ python client.py --app <your-username>/post-production-pipeline \
 
 Webhook deliveries are signed (Ed25519 over the request id, user id, timestamp, and the SHA-256 of the raw body — keys at `rest.fal.ai/.well-known/jwks.json`); `webhook_receiver.py` rejects anything that doesn't verify, checks timestamp freshness, and dedupes retries by `request_id`. Statuses are `IN_QUEUE → IN_PROGRESS → COMPLETED` — there is no `FAILED` status; failures arrive as `COMPLETED` with `error`/`error_type`, and the result URL returns the error body with a non-2xx code.
 
-Validated end-to-end against the registered deploy (`rehan/post-production-pipeline`) — client output on top, the receiver's independently-verified signature check below it:
+A real end-to-end run against a live deploy (`rehan/post-production-pipeline`) — client output on top, the receiver's independently-verified signature check below it:
 
 ```text
 $ export FAL_KEY=<key_id>:<key_secret>
@@ -134,7 +134,7 @@ Also verified against the same deploy: a second identical submit got a **new** `
 
 ## Next steps
 
-- **[06.2 — Async queue + webhooks into a product backend](../../06-pipelines-apps/)**: this example's client story grown into a real app (Next.js submits, webhook updates the DB).
-- **[05.3 — Image variant factory](../)**: the same CPU-proxy archetype for images (AVIF/WebP ladders).
+- **Wire this into a product backend**: `client.py` and `webhook_receiver.py` are the skeleton — your app server submits through the queue, and the verified webhook handler updates your database.
+- **The same archetype works for images**: an AVIF/WebP/resize ladder is this pipeline with different ffmpeg invocations — the queue, webhook, and container story carry over unchanged.
 - **HLS is the natural extension**: per-rung segment playlists + a master playlist. The ladder here is the hard part; HLS is packaging (`-f hls`) plus playlist URL rewriting for the CDN.
-- Concept docs: [queue](https://docs.fal.ai/model-apis/queue) · [webhooks](https://docs.fal.ai/model-apis/webhooks) · [container apps](https://fal.ai/docs/documentation/development/use-custom-container-image) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)
+- Concept docs: [queue](https://docs.fal.ai/model-endpoints/queue) · [webhooks](https://docs.fal.ai/model-endpoints/webhooks) · [container apps](https://fal.ai/docs/documentation/development/use-custom-container-image) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)

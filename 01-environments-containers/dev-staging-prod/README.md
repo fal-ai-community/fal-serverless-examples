@@ -2,7 +2,7 @@
 
 You want to try a change against real infrastructure without touching production, then ship the *same* code forward, then undo it fast when it turns out to be wrong. On fal that's three ideas — environments, environment-scoped secrets, and revisions — and one thing that is **not** an idea: there is no "promote" button. An app cannot move between environments; promotion is redeploying identical code into the next one.
 
-> Catalog slot `01.3` ([SERV-1299](https://linear.app/features-and-labels/issue/SERV-1299)).
+> Catalog slot `01.3`.
 
 ## What you get
 
@@ -97,5 +97,4 @@ Revisions are **per app, per environment**: rolling back main does nothing to st
 ## Next steps
 
 - **01.1 — same model, two ways**: choose how the environment gets built before you promote it.
-- **08.2 — resilience**: what to do when the rollback isn't fast enough.
-- Concept docs: [managing environments](https://fal.ai/docs/documentation/deployment/manage-environments) · [secrets](https://fal.ai/docs/documentation/deployment/manage-secrets-securely) · [deployments & revisions](https://fal.ai/docs/documentation/deployment/manage-deployments)
+- Concept docs: [managing environments](https://fal.ai/docs/documentation/deployment/manage-environments) · [secrets](https://fal.ai/docs/documentation/development/manage-secrets-securely) · [deployments & revisions](https://fal.ai/docs/documentation/deployment/manage-deployments)

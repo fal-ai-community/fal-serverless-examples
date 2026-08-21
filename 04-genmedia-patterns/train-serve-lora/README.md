@@ -157,4 +157,5 @@ your first training.
 - **Cold starts**: the 16 GB boot download is example 02.1's problem —
   FlashPack, `/data` caches, and compiled artifacts.
 - **Progress streaming**: training logs stream through the queue; for
-  first-class SSE progress see example 03.1.
+  first-class SSE progress see
+  [Streaming Endpoints](https://docs.fal.ai/serverless/development/streaming).

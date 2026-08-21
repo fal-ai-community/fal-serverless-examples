@@ -2,7 +2,7 @@
 
 Every real fal app moves files: users send media in, models send media out, and in between you need downloads that can't be abused, caching that doesn't re-fetch the world, and outputs a browser can actually render. This example is that plumbing, isolated — no model, just a fast image processor on a **CPU machine** that demonstrates how media flows through fal serverless.
 
-> Catalog slot `00.3` ([SERV-1302](https://linear.app/features-and-labels/issue/SERV-1302)).
+> Catalog slot `00.3`.
 
 ## What you get
 

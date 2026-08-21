@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the committed SVG charts for slot 02.2 (SERV-1294).
+"""Render the committed SVG charts for slot 02.2.
 
 Stdlib only - requirements.txt mirrors App.requirements exactly, so a
 plotting library here would ship to the GPU. Hand-written SVG also means
@@ -9,7 +9,7 @@ fail on a mismatch without spending a cent.
 Two constraints that shape every line below:
   * GitHub's markdown sanitizer strips inline <svg>, so these are committed
     FILES referenced as images, never markup pasted into the README.
-  * Mintlify's image CDN strips <foreignObject>, so every label is a real
+  * Docs image CDNs commonly strip <foreignObject>, so every label is a real
     <text> element.
 
 The visual language here is deliberately minimal: two flat-colour series,

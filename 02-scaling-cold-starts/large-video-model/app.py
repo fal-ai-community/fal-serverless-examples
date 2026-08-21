@@ -1,6 +1,6 @@
 """Serve a 20+ GB video model - LTX-2.3 22B distilled on one H200.
 
-Catalog slot 02.3 (SERV-1303). The three lessons:
+Catalog slot 02.3. The three lessons:
   1. loader.py - parallel download + page-cache pre-read for ~88 GB of weights
   2. GPU sizing - ~70 GB resident bf16 needs H200-class VRAM (see README math)
   3. /stream    - intermediate-step tiny-VAE previews over SSE
@@ -80,7 +80,7 @@ class Output(BaseModel):
 class LargeVideoModel(fal.App, keep_alive=300):
     machine_type = "GPU-H200"  # ~70 GB resident bf16 weights - see README "GPU sizing"
     app_auth = "private"
-    # first-ever boot downloads ~88 GB to /data (spike: 392 s cold)
+    # first-ever boot downloads ~88 GB to /data (measured: 392 s cold)
     startup_timeout = 1800
     local_python_modules = [
         "loader"
@@ -370,7 +370,7 @@ class _PreviewSession:
                 x0, latent_frames, self.height // 32, self.width // 32, 1, 1
             )
             # TAEHV consumes diffusion-space latents directly - do NOT apply
-            # _denormalize_latents here (saturates its input clamp; spike-verified).
+            # _denormalize_latents here (saturates its input clamp; verified empirically).
             rgb = tae.decode_video(  # NTCHW in, NTCHW [0,1] out, first 7 frames trimmed
                 lat.permute(0, 2, 1, 3, 4).to(torch.bfloat16),
                 parallel=True,

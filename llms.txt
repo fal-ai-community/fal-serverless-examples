@@ -1,18 +1,14 @@
 # fal-serverless-examples
 
-> Production-grade fal Serverless examples, organized as a numbered curriculum (tiers 00-08) from first app to production operations. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
+> Production-grade fal Serverless examples, organized as a numbered curriculum from first deployed app to multi-GPU genmedia serving and production media pipelines. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
 
 ## Catalog
 
 - [Tier 00 - Getting started](00-getting-started/README.md): first app, first image API, media I/O, input hardening
-- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, migrations, environment promotion
+- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, environment promotion and rollback
 - [Tier 02 - Scaling & cold starts](02-scaling-cold-starts/README.md): cold-start engineering, autoscaling, very large models
-- [Tier 03 - Streaming & realtime](03-streaming-realtime/README.md): SSE, WebSocket, WebRTC realtime apps
-- [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): ComfyUI, text-to-video, per-user LoRAs, multi-GPU, TTS, music, 3D
-- [Tier 05 - Media processing](05-media-processing/README.md): transcode ladders, 3D LODs, image variants, audio finishing, provenance, batch
-- [Tier 06 - Pipelines & apps](06-pipelines-apps/README.md): workflows, queue + webhooks backends, routing, failover, client chaining
-- [Tier 07 - Integrations](07-integrations/README.md): Next.js, Vercel, n8n, MCP deploy
-- [Tier 08 - Production ops](08-production-ops/README.md): observability, resilience, CI testing, marketplace, cost tracking
+- [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): per-user LoRA fleets, LoRA train->serve, multi-GPU video, progressive 3D
+- [Tier 05 - Media processing](05-media-processing/README.md): transcode ladders, thumbnails, captions, queue + webhooks
 
 ## Live examples
 
@@ -22,6 +18,7 @@
 - [00.4 bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
 - [01.1 same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
 - [01.3 dev-staging-prod](01-environments-containers/dev-staging-prod/README.md): one codebase across environments - env-scoped secrets, promotion-is-redeploy, and the verified three-step rollback (set-rev alone does not move traffic)
+- [02.1 cut-cold-starts](02-scaling-cold-starts/cut-cold-starts/README.md): FlashPack weights on /data + compiled-kernel caches on WAN 2.1 text-to-video - the same model deployed with every cold-start lever pulled and with none, so the before/after is a real measured deploy
 - [02.2 tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
 - [02.3 large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE
 - [04.3 per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
@@ -35,4 +32,3 @@
 - [fal Serverless documentation](https://fal.ai/docs/documentation/serverless): concept docs these examples back
 - [Example template](templates/example/README.md): the structure every example follows
 - [Deploy-check harness](harness/README.md): how CI re-deploys and smoke-tests every example
-- [Project context](CONTEXT.md): full catalog map, ticket links, conventions

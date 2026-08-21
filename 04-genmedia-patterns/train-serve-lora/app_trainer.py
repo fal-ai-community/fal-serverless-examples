@@ -1,6 +1,6 @@
 """Train a FLUX.2-klein LoRA on fal serverless - the trainer half of 04.4.
 
-Catalog slot 04.4 (SERV-1312). The interesting part is the settings block:
+Catalog slot 04.4. The interesting part is the settings block:
 this is the long-job pattern the docs imply but never assemble in one place.
 
   keep_alive=0                       a training job pays for exactly what it

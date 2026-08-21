@@ -2,7 +2,7 @@
 
 Your endpoint is fine at steady traffic and falls over on launch day. fal gives you seven knobs to fix that — `keep_alive`, `min_concurrency`, `concurrency_buffer`, `concurrency_buffer_perc`, `max_concurrency`, `scaling_delay`, `max_multiplexing` — and the docs tell you what each one *means*. They don't tell you which values to pick, what the wrong pick costs, or how to find out for your own app. This example measures one real burst, then models the configurations that would be too expensive to measure.
 
-> Catalog slot `02.2` ([SERV-1294](https://linear.app/features-and-labels/issue/SERV-1294)).
+> Catalog slot `02.2`.
 
 ## What you get
 
@@ -107,7 +107,7 @@ curl -X POST https://fal.run/<your-username>/tune-autoscaling \
 
 ![What each configuration costs, and what it waits](charts/cost-latency-frontier.svg)
 
-Same 20-request spike, four configurations — one of them, `300 / 0 / 0`, shown both as it was actually measured and as the model reads that same config — priced over a **1-hour horizon** at the published H100 list rate of $3.99/h ($0.001108/s). If you measured on a negotiated rate (`burst.py --rate ...`), `model.py` inherits it from the trace automatically; pass `--rate` again only to override it. This is deliberately a hard rate, not the price of one burst: a `min_concurrency` runner is alive around the clock, so the model bills it for the whole horizon whether or not the burst ever lands (`--bursts-per-hour 1 --horizon-s 3600`, both defaults).
+Same 20-request spike, four configurations — one of them, `300 / 0 / 0`, shown both as it was actually measured and as the model reads that same config — priced over a **1-hour horizon** at the H100 list rate in effect when the burst was measured — $3.99/h ($0.001108/s); check [fal.ai/pricing](https://fal.ai/pricing) for the current rate. If you measured on a negotiated rate (`burst.py --rate ...`), `model.py` inherits it from the trace automatically; pass `--rate` again only to override it. This is deliberately a hard rate, not the price of one burst: a `min_concurrency` runner is alive around the clock, so the model bills it for the whole horizon whether or not the burst ever lands (`--bursts-per-hour 1 --horizon-s 3600`, both defaults).
 
 | `keep_alive` / `min` / `buffer` | cost/h | p50 wait | p95 wait | peak runners | |
 |---|---|---|---|---|---|
@@ -146,6 +146,5 @@ python chart.py --trace trace.json --frontier frontier.json --out charts/
 
 ## Next steps
 
-- **02.1 — cut cold starts:** the 127.6 s this example treats as fixed is 02.1's whole subject.
-- **08.5 — track usage & cost per app:** the same dollars, observed after the fact from the platform APIs.
+- [**02.1 — cut cold starts:**](../cut-cold-starts/) the 127.6 s this example treats as fixed is 02.1's whole subject.
 - Concept docs: [scaling parameter reference](https://docs.fal.ai/documentation/deployment/scale-your-application) · [cold start & scaling](https://docs.fal.ai/documentation/serverless/optimizations/cold-start-scaling) · [serverless pricing](https://docs.fal.ai/documentation/serverless/pricing)

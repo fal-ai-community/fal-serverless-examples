@@ -1,6 +1,6 @@
 """Your first image API - FLUX.2 [klein] 4B on a fal GPU.
 
-Catalog slot 00.2 (SERV-1293). A real text-to-image API: weights load once
+Catalog slot 00.2. A real text-to-image API: weights load once
 per worker in setup(), a warmup generation runs before the first request,
 and the endpoint returns a CDN-hosted image the playground renders.
 

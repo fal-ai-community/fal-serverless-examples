@@ -1,4 +1,4 @@
-# Two-tier verification (SERV-1310):
+# Two-tier verification:
 #   static  - no secrets, runs on every PR including forks: layout, pinning
 #             mirror, app loads, smoke payload derivable. Real signal, free.
 #   deploy  - ephemeral deploy + health + smoke + test_app.py against live
@@ -34,7 +34,7 @@ on:
         description: "Path to one example dir (e.g. 00-getting-started/hello-fal). Empty = all examples."
         required: false
         default: ""
-  # Enable after the first successful deploy run (needs the FAL_KEY
+  # Scheduled weekly run - enable by uncommenting (requires the FAL_KEY
   # environment secret).
   # schedule:
   #   - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC

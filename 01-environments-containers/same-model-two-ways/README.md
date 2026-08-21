@@ -2,7 +2,7 @@
 
 Every fal app has to answer one question before it can run: **where does the environment come from?** You can list your dependencies and let fal build it, or you can ship a Dockerfile. Most guides show you *how* to write the Dockerfile. This one deploys the *same* model both ways and tells you **which to pick, and why** — because for a lot of apps, the answer is "you don't need the Dockerfile".
 
-> Catalog slot `01.1` ([SERV-1285](https://linear.app/features-and-labels/issue/SERV-1285)).
+> Catalog slot `01.1`.
 
 ## What you get
 

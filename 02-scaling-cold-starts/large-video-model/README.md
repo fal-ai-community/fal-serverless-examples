@@ -1,10 +1,8 @@
 # Serve a 20+ GB video model — and watch it generate
 
-<!-- Section order is the quality bar (design doc S4-A). Keep it. -->
-
 Two things go wrong when you put a frontier video model behind an API. The weights are bigger than most GPUs and take minutes to reach the machine, so your first request pays for all of it. And even once the model is warm, generation is a long silence — the caller stares at a spinner while seventy gigabytes of weights do their work. This example serves **LTX-2.3 Distilled** on a single H200 and takes both seriously: `loader.py` gets ~88 GB of weights onto the GPU in about 40 s once they are cached — with the slow tail measured and written down rather than hidden — the GPU choice is arithmetic rather than a guess, and `/stream` sends a playable video of the *in-progress* generation after every denoising step.
 
-> Catalog slot `02.3` ([SERV-1303](https://linear.app/features-and-labels/issue/SERV-1303)). Model: [`diffusers/LTX-2.3-Distilled-Diffusers`](https://huggingface.co/diffusers/LTX-2.3-Distilled-Diffusers) — a 22B-parameter DiT plus a 12B text encoder, **ungated**, so nothing here needs a Hugging Face token. It is **not** Apache-2.0; read [Licensing](#licensing) before you ship it.
+> Catalog slot `02.3`. Model: [`diffusers/LTX-2.3-Distilled-Diffusers`](https://huggingface.co/diffusers/LTX-2.3-Distilled-Diffusers) — a 22B-parameter DiT plus a 12B text encoder, **ungated**, so nothing here needs a Hugging Face token. It is **not** Apache-2.0; read [Licensing](#licensing) before you ship it.
 
 ## What you get
 
@@ -157,7 +155,7 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 
 ## Cost & tuning
 
-**Measured 2026-08-11 on `GPU-H200`.** The generate and warm-boot rows come from the registered deploy (`<owner>/large-video-model`) and the repo's ephemeral deploy-checks, all on one afternoon; the cold-boot breakdown and the VRAM peaks come from instrumented spike runs at the same shapes, because a first-ever 88 GB download only happens once per account. One region, a handful of runs — read the ranges, not the digits.
+**Measured 2026-08-11 on `GPU-H200`.** The generate and warm-boot rows come from the registered deploy (`<owner>/large-video-model`) and the repo's ephemeral deploy-checks, all on one afternoon; the cold-boot breakdown and the VRAM peaks come from separate instrumented runs at the same shapes, because a first-ever 88 GB download only happens once per account. One region, a handful of runs — read the ranges, not the digits.
 
 | Stage | Measured |
 |---|---|
@@ -202,6 +200,5 @@ The weights are **not** Apache-2.0 — unlike the FLUX.2 [klein] 4B in 00.2, you
 ## Next steps
 
 - [**02.2 — autoscaling for bursty traffic**](../tune-autoscaling/): the `keep_alive` / `min_concurrency` / concurrency math behind the one-line rationale above, on a model that is cheap to be wrong about.
-- **03.1 — stream progressive results with SSE**: the same streaming pattern applied to image generation, where the previews are frames rather than clips.
 - [**04.5 — multi-GPU inference on a frontier video model**](../../04-genmedia-patterns/multi-gpu-video/): what to do when the sizing table above runs out of single-GPU options.
 - Concept docs: [parallel file loading](https://fal.ai/docs/documentation/serverless/optimizations/parallel-file-loading) · [machine types](https://fal.ai/docs/documentation/deployment/machine-types) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)

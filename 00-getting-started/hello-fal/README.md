@@ -2,7 +2,7 @@
 
 You have Python code that needs to run on serverless infrastructure — with a real HTTP API, typed inputs and outputs, and a path to production — without writing a Dockerfile or managing a server. This is the smallest complete fal app: one endpoint, deployed the same way the biggest ones are.
 
-> Catalog slot `00.1` ([SERV-1284](https://linear.app/features-and-labels/issue/SERV-1284)). This is the minimal version that proves the example layout end-to-end; the full "one app, run three ways" walkthrough lands with its ticket.
+> Catalog slot `00.1`.
 
 ## What you get
 

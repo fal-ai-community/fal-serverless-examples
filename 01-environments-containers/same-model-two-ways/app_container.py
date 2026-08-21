@@ -1,6 +1,6 @@
 """Same model, way 2: your own Dockerfile.
 
-Catalog slot 01.1 (SERV-1285). Identical model, identical schema, identical
+Catalog slot 01.1. Identical model, identical schema, identical
 pinned versions as app.py - the environment is the only variable. fal builds
 this Dockerfile server-side, so no local Docker and no registry push.
 """

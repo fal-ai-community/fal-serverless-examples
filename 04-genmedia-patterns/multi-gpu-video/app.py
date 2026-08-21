@@ -1,6 +1,6 @@
 """Multi-GPU video inference - WAN 2.2 A14B sharded across 4 GPUs with fal.distributed.
 
-Catalog slot 04.5 (SERV-1316). One frontier text-to-video model, one video,
+Catalog slot 04.5. One frontier text-to-video model, one video,
 four GPUs. DistributedRunner spawns a worker per GPU and initializes
 torch.distributed (NCCL) before setup() runs; diffusers context parallelism
 (Ulysses sequence parallelism) then splits every denoising step's sequence

@@ -83,7 +83,7 @@ it as a bonus, not a stage your client can depend on.
 
 Concept docs: [Streaming Endpoints](https://docs.fal.ai/serverless/development/streaming) ·
 [handling inputs & outputs](https://docs.fal.ai/serverless/development/handle-inputs-and-outputs) ·
-[custom containers](https://docs.fal.ai/serverless/development/customize-environment-containers)
+[custom containers](https://docs.fal.ai/serverless/development/use-custom-container-image)
 
 ## Deploy
 
@@ -118,9 +118,9 @@ averaging 158ms/step in stage 1 (geometry) and 112ms/step in stage 2
 (appearance); each colored frame costs one extra Gaussian decode at
 **≈19ms**. Cold setup (weights already cached on `/data`, pipeline
 instantiation + model load) was **≈60s warm**; on a brand-new `/data` volume
-the very first boot in this repo's history took over 600s before the runner
-reported ready - a one-time anomaly, not the steady state, but worth watching
-on a fresh deploy. Peak VRAM was **17.8GB**, comfortably under SAM-3D's own
+the very first boot can take over 600s before the runner reports ready
+(observed once during development) - a one-time cost, not the steady state,
+but worth watching on a fresh deploy. Peak VRAM was **17.8GB**, comfortably under SAM-3D's own
 stated ≥32GB prerequisite - the extra headroom is why this stays on H100
 rather than a smaller tier.
 
@@ -149,10 +149,8 @@ Knobs, in the order they matter:
 
 ## Next steps
 
-- [Stream progressive results with SSE](../../03-streaming-realtime/) - the
-  minimal version of this pattern (03.1)
-- [LOD processor for 3D assets](../../05-media-processing/) - post-process
-  the GLB this example produces (05.2)
+- [Streaming Endpoints](https://docs.fal.ai/serverless/development/streaming) - the
+  minimal version of this pattern
 - Hosted [fal-ai/sam-3/3d-objects](https://fal.ai/models/fal-ai/sam-3/3d-objects)
   for request/response without deploying; TRELLIS.2-4B / Hunyuan3D 3.x if you
   want maximum asset fidelity over progressive UX

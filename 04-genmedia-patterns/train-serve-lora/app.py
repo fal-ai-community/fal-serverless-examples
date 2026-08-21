@@ -1,6 +1,6 @@
 """Serve a freshly-trained klein LoRA from /data - the serving half of 04.4.
 
-Catalog slot 04.4 (SERV-1312). The trainer (app_trainer.py) writes
+Catalog slot 04.4. The trainer (app_trainer.py) writes
 /data/loras/<lora_name>/; this app loads adapters from there by name onto
 the DISTILLED klein-4B (4-step inference). Train where gradients behave,
 serve where inference is fast.

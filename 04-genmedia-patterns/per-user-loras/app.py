@@ -1,6 +1,6 @@
 """Serve thousands of per-user LoRAs with routing hints - FLUX.2 [klein] 4B.
 
-Catalog slot 04.3 (SERV-1306). One shared warm fleet serves every user's
+Catalog slot 04.3. One shared warm fleet serves every user's
 personal LoRA: adapters live on /data, a KV store maps user -> adapter, each
 runner keeps a small GPU LRU of loaded adapters, and provide_hints() tells
 fal's router which users this runner already has hot. Hints are best-effort

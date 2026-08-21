@@ -1363,7 +1363,7 @@ def test_committed_charts_are_current(tmp_path):
 
 
 def test_no_foreignobject_anywhere():
-    # Mintlify's image CDN strips foreignObject, silently truncating its text.
+    # Docs image CDNs commonly strip foreignObject, silently truncating its text.
     for path in sorted((HERE / "charts").glob("*.svg")):
         assert "foreignObject" not in path.read_text(), path.name
 

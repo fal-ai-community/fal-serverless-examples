@@ -1,6 +1,6 @@
 """Cut cold starts — the OPTIMIZED app: /data + FlashPack + compiled caches.
 
-Catalog slot 02.1 (SERV-1286). The same WAN 2.1 1.3B endpoint as
+Catalog slot 02.1. The same WAN 2.1 1.3B endpoint as
 app_baseline.py, with every cold-start lever pulled:
 
   1. /data persistent storage - the ~29 GB fp32 repo is downloaded and

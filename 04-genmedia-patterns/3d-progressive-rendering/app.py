@@ -1,6 +1,6 @@
 """3D progressive rendering: stream SAM-3D reconstruction as it happens.
 
-Catalog slot 04.7 (SERV-1319). One H100 app, two endpoints: `/` returns the
+Catalog slot 04.7. One H100 app, two endpoints: `/` returns the
 final GLB + Gaussian splat as URLs; `/stream` emits SSE while the two
 diffusion stages run - voxels appear live, then the final assets arrive by
 URL. The pattern to steal: model progress -> bounded queue -> SSE generator,

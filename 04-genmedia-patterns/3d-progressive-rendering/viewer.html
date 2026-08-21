@@ -58,9 +58,8 @@ const proto = new THREE.BoxGeometry(1, 1, 1);
 const mat = new THREE.MeshLambertMaterial();
 const dummy = new THREE.Object3D();
 
-// Real instancing: ONE InstancedMesh, per-instance matrix + color. (The old
-// docs page nested <mesh> children inside instancedMesh - that renders
-// nothing instanced at all.)
+// Real instancing: ONE InstancedMesh, per-instance matrix + color.
+// (Nesting <mesh> children inside instancedMesh renders nothing instanced.)
 function showVoxels(rows, gridSize) {
   if (meshPreview) { scene.remove(meshPreview); meshPreview = null; }
   if (!voxelMesh) {
