@@ -9,3 +9,4 @@
 - The docs pages that walk through examples live in the separate fal-docs repo (github.com/fal-ai/fal-docs) — this repo holds the runnable source those pages link to.
 - Update `llms.txt` when adding an example.
 - Target Python: 3.11 (matches CI).
+- Comments: a comment exists only to state a constraint the code can't express (cross-file sync markers, version-bump rules, why a machine/GPU type or magic number was chosen) — one terse line each. Module docstrings are one line; no header blocks, no narration, no catalog-slot/ticket refs in code — refer to sibling examples by folder name. Explanation belongs in the README. Pydantic `Field(description=..., examples=...)` is API schema + CI smoke-payload source, not commentary — keep it complete.

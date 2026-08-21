@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Deploy-check harness - see harness/README.md.
-
-Ephemeral-deploys each example, waits for it to become healthy, fires one
-smoke request against its endpoint, runs the example's test_app.py against
-the live app, and tears everything down. Exits non-zero if any example fails
-to deploy, respond, or pass its tests - CI doubles as example rot detection.
-CI checks correctness only - deploy + health + smoke + tests; it does not
-measure performance.
-
-Auth: FAL_KEY env var (CI) or a stored `fal auth login` session (local); the
-same code path serves both via fal.sdk.get_credentials().
-
-Written against fal==1.78.2 (pinned in harness/requirements.txt) and verified
-against live ephemeral deploys. Version-specific facts this file relies on:
-  - fal 1.78.2 discards the spawn worker's Future, so a deploy that fails
-    before emitting a URL would hang forever; we own the spawn thread instead.
-  - Ephemeral runners are INVISIBLE to `fal runners list` / `fal apps runners`
-    (gRPC lists cover registered apps only); they ARE visible to REST
-    GET /runners/{runner_id}, with the runner id parsed from the platform's
-    "Starting runner <uuid>" log line.
-"""
+"""Deploy-check harness: ephemeral-deploys, smokes, tests, and tears down every example (spends real money; CI runs it behind an approved environment)."""
 
 from __future__ import annotations
 
@@ -70,9 +50,7 @@ def rest_url() -> str:
     return flags.REST_URL
 
 
-# --------------------------------------------------------------------------
-# Example discovery and app loading
-# --------------------------------------------------------------------------
+# --- example discovery and app loading ---
 
 def discover_examples() -> list[Path]:
     dirs = []
@@ -86,23 +64,12 @@ def discover_examples() -> list[Path]:
 
 
 def discover_variants(example_dir: Path) -> list[Path]:
-    """App files to check for one example.
-
-    Most examples are a single `app.py`. Comparison examples (e.g. the same
-    model served two ways) ship additional `app_<variant>.py` files; each is
-    deployed and tested independently, against the same test_app.py - if two
-    builds of one model don't pass identical tests, the comparison is a lie.
-    """
+    """Return app.py plus any app_<variant>.py; each variant must pass the same test_app.py."""
     return sorted(example_dir.glob("app*.py"))
 
 
 def load_app_class(app_file: Path):
-    """Load the unique fal.App subclass from an example's app.py.
-
-    Mirrors what `fal run <file>` does (fal/utils.py::load_function_from):
-    runpy-execute the file, pick the single App subclass, register the
-    enclosing package for serialization.
-    """
+    """Load the unique fal.App subclass, mirroring `fal run`'s loader (fal/utils.py::load_function_from)."""
     import fal
     from fal._serialization import include_package_from_path
 
@@ -147,12 +114,7 @@ def pick_endpoint(app_cls) -> tuple[str, object]:
 
 
 def sample_input(endpoint_fn) -> dict:
-    """Build the smoke payload from the Input model's Field examples.
-
-    Convention (harness/README.md): every required Input field carries
-    `examples=[...]` - the same sample the README shows. Optional fields fall
-    back to their server-side defaults.
-    """
+    """Build the smoke payload from Field examples (required fields must carry examples=[...])."""
     from pydantic import BaseModel
 
     params = [
@@ -178,13 +140,10 @@ def sample_input(endpoint_fn) -> dict:
     return payload
 
 
-# --------------------------------------------------------------------------
-# Boot observation: log drain (runner id) + REST runner polling (crash/teardown)
-# --------------------------------------------------------------------------
+# --- boot observation ---
 
 class BootWatcher(threading.Thread):
-    """Drains the spawn log queue, printing every line and capturing the
-    runner id from the platform's 'Starting runner <uuid>' line."""
+    """Drains the spawn log queue, capturing the runner id from 'Starting runner <uuid>'."""
 
     def __init__(self, spawn_info):
         super().__init__(daemon=True, name="boot-watcher")
@@ -212,14 +171,13 @@ class BootWatcher(threading.Thread):
 
 
 class RestRunnerPoller(threading.Thread):
-    """Polls REST GET /runners/{runner_id} - the only API that can see an
-    ephemeral runner - for crash detection and teardown confirmation."""
+    """Polls REST GET /runners/{runner_id} - the only API that can see an ephemeral runner."""
 
     def __init__(self, headers: dict[str, str]):
         super().__init__(daemon=True, name="rest-runner-poller")
         self._headers = headers
         self._stop_event = threading.Event()
-        self.runner_id: str | None = None  # set once known
+        self.runner_id: str | None = None
         self.last_state: str = ""
         self._failed: str | None = None
 
@@ -248,21 +206,10 @@ class RestRunnerPoller(threading.Thread):
         return self._failed
 
 
-# --------------------------------------------------------------------------
-# Spawn, health, smoke
-# --------------------------------------------------------------------------
+# --- spawn, health, smoke ---
 
 def spawn_owned(fn):
-    """Ephemeral-deploy on a harness-owned daemon thread.
-
-    fn.spawn() (fal 1.78.2) submits the deploy to a non-daemon pool and
-    discards the Future: a pre-URL failure is silently swallowed, and a stuck
-    stream would block interpreter shutdown. Driving the same public
-    Host.run(...) call ourselves keeps the worker's exception observable and
-    lets the process exit regardless. Auth defaults to PRIVATE (upstream
-    default is public - anyone with the URL could invoke and bill during the
-    check window).
-    """
+    """Ephemeral-deploy on an owned daemon thread: fn.spawn() (fal 1.78.2) discards the worker Future, hiding pre-URL failures and blocking shutdown."""
     from fal.api.api import SpawnInfo, SpawnResultHandler
 
     info = SpawnInfo()
@@ -276,7 +223,7 @@ def spawn_owned(fn):
                 args=(),
                 kwargs={},
                 application_name=fn.app_name,
-                application_auth_mode=fn.app_auth or "private",
+                application_auth_mode=fn.app_auth or "private",  # upstream default is public: anyone with the URL could invoke and bill
                 result_handler=SpawnResultHandler(info),
                 entrypoint=fn.run_entrypoint,
             )
@@ -288,8 +235,7 @@ def spawn_owned(fn):
 
 
 def wait_for_url(spawn_info, failure: dict) -> str:
-    """Bounded wait for the app URL, surfacing the deploy worker's real
-    exception immediately instead of burning the whole timeout."""
+    """Bounded wait for the app URL, surfacing the deploy worker's exception immediately."""
     deadline = time.monotonic() + URL_TIMEOUT_S
     ready = getattr(spawn_info, "_url_ready", None)
     while time.monotonic() < deadline:
@@ -329,7 +275,6 @@ def wait_healthy(url: str, headers: dict, poller: RestRunnerPoller) -> None:
 
 
 def smoke_request(url: str, path: str, payload: dict, headers: dict) -> None:
-    """One validated request against the live endpoint."""
     target = url.rstrip("/") + path
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as client:
         resp = client.post(target, json=payload, headers=headers)
@@ -346,7 +291,6 @@ def smoke_request(url: str, path: str, payload: dict, headers: dict) -> None:
 def run_example_tests(
     example_dir: Path, url: str, endpoint_path: str, variant: str = ""
 ) -> None:
-    """Run the example's test_app.py against the live ephemeral app."""
     test_file = example_dir / "test_app.py"
     if not test_file.is_file():
         return
@@ -373,17 +317,10 @@ def run_example_tests(
         raise CheckError(f"test_app.py failed (pytest exit {result.returncode})")
 
 
-# --------------------------------------------------------------------------
-# Teardown
-# --------------------------------------------------------------------------
+# --- teardown ---
 
 def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
-    """Cancel the run stream (that IS the ephemeral teardown), then confirm
-    via REST that the runner actually stopped - it bills until it does.
-
-    Returns the runner id if it could not be confirmed stopped (a money leak
-    the caller must escalate), else None.
-    """
+    """Cancel the run stream (that IS the teardown) and confirm the runner stopped - it bills until it does; returns its id if unconfirmed (money leak)."""
     poller.stop()
     stream = getattr(spawn_info, "stream", None)
     if stream is not None:
@@ -424,12 +361,9 @@ def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
     return runner_id
 
 
-# --------------------------------------------------------------------------
-# Per-example check
-# --------------------------------------------------------------------------
+# --- per-example check ---
 
 def check(example_dir: Path, teardown_report: dict | None = None) -> None:
-    """Deploy-check every variant of one example."""
     variants = discover_variants(example_dir)
     if not variants:
         raise CheckError(f"{example_dir}: no app.py")
@@ -479,8 +413,7 @@ def check_variant(
 
 
 def purge_example_modules(example_dir: Path) -> None:
-    """Drop modules imported from this example's dir so a later example's
-    same-named helper (e.g. utils.py) can't silently receive stale code."""
+    """Drop this example's modules so a later example's same-named helper can't get stale code."""
     prefix = str(example_dir)
     for name in [
         n for n, mod in list(sys.modules.items())
@@ -490,8 +423,7 @@ def purge_example_modules(example_dir: Path) -> None:
 
 
 def preflight(headers: dict) -> None:
-    """One cheap authenticated call so a bad/revoked credential fails the run
-    in seconds with a real error, not one silent URL timeout per example."""
+    """Cheap authenticated call so a bad credential fails in seconds, not one URL timeout per example."""
     resp = httpx.get(f"{rest_url()}/users/current", headers=headers, timeout=30)
     if not resp.is_success:
         raise CheckError(
@@ -499,10 +431,6 @@ def preflight(headers: dict) -> None:
             "- check FAL_KEY (CI) or `fal auth login` (local)"
         )
 
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -554,8 +482,7 @@ def main() -> int:
             purge_example_modules(example_dir)
         log(f"  OK {rel}")
         if teardown_report.get("leaked_runner"):
-            # The check passed, but a billing runner outlived teardown: the run
-            # must go red so someone looks at it.
+            # a billing runner outlived teardown - the run must go red
             failures.append(
                 (rel, f"runner {teardown_report['leaked_runner']} not confirmed stopped")
             )

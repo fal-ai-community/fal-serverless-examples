@@ -1,18 +1,4 @@
-"""Pytest plugin providing the `app_client` fixture for example smoke tests.
-
-The harness (check.py) deploys the example ephemerally, then runs the
-example's test_app.py with this plugin (`-p harness.pytest_plugin`) and
-HARNESS_APP_URL pointing at the live app - so tests stay tiny:
-
-    def test_smoke(app_client):
-        response = app_client.run("/", {"prompt": "..."})
-        assert response["message"]
-
-Run outside the harness (plain `pytest` anywhere inside the repo - the root
-conftest.py registers this fixture), it skips instead of failing, so example
-tests never cost anything by accident. Running an example's tests from a copy
-of the folder outside the repo is not supported.
-"""
+"""Pytest plugin providing the `app_client` fixture for example smoke tests."""
 
 from __future__ import annotations
 
@@ -25,8 +11,6 @@ REQUEST_TIMEOUT_S = float(os.environ.get("HARNESS_REQUEST_TIMEOUT", "120"))
 
 
 class HarnessAppClient:
-    """Minimal client for the live ephemeral app under test."""
-
     def __init__(self, url: str):
         self.url = url.rstrip("/")
         from fal.sdk import get_credentials
@@ -48,5 +32,6 @@ class HarnessAppClient:
 def app_client() -> HarnessAppClient:
     url = os.environ.get("HARNESS_APP_URL")
     if not url:
+        # skip, never fail: plain `pytest` must cost nothing by accident
         pytest.skip("no live app under test - run via harness/check.py")
     return HarnessAppClient(url)

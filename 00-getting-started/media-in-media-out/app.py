@@ -1,10 +1,4 @@
-"""Media in, media out - files, CDN, and persistent storage on fal.
-
-No model here on purpose: this example is
-about how media moves through a fal app - URL in, safe bounded download,
-/data caching, processing on a cheap CPU machine, and typed outputs on
-fal's CDN with the content type you asked for.
-"""
+"""Media in, media out - files, CDN, and persistent storage on fal."""
 import hashlib
 import json
 import time
@@ -24,7 +18,7 @@ CACHE_ROOT = Path("/data/cache/media-in")
 
 class Input(BaseModel):
     image_url: str = Field(
-        # The `_url` suffix gives the playground a drag-and-drop upload widget.
+        # `_url` suffix gives the playground an upload widget
         description="Image to process: paste a URL or upload a file.",
         examples=["https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"],
     )
@@ -72,9 +66,9 @@ class Output(BaseModel):
 
 
 class MediaInMediaOut(fal.App, keep_alive=60):
-    machine_type = "M"  # 2 vCPUs / 2 GB - image I/O needs no GPU
+    machine_type = "M"  # image I/O needs no GPU
     app_auth = "private"
-    # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
+    # keep in sync with requirements.txt
     requirements = [
         "fal==1.78.2",
         "pillow==11.3.0",
@@ -85,11 +79,9 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         from PIL import Image as PILImage
         from PIL import ImageOps
 
-        # MEDIA IN - cache on /data keyed by URL hash; repeats skip the transfer.
         t0 = time.perf_counter()
         cache_dir = CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
-        # download_file stages partial downloads as same-directory .tmp files;
-        # never serve one as the cached image.
+        # download_file stages partial downloads as .tmp files - never serve one
         cached = next((p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None)
         if cached is not None:
             source_path = cached
@@ -106,8 +98,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                 ) from exc
         download_ms = int((time.perf_counter() - t0) * 1000)
 
-        # PROCESS - the pixel gate sits between open() and load(): reject
-        # oversized images before decode allocates.
+        # pixel gate must sit between open() and load(): reject before decode allocates
         t1 = time.perf_counter()
         try:
             source = PILImage.open(source_path)
@@ -124,7 +115,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         except FieldException:
             raise
         except PILImage.DecompressionBombError:
-            # open() itself rejects images over 2x MAX_PIXELS, before our gate runs
+            # open() rejects images over 2x MAX_PIXELS before our gate runs
             raise FieldException(
                 field="image_url",
                 message=f"image too large; max ~{MAX_PIXELS // 1_000_000} megapixels",
@@ -139,20 +130,19 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         try:
             source = ImageOps.exif_transpose(source)
         except Exception:
-            pass  # best-effort: bad EXIF metadata must not reject a decodable image
+            pass  # bad EXIF must not reject a decodable image
         original_size = (source.width, source.height)
         if request.output_format == "jpeg":
             if source.mode != "RGB":
-                source = source.convert("RGB")  # JPEG has no alpha channel
+                source = source.convert("RGB")
         elif source.mode not in ("RGB", "RGBA"):
             source = source.convert("RGBA")
         source.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
         processed = source
-        thumb = processed.copy()  # derive from the smaller image, not the original
+        thumb = processed.copy()
         thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.LANCZOS)
         processed_ms = int((time.perf_counter() - t1) * 1000)
 
-        # MEDIA OUT
         repository = "in_memory" if request.sync_mode else "fal_v3"
         save_kwargs = None
         if request.expires_in_seconds is not None:
@@ -186,9 +176,9 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                 "cache_hit": cached is not None,
             },
             "output_format": request.output_format,
-            "download_ms": download_ms,  # near-zero on a cache hit
+            "download_ms": download_ms,
             "processed_ms": processed_ms,
-            "upload_ms": upload_ms,  # image + thumbnail; 0-ish in sync_mode
+            "upload_ms": upload_ms,
         }
         report = File.from_bytes(
             json.dumps(report_data, indent=2).encode(),

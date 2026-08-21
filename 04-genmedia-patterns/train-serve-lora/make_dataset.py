@@ -1,15 +1,4 @@
-"""Generate the paper-diorama style training set with klein itself.
-
-16 subjects x 1 fixed style suffix x fixed seeds -> 16 images at 1024px,
-each with a sidecar .txt caption describing CONTENT ONLY (the style lives
-in the trigger phrase at training time, so it transfers to new subjects).
-
-Runs anywhere with a FAL_KEY (hosted endpoint) - or point --endpoint at
-your own deployment of the first-image-api example (e.g. <username>/first-image-api).
-
-    pip install fal-client==1.0.0
-    python make_dataset.py --out paper-diorama-16.zip
-"""
+"""Generate the paper-diorama style training set (16 captioned images) with klein itself."""
 import argparse
 import io
 import time

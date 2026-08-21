@@ -1,18 +1,9 @@
-"""Same model, way 1: the fal runtime.
-
-This file and app_container.py serve the IDENTICAL model with the identical
-schema - the only difference is how the environment gets built. This one
-lists dependencies and lets fal build the environment; the other one ships
-a Dockerfile.
-
-Both are deploy-checked against the same test_app.py.
-"""
+"""Same model, way 1: fal builds the environment (twin of app_container.py)."""
 import fal
 from pydantic import BaseModel, Field
 
 MODEL_ID = "openai/whisper-tiny.en"
-# Canonical ASR sample from the transformers docs ("I have a dream" clip).
-# setup() fetches it from huggingface.co, so cold starts need that host up.
+# Fetched at setup(); cold starts need huggingface.co reachable.
 SAMPLE_AUDIO = "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac"
 
 
@@ -29,9 +20,9 @@ class Output(BaseModel):
 
 
 class TranscribeRuntime(fal.App, keep_alive=60):
-    machine_type = "L"  # 4 vCPU / 15 GB - whisper-tiny is happy on CPU
+    machine_type = "L"  # 4 vCPU / 15 GB; whisper-tiny runs fine on CPU
     app_auth = "private"
-    # Mirrored exactly by requirements.txt for local installs and CI.
+    # Keep in sync with requirements.txt.
     requirements = [
         "fal==1.78.2",
         "torch==2.12.1",
@@ -45,8 +36,7 @@ class TranscribeRuntime(fal.App, keep_alive=60):
         self.pipe = pipeline(
             "automatic-speech-recognition", model=MODEL_ID, dtype=torch.float32
         )
-        # Warmup exercises the full audio-decode path; a mis-built environment
-        # should fail here at setup, not at the first request.
+        # A mis-built environment must fail here at setup, not at the first request.
         warmup = self.pipe(SAMPLE_AUDIO)
         assert warmup["text"].strip(), "warmup transcript is empty"
 

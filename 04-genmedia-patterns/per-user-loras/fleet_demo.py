@@ -1,15 +1,4 @@
-"""Fleet demo: register N synthetic users, drive hinted traffic, print the
-routing story. This is the empirical validation for hint-steered cache
-affinity at scale.
-
-Usage:
-    pip install fal-client==1.0.0
-    python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200
-    python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200 --no-hints
-
-Requires FAL_KEY (or `fal auth login`). Scale the app to >=2 runners first to
-see affinity: fal apps scale per-user-loras --min-concurrency 2
-"""
+"""Fleet demo: register N synthetic users, drive hinted traffic, print the routing story."""
 import argparse
 import collections
 import concurrent.futures as cf
@@ -52,33 +41,24 @@ def register_users(app: str, users: list[str], workers: int) -> dict[str, str]:
 def drive_traffic(app: str, users: list[str], hints: dict[str, str],
                   n_requests: int, use_hints: bool, workers: int, seed: int,
                   zipf: float, use_queue: bool = False) -> tuple[list[dict], dict[str, int]]:
-    # Zipf-skewed popularity: a few hot users, long tail. Within a keep_alive
-    # window real avatar traffic is concentrated (active users iterate in
-    # edit-generate loops), so the default exponent leans hot; lower --zipf
-    # toward 1.0 to model colder, flatter traffic.
+    # Zipf-skewed popularity: few hot users, long tail, like real avatar traffic.
     weights = [1.0 / (rank + 1) ** zipf for rank in range(len(users))]
 
-    # Repeat-request worker stickiness: for a user's Nth request, did it land
-    # on the same worker as their (N-1)th? This measures routing steering
-    # directly, independent of adapter-cache (LRU) state. Random placement
-    # gives ~1/num_workers; perfect affinity gives ~1.0.
+    # Stickiness = same worker for a user's consecutive requests; measures routing independent of LRU state.
     last_worker: dict[str, str] = {}
     stickiness = {"repeats": 0, "same_worker": 0}
     stats_lock = threading.Lock()
 
     def _one(i: int) -> dict:
-        # Per-request RNG keyed on (seed, i): a shared generator would make
-        # draw order depend on thread interleaving and break --seed replays.
+        # Per-request RNG keyed on (seed, i): a shared generator would break --seed replays under threading.
         rng = random.Random(f"{seed}:{i}")
         uid = rng.choices(users, weights=weights, k=1)[0]
         with stats_lock:
             hint = hints.get(uid)
-        # Clients never compute hints: send the server-issued one when we have
-        # it (from /register, or captured off an earlier response below).
+        # Send only server-issued hints; clients never compute them.
         kwargs = {"hint": hint} if use_hints and hint else {}
         arguments = {"user_id": uid, "prompt": rng.choice(PROMPTS),
                      "num_inference_steps": 1, "seed": i, "sync_mode": True}
-        # subscribe() = queue path (production default); run() = sync path.
         call = fal_client.subscribe if use_queue else fal_client.run
         serving = call(app, arguments, **kwargs)["serving"]
         with stats_lock:

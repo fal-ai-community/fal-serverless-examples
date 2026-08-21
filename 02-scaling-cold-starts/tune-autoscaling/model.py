@@ -1,18 +1,7 @@
-"""Autoscaler + billing model for the tune-autoscaling example.
+"""Autoscaler and billing model, reconstructed from fal's published scaling diagrams."""
 
-Stdlib only, on purpose: this repo requires requirements.txt to mirror
-App.requirements exactly, so any dependency here would ship to the GPU
-runner. Being dependency-free also makes the output deterministic, which is
-what lets CI regenerate the committed charts and fail on a mismatch.
-
-THE SCALING LAW BELOW IS RECONSTRUCTED, NOT DOCUMENTED. fal publishes no
-formula in prose. It was derived from the labelled bar values of the three
-diagrams on docs.fal.ai/documentation/deployment/scale-your-application and
-matches all three exactly (see test_app.py::PUBLISHED_CHARTS). Treat it as
-a model of the autoscaler, and note that scale-down dynamics are published
-nowhere at all - which is why this example measures them instead.
-"""
-
+# Stdlib only and deterministic: a dependency here would have to ship in
+# App.requirements, and CI regenerates the committed charts and diffs them.
 from __future__ import annotations
 
 import argparse
@@ -23,8 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TypedDict
 
-# Published list price for GPU-H100 on fal.ai/pricing. The negotiated
-# "as low as" tier is $1.89/h; a reader on that tier should pass --rate.
+# GPU-H100 list price on fal.ai/pricing; negotiated-tier readers pass --rate.
 H100_USD_PER_HOUR = 3.99
 USD_PER_SECOND = H100_USD_PER_HOUR / 3600
 
@@ -38,14 +26,10 @@ def desired_runners(
     min_concurrency: int = 0,
     max_concurrency: int | None = None,
 ) -> int:
-    """How many runners the autoscaler wants for `ongoing` requests.
-
-    `ongoing` counts in-flight plus queued requests. The percentage buffer
-    is rounded up - fal documents the max() rule but not the rounding, so
-    this is an explicit assumption of the model.
-    """
+    """Runners the autoscaler wants for `ongoing` (in-flight + queued) requests."""
     buffer = max(
         concurrency_buffer,
+        # fal documents the max() rule but not the rounding; ceil is assumed.
         math.ceil(concurrency_buffer_perc / 100 * ongoing),
     )
     want = math.ceil(ongoing / max_multiplexing) + buffer
@@ -57,38 +41,20 @@ def desired_runners(
 
 @dataclass(frozen=True)
 class RunnerWindow:
-    """One runner's billed lifetime.
-
-    `setup_start_s` is when billing starts (the SETUP state). Everything
-    before it - PENDING, DOCKER_PULL - is free. `last_completion_s` is when
-    it finished its last request; it stays alive, and billing, for
-    keep_alive seconds after that.
-
-    `prewarmed` marks a runner that was already alive before the burst (one
-    of the min_concurrency floor) rather than one the autoscaler started in
-    response to it. The distinction matters for costing: a prewarmed
-    runner's real cost is a horizon-wide floor - it is alive around the
-    clock, burst or no burst - not a per-burst charge like the rest of the
-    fleet. sweep() relies on this flag to keep the two apart; folding a
-    prewarmed window into the per-burst demand would double-count it.
-    """
+    """One runner's billed lifetime; billing starts at SETUP (PENDING is free)."""
 
     runner_id: str
     setup_start_s: float
     last_completion_s: float
+    # A min_concurrency floor runner, alive around the clock: sweep() must
+    # bill it via the horizon-wide floor only, or its cost double-counts.
     prewarmed: bool = False
 
 
 def billable_seconds(
     windows: list[RunnerWindow], *, keep_alive: float, granularity: float = 1.0
 ) -> float:
-    """Billed runner-seconds across every runner in `windows`.
-
-    ASSUMPTION: each runner's alive time is rounded up to `granularity`.
-    fal publishes no billing granularity or minimum billable duration, so
-    the default of 1s is a stated assumption, not a documented fact. It
-    matters most at short keep_alive values.
-    """
+    """Billed runner-seconds; the per-runner round-up to `granularity` is assumed, not documented."""
     total = 0.0
     for window in windows:
         alive = (window.last_completion_s + keep_alive) - window.setup_start_s
@@ -107,22 +73,12 @@ _MAX_TICKS = 2_000_000  # runaway guard; 0.1s ticks = ~55 hours of sim time
 
 
 def _snap_to_clock(value: float) -> float:
-    """Quantize a derived timestamp to the tick clock's precision.
-
-    `t` is always round(step * tick_s, 6). Derived times must be rounded the
-    same way or float error makes a completion land one tick late - and
-    because the next completion is computed from that late value, the error
-    compounds instead of cancelling.
-    """
+    """Round to the tick clock's precision - unrounded times land a tick late and compound."""
     return round(value, 6)
 
 
 def arrival_schedule(pattern: str, *, requests: int, duration_s: float) -> list[float]:
-    """Deterministic arrival times, in seconds from burst start.
-
-    The real burst driver fires this exact schedule, so a simulated run and
-    a measured run share their traffic shape.
-    """
+    """Deterministic arrival offsets; burst.py fires this exact schedule."""
     if requests < 1:
         raise ValueError("requests must be >= 1")
     if pattern == "spike":
@@ -145,8 +101,7 @@ def percentile(values: list[float], p: float) -> float:
 
 
 class TimelineRow(TypedDict):
-    """One tick of runner states and queue depth; simulate() and
-    measured_timeline() share this shape so the two can be overlaid."""
+    """One tick of runner states, shared by simulate() and measured_timeline()."""
 
     t: float
     setup: int
@@ -156,7 +111,6 @@ class TimelineRow(TypedDict):
 
 
 def live_runners(row: TimelineRow) -> int:
-    """Runners alive at this tick, whatever state they are in."""
     return row["setup"] + row["idle"] + row["running"]
 
 
@@ -181,19 +135,7 @@ def simulate(
     scaling_delay: float = 0.0,
     tick_s: float = TICK_S,
 ) -> SimResult:
-    """Fixed-step simulation of one burst.
-
-    A fixed 0.1s tick rather than an event queue: it is far easier to verify
-    against the published diagrams, and 0.1s resolution is well below the
-    10s floor of fal's own metrics endpoint anyway.
-
-    Scale-down is modelled as keep_alive expiry only, because fal publishes
-    no other scale-down dynamics. That is why this example MEASURES a real
-    burst - the measurement is the authority, and README.md's "Cost &
-    tuning" table is where a reader compares this model's output against
-    it (chart.py renders the burst timeline and the cost-latency frontier;
-    there is no third, residual chart).
-    """
+    """Fixed-step burst simulation; scale-down is keep_alive expiry only - fal publishes no other dynamics."""
     pending = sorted(arrivals)
     queue: deque[tuple[float, int]] = deque()
     runners: list[dict] = []
@@ -203,9 +145,7 @@ def simulate(
     next_request_id = 0
 
     def start_runner(at: float, *, prewarmed: bool = False) -> dict:
-        # A min_concurrency runner is alive around the clock, so by the time a
-        # burst arrives it booted long ago and is already READY. Only runners
-        # the autoscaler starts in response to this burst pay a cold start.
+        # Only burst-started runners pay a cold start; the prewarmed floor is READY.
         ready_at = (
             _snap_to_clock(at) if prewarmed else _snap_to_clock(at + cold_start_s)
         )
@@ -225,8 +165,6 @@ def simulate(
     if max_concurrency is not None:
         prestart = min(prestart, max_concurrency)
     for _ in range(prestart):
-        # Alive around the clock, already warm - it is billed from the
-        # window start, not from a cold start paid at t=0.
         start_runner(0.0, prewarmed=True)
 
     for step in range(_MAX_TICKS):
@@ -257,8 +195,7 @@ def simulate(
                 runner["last_activity"] = max(runner["last_activity"], t)
 
         in_flight = sum(len(r["inflight"]) for r in alive)
-        # scaling_delay: a queued request only counts toward the desired
-        # runner count once it has waited that long to be picked up.
+        # A queued request counts toward demand only after aging scaling_delay.
         aged = sum(1 for arrived_at, _ in queue if t - arrived_at >= scaling_delay)
         want = desired_runners(
             in_flight + aged,
@@ -273,13 +210,7 @@ def simulate(
 
         for runner in alive:
             if runner["prewarmed"]:
-                # A prewarmed runner holds the min_concurrency floor and is
-                # alive around the clock - it is not idle-and-disposable, it
-                # IS the floor. Terminating it here would just hand the
-                # floor's identity to whichever runner the autoscaler
-                # started to handle this burst (the next check down would
-                # then treat THAT runner as permanently alive instead), so
-                # it is never a scale-down candidate.
+                # The prewarmed runner IS the floor - never a scale-down candidate.
                 continue
             if (
                 not runner["inflight"]
@@ -302,9 +233,7 @@ def simulate(
             }
         )
 
-        # Settle when the traffic is gone AND every surviving runner has sat
-        # idle for keep_alive. `not live` alone is wrong: min_concurrency
-        # runners never terminate, so the loop would run to the guard.
+        # `not live` alone would never settle: min_concurrency runners never terminate.
         drained = next_arrival >= len(pending) and not queue
         settled = drained and not any(r["inflight"] for r in live)
         if settled and all((t - r["last_activity"]) >= keep_alive for r in live):
@@ -319,9 +248,7 @@ def simulate(
     for runner in runners:
         last = runner["last_activity"]
         if runner["terminated_at"] is None:
-            # Still alive at end_t (prewarmed floor, or a demand runner
-            # desired_runners() never dropped); billable_seconds re-adds
-            # keep_alive, so subtract it here to bill exactly the window.
+            # billable_seconds re-adds keep_alive; subtract it for still-alive runners.
             last = max(last, end_t - keep_alive)
         windows.append(
             RunnerWindow(
@@ -341,10 +268,7 @@ TRACE_SCHEMA = "fal-serverless-examples/tune-autoscaling/trace@1"
 
 @dataclass(frozen=True)
 class Calibration:
-    """What one measured burst tells us, so the model can extrapolate.
-
-    Everything here is measured except the scale_config, which is declared.
-    """
+    """What one measured burst yields; scale_config is declared, not measured."""
 
     cold_start_s: float
     service_s: float
@@ -355,15 +279,7 @@ class Calibration:
 
 
 def _ok_requests(trace: dict) -> list[dict]:
-    """Successful requests with a usable runner identity.
-
-    fal does not bill 5xx, and a failed request carries no usable timing -
-    so status must be 2xx. Separately, a 2xx response whose body is missing
-    the expected fields yields served_by == "" ; a record with no runner
-    identity cannot be grouped into a real runner's window, and keeping it
-    would fabricate a phantom runner out of every such record (polluting
-    the service_s minimum, contaminating the cold_start_s sample, and
-    inflating observed_runners)."""
+    """2xx requests with a runner identity; an empty served_by would fabricate a phantom runner."""
     return [
         r
         for r in trace["requests"]
@@ -397,11 +313,8 @@ def calibrate(trace: dict) -> Calibration:
     if not cold:
         raise ValueError("trace contains no cold request; cannot measure cold start")
 
-    # Service time from back-to-back completions on ONE runner. A saturated
-    # runner's consecutive completions are separated by exactly one service
-    # time. Round-trip minus arrival would NOT work: in a spike, warm
-    # requests also queued behind a cold start, so that inflates service time
-    # and drives the derived SETUP start negative.
+    # Service = back-to-back completion gap on one runner; round-trip minus
+    # arrival would fold queue waits in.
     gaps = []
     for requests in _by_runner(ok).values():
         completions = sorted(float(r["completed_s"]) for r in requests)
@@ -414,8 +327,7 @@ def calibrate(trace: dict) -> Calibration:
         )
 
     return Calibration(
-        # Nearest-rank p50, the same estimator as every other percentile
-        # here - not an interpolated median. One convention, deliberately.
+        # Nearest-rank p50 - the one estimator used everywhere here.
         cold_start_s=percentile(cold, 50),
         service_s=min(gaps),
         arrivals=tuple(float(r["arrived_s"]) for r in ok),
@@ -426,24 +338,12 @@ def calibrate(trace: dict) -> Calibration:
 
 
 def _cold_request(requests: list[dict]) -> dict:
-    """The request whose setup_duration_s is authoritative for its runner.
-
-    Select by the cold flag, not list position: _by_runner preserves
-    whatever order it was given, and setup_duration_s is set once in setup()
-    and echoed by every response. Fall back to the first request if none is
-    flagged cold.
-    """
+    """The runner's authoritative setup_duration_s: the cold-flagged request, not list order."""
     return next((r for r in requests if r["was_cold"]), requests[0])
 
 
 def measured_windows(trace: dict) -> list[RunnerWindow]:
-    """One billed window per runner actually observed in the burst.
-
-    Derived, not fetched: SETUP start is recovered as
-    (first completion) - setup_duration_s - service_s, using the app's
-    self-reported setup duration. /v1/serverless/analytics is a cross-check
-    for this, not its source - see burst.py --from-analytics.
-    """
+    """Per-runner billed window; SETUP start = first completion - setup - service."""
     calibration = calibrate(trace)
     windows = []
     for runner_id, requests in _by_runner(_ok_requests(trace)).items():
@@ -460,19 +360,12 @@ def measured_windows(trace: dict) -> list[RunnerWindow]:
 
 
 def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRow]:
-    """Runner states and queue depth over time, reconstructed from the trace.
-
-    Same row shape as SimResult.timeline so the two can be overlaid. Note
-    this is a reconstruction from per-request observations, not a sampled
-    metric - fal's own metrics endpoint caches for 10s, which is coarser
-    than this.
-    """
+    """Reconstruct per-tick runner states from the trace, in the sim's row shape."""
     calibration = calibrate(trace)
     ok = _ok_requests(trace)
     windows = {w.runner_id: w for w in measured_windows(trace)}
     grouped = _by_runner(ok)
-    # Each runner's own reported setup duration, not the fleet median - this
-    # is a reconstruction of what actually happened, runner by runner.
+    # Each runner's own reported setup duration, not the fleet median.
     ready_at = {
         runner_id: windows[runner_id].setup_start_s
         + float(_cold_request(requests)["setup_duration_s"])
@@ -485,12 +378,7 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRo
         busy[runner_id].append((completed - calibration.service_s, completed))
 
     start = min(w.setup_start_s for w in windows.values())
-    # keep_alive must be looked up before `end`: fal bills a runner from
-    # SETUP start until keep_alive seconds after its last request finishes,
-    # and the per-tick loop below treats a runner as alive through
-    # last_completion_s + keep_alive. `end` has to bound the tick range at
-    # that same point, or the idle keep_alive tail - the whole visual point
-    # of this example - is never emitted.
+    # `end` must include the keep_alive tail, or the billed idle tail is never emitted.
     keep_alive = float(calibration.scale_config.get("keep_alive", 0))
     end = max(w.last_completion_s + keep_alive for w in windows.values())
 
@@ -529,8 +417,7 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRo
 
 FRONTIER_SCHEMA = "fal-serverless-examples/tune-autoscaling/frontier@1"
 
-# Small enough to label legibly on one chart, wide enough to show the
-# trade-off: scale-to-zero through always-warm.
+# Small enough to label on one chart; spans scale-to-zero through always-warm.
 DEFAULT_GRID = {
     "keep_alive": (0, 30, 60, 300),
     "min_concurrency": (0, 1, 2),
@@ -547,34 +434,7 @@ def sweep(
     bursts_per_hour: float = 1.0,
     horizon_s: float = 3600.0,
 ) -> list[dict]:
-    """Simulate the same measured traffic under every knob combination.
-
-    Cost is charged over an explicit horizon (default one hour), not the
-    burst window alone. A min_concurrency runner is alive around the clock -
-    that is what the knob means - so its real cost is a horizon-wide floor of
-    `min_concurrency * horizon_s` runner-seconds, independent of how often
-    the burst repeats. Every OTHER runner only exists because of the burst,
-    so it is charged per repeat: its burst-window billable seconds times
-    `bursts_in_horizon = bursts_per_hour * horizon_s / 3600`. Prewarmed
-    runners (the RunnerWindow.prewarmed flag set by simulate()) are excluded
-    from that per-burst demand and charged only via the floor, or their cost
-    would be counted twice.
-
-    `billable_s` on each point is that total (floor + demand) over the WHOLE
-    horizon, not per burst. `cost_usd` is that same horizon cost in dollars -
-    `billable_s * usd_per_second`, not renormalised to a one-hour rate. The
-    horizon itself is recorded once, alongside the points, in the frontier
-    document (see build_frontier()) rather than on every point, so a reader
-    who wants a different normalisation (a one-hour rate, a per-burst
-    figure, whatever) can recover it from `horizon_s` without this function
-    shipping a redundant field for every possible one.
-
-    `billable_s` is rounded to 3dp for display. `cost_usd` is computed from
-    that already-rounded `billable_s`, not the unrounded total - so a reader
-    who multiplies the two printed numbers by hand (`billable_s *
-    usd_per_second`) reproduces `cost_usd` exactly, rather than
-    occasionally landing a cent off in the last decimal.
-    """
+    """Sweep every knob combination over the measured traffic, costed over the whole `horizon_s`."""
     grid = grid or DEFAULT_GRID
     rate = USD_PER_SECOND if usd_per_second is None else usd_per_second
     base = calibration.scale_config
@@ -598,8 +458,7 @@ def sweep(
                     max_multiplexing=max_multiplexing,
                     scaling_delay=float(base.get("scaling_delay", 0)),
                 )
-                # Prewarmed windows are billed only via the floor below
-                # (see the docstring).
+                # Prewarmed windows bill only via the floor - never as demand.
                 demand_windows = [w for w in result.windows if not w.prewarmed]
                 demand_billable = billable_seconds(
                     demand_windows,
@@ -609,8 +468,7 @@ def sweep(
                 floor_s = min_concurrency * horizon_s
                 demand_s = demand_billable * bursts_in_horizon
                 total_s = floor_s + demand_s
-                # Price the rounded billable_s, not total_s, so cost_usd ==
-                # billable_s * rate exactly (see the docstring).
+                # Price the rounded billable_s so cost_usd == billable_s * rate exactly.
                 billable_s = round(total_s, 3)
                 cost = cost_usd(billable_s, usd_per_second=rate)
                 peak = max(live_runners(row) for row in result.timeline)
@@ -627,9 +485,7 @@ def sweep(
                         "billable_s": billable_s,
                         "cost_usd": round(cost, 6),
                         "peak_runners": peak,
-                        # Beyond the measured envelope this is extrapolation:
-                        # we never observed that many runners, so the chart
-                        # must not present it as an equal to a validated point.
+                        # Beyond the measured envelope is extrapolation, not validation.
                         "validated": peak <= calibration.observed_runners,
                         "measured": (
                             int(keep_alive) == int(base.get("keep_alive", -1))
@@ -644,28 +500,12 @@ def sweep(
 
 
 def _tick_quantized(value: float, *, tick_s: float = TICK_S) -> float:
-    """Round `value` to the nearest multiple of the simulation's own tick.
-
-    p95_wait_s is a simulation output, so any difference smaller than one
-    tick (e.g. 139.677s vs 139.676s) is sub-tick numerical noise, not a real
-    latency difference - quantizing before comparing is what keeps that
-    noise from acting as a tie-breaker.
-    """
+    """Round to the sim's own tick; sub-tick differences are numerical noise, not latency."""
     return round(value / tick_s) * tick_s
 
 
 def pareto_front(points: list[dict]) -> list[int]:
-    """Indices of points no other point beats on both cost and p95 wait.
-
-    p95_wait_s is quantized to the tick clock (TICK_S = 0.1s) inside the
-    dominance test below, so two points that only differ by sub-tick noise
-    (a fraction of a millisecond, far below the 0.1s the simulation can
-    actually resolve) are treated as tied on wait rather than one silently
-    excluding the other from the front. cost_usd needs no such treatment -
-    it has no comparable source of noise. The returned ordering is
-    unaffected: it still sorts by the raw (unquantized) cost_usd and
-    p95_wait_s, exactly as before.
-    """
+    """Points no other point beats on both cost and tick-quantized p95 wait."""
     front = []
     for i, point in enumerate(points):
         point_wait = _tick_quantized(point["p95_wait_s"])
@@ -693,24 +533,9 @@ def build_frontier(
     bursts_per_hour: float = 1.0,
     horizon_s: float = 3600.0,
 ) -> dict:
-    """The whole frontier.json document.
-
-    `billable_s`/`cost_usd` on each point are totals over `horizon_s`
-    seconds, not one burst - see sweep()'s docstring for the floor-plus-
-    demand arithmetic behind that.
-
-    Deliberately carries NO wall-clock stamp: it inherits the trace's
-    recorded_at so that regenerating from an unchanged trace is
-    byte-identical, which is what lets CI detect chart and model rot for free.
-
-    `usd_per_second`, when omitted, inherits the trace's own recorded
-    `rate_usd_per_second` (set by burst.py's --rate at measurement time) -
-    NOT the $3.99/h list price. A reader who ran burst.py on a negotiated
-    rate and then calibrates from that trace should get pricing at the rate
-    they actually measured, without having to pass --rate a second time.
-    Only a trace carrying no rate at all falls back to USD_PER_SECOND.
-    """
+    """The frontier.json document; carries no wall-clock stamp so CI regeneration is byte-identical."""
     calibration = calibrate(trace)
+    # Default to the trace's own recorded rate, not the list price.
     rate = (
         usd_per_second
         if usd_per_second is not None
@@ -784,11 +609,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="frontier.json")
     args = parser.parse_args(argv)
 
-    # Readers run this directly, so a bad trace should print one clear line,
-    # not a raw traceback. Only these three input-shaped failures are
-    # handled here - a missing file, unparseable JSON, or a trace whose
-    # schema calibrate() rejects; anything else is unexpected and should
-    # surface with its full traceback rather than being swallowed.
+    # Only input-shaped failures are caught; anything else keeps its traceback.
     try:
         with open(args.calibrate) as handle:
             trace = json.load(handle)

@@ -1,10 +1,4 @@
-"""Shared, GPU-free helpers for the train-serve-lora example.
-
-Imported by BOTH apps and shipped to each runner via `local_python_modules` — the
-"Import Code" mechanism this example teaches (docs: import-code). Everything
-here runs on CPU with stdlib + Pillow + safetensors, so the unit tests in
-test_app.py exercise the exact code the runners execute, for free.
-"""
+"""Shared GPU-free helpers shipped to both apps via local_python_modules."""
 from __future__ import annotations
 
 import math
@@ -14,28 +8,24 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-# --- the published demo artifacts (see README "How the demo was made") ----
-# NOTE: when this moves to the fal HF org, update HF_REPO here and the URLs in README.md.
+# If HF_REPO moves to the fal HF org, update the URLs in README.md too.
 HF_REPO = "rehan-fal/flux-2-klein-4b-paper-diorama-lora"
 DATASET_ZIP_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
 REFERENCE_ADAPTER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
 
-# --- the model pair: gradients on base, 4-step inference on distilled -----
+# Gradients train on the base model; the distilled one serves 4-step inference.
 TRAIN_MODEL_ID = "black-forest-labs/FLUX.2-klein-base-4B"
 SERVE_MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
 
-# --- /data handoff conventions ---------------------------------------------
 LORA_ROOT = Path("/data/loras")
 LORA_WEIGHT_NAME = "pytorch_lora_weights.safetensors"
 LORA_CONFIG_NAME = "config.json"
 DEMO_LORA = "paper-diorama"
 
-# lora_name doubles as a /data directory name; the strict pattern keeps it
-# path-safe by construction (same discipline as per-user-loras' user_id).
+# lora_name doubles as a /data directory name; the strict pattern keeps it path-safe.
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 
-# --- input bounds -----------------------------------------------------------
-MAX_ZIP_MB = 200            # streamed cap on the dataset download
+MAX_ZIP_MB = 200
 MAX_ZIP_ENTRIES = 200
 MAX_UNCOMPRESSED_MB = 500   # zip-bomb gate: declared size, before extraction
 MIN_IMAGE_EDGE = 256        # hard floor; below this, training is hopeless
@@ -73,9 +63,7 @@ class ArtifactError(ValueError):
 
 
 def tmp_sibling(dest: Path) -> Path:
-    """A temp file in dest's own directory — same filesystem, so the final
-    os.replace is atomic (/data documents renames as atomic; a reader sees
-    the old complete file or the new one, never a partial write)."""
+    """Temp file in dest's own directory — same filesystem, so the final os.replace is atomic."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=dest.parent, prefix=".tmp-", suffix=dest.suffix)
     os.close(fd)
@@ -90,11 +78,7 @@ def atomic_replace(tmp: Path, dest: Path) -> None:
 def validate_safetensors_headers(
     path: Path, max_mb: int = MAX_ADAPTER_MB
 ) -> dict[str, tuple[tuple[int, ...], str]]:
-    """Cheap CPU sanity gate: header parse (all keys) plus a data probe of the
-    few smallest tensors - size-capped, finite, not all-zeros. Returns
-    {key: (shape, dtype)} without loading tensors to GPU.
-    Trainer runs it before publishing; server runs it before load_lora_weights.
-    """
+    """Cheap CPU gate before publish/serve: size cap, header parse, finite/non-zero probe; returns {key: (shape, dtype)}."""
     import safetensors
     import torch
     from safetensors import safe_open
@@ -113,7 +97,6 @@ def validate_safetensors_headers(
                 k: (tuple(f.get_slice(k).get_shape()), f.get_slice(k).get_dtype())
                 for k in keys
             }
-            # probe the few smallest tensors (CPU, cheap): finite + signal
             probe = sorted(keys, key=lambda k: math.prod(shapes[k][0]))[:PROBE_TENSOR_COUNT]
             any_nonzero = False
             for k in probe:
@@ -129,9 +112,7 @@ def validate_safetensors_headers(
 
 
 def assert_diffusers_lora_keys(shapes: dict[str, tuple[tuple[int, ...], str]]) -> None:
-    """The trainer's publish gate: our own artifacts must be diffusers-native
-    (`transformer.<module>.lora_A/B.weight`) so Flux2KleinPipeline (and per-user-loras'
-    /register, and fal's hosted klein LoRA endpoints) load them directly."""
+    """Publish gate: only diffusers-native transformer.*.lora_A/B keys load downstream."""
     bad = [
         k
         for k in shapes
@@ -155,8 +136,7 @@ class PreparedDataset:
 
 
 def _safe_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
-    """Zip safety: entry cap, zip-slip (traversal) rejection, declared-size
-    bomb gate, macOS junk filtering. Runs BEFORE any extraction."""
+    """Zip safety before any extraction: entry cap, zip-slip rejection, size-bomb gate, macOS junk filter."""
     infos = [i for i in zf.infolist() if not i.filename.endswith("/")]
     if len(infos) > MAX_ZIP_ENTRIES:
         raise DatasetError(
@@ -192,10 +172,7 @@ def prepare_dataset(
     default_caption: str | None = None,
     trigger_phrase: str | None = None,
 ) -> PreparedDataset:
-    """The trainer's entire input path, shared verbatim by the preflight
-    endpoint: unzip safely, decode-check every image, normalize EXIF
-    orientation to RGB PNG, pair captions. Deterministic item order.
-    """
+    """Safe unzip, image validation/normalization, caption pairing, deterministic order; shared verbatim by /train and preflight."""
     from PIL import Image as PILImage
     from PIL import ImageOps
 

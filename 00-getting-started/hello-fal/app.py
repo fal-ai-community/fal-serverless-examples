@@ -1,8 +1,4 @@
-"""Hello, fal - the smallest deployable fal app.
-
-One pydantic-typed endpoint: run it with
-`fal run`, ship it with `fal deploy`, verify it with the CI deploy-check.
-"""
+"""Hello, fal - the smallest deployable fal app."""
 import fal
 from pydantic import BaseModel, Field
 
@@ -19,8 +15,8 @@ class Output(BaseModel):
 
 
 class HelloFal(fal.App, keep_alive=60):
-    machine_type = "S"  # 1 GB CPU tier - no GPU needed to greet; headroom for the runtime
-    app_auth = "private"  # deploy requires an explicit auth mode; callers send a fal key
+    machine_type = "S"  # no GPU needed; S leaves headroom for the runtime
+    app_auth = "private"  # deploy requires an explicit auth mode
     requirements = [
         "fal==1.78.2",
     ]

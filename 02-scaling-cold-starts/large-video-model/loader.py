@@ -1,16 +1,4 @@
-"""Fast weight loading for 20+ GB models on fal.
-
-The three-step recipe (each step timed and printed):
-  1. tune_hf_env()      - HF Xet parallel range-gets, before any hub import
-  2. fetch_model()      - snapshot_download to /data; warm boots skip the
-                          network entirely via local_files_only=True
-  3. warm_page_cache()  - parallel pre-read so from_pretrained hits RAM,
-                          not cold NVMe/network storage
-
-fal's /data is content-addressed in 4 MB chunks across storage tiers, so
-32 parallel readers beat one sequential reader by a wide margin. See:
-https://fal.ai/docs -> serverless -> optimizations -> parallel file loading.
-"""
+"""Fast weight loading for 20+ GB models on fal."""
 
 from __future__ import annotations
 
@@ -28,8 +16,7 @@ MODEL_REPO = "diffusers/LTX-2.3-Distilled-Diffusers"
 MODEL_REV = "432e0d3c2d1769aaa4d295f9243f7062bf6b47ee"  # pin: repo state 2026-05-21
 MODEL_DIR = "/data/models/ltx-2.3-distilled-diffusers"
 
-# Tiny video VAE for previews - madebyollin/taehv, MIT.
-# Pinned to the branch that carries the LTX-2.3 "wide" decoder weights.
+# madebyollin/taehv (MIT), pinned to the branch with the LTX-2.3 "wide" decoder weights
 _TAEHV_REF = "32ac0146b11007cda5a57b60a3b35653361fb8a4"
 TAEHV_WEIGHTS_URL = f"https://raw.githubusercontent.com/madebyollin/taehv/{_TAEHV_REF}/taeltx2_3_wide.pth"
 TAEHV_WEIGHTS_SHA = (
@@ -49,11 +36,7 @@ def tune_hf_env() -> None:
 
 
 def fetch_model() -> str:
-    """Download the pinned model snapshot to /data (skip metadata calls when warm).
-
-    A cached-but-online snapshot_download still spends ~45 s on hub metadata
-    round-trips; local_files_only=True returns in under a second.
-    """
+    """Download the pinned snapshot to /data; warm boots use local_files_only to skip ~45 s of hub metadata calls."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
@@ -90,11 +73,7 @@ def fetch_taehv() -> Path:
 
 
 def warm_page_cache(directory: str, parallelism: int = 32) -> float:
-    """Pre-read every file into the OS page cache with parallel readers.
-
-    /data serves 4 MB content-addressed chunks; parallel readers pull from
-    multiple cache nodes at once (sequential ~1 GB/s vs parallel ~6-15 GB/s).
-    """
+    """Pre-read every file into the page cache; on /data's chunked store parallel readers beat sequential ~6-15x."""
     t0 = time.perf_counter()
     subprocess.run(
         f"find {shlex.quote(directory)} -type f | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",

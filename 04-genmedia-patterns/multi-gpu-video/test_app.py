@@ -1,17 +1,11 @@
-"""Free unit tests (static job) + one live harness test.
-
-The live test runs only under harness/check.py (the app_client fixture
-skips otherwise), so plain `pytest` costs nothing. One live generation
-total - each one spins 4 GPUs.
-"""
+"""Free unit tests plus one live harness smoke test for multi-gpu-video."""
 import importlib.util
 from pathlib import Path
 
 import httpx
 import pytest
 
-# The repo pins pytest to --import-mode=importlib (same test_app.py basename
-# in every example), so load the sibling app.py by path.
+# pytest runs with --import-mode=importlib (duplicate test_app.py basenames): load app.py by path.
 _spec = importlib.util.spec_from_file_location(
     "multi_gpu_video_app", Path(__file__).parent / "app.py"
 )
@@ -21,8 +15,6 @@ _spec.loader.exec_module(app_module)
 Input = app_module.Input
 RESOLUTIONS = app_module.RESOLUTIONS
 
-
-# ---- free unit tests (no GPU, no deploy) ----
 
 def test_num_frames_rule_rejects_off_grid():
     with pytest.raises(ValueError):
@@ -46,8 +38,7 @@ def test_defaults_are_the_ci_smoke_config():
     assert i.num_inference_steps == 6
 
 
-# ---- live test (harness only) ----
-
+# Live: runs only under harness/check.py (app_client skips otherwise); each run spins 4 GPUs.
 def test_generate_smoke(app_client):
     response = app_client.run(
         "/",

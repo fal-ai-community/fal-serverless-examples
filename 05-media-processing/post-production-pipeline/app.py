@@ -1,11 +1,4 @@
-"""Post-production pipeline - transcode ladder, thumbnails, captions on CPU.
-
-Every genmedia product rebuilds this layer by hand: the model's raw MP4 has
-to become delivery renditions, poster frames, and captioned files before it
-can ship. No model here - just ffmpeg on a CPU machine, in a pinned
-container, with fal's queue + webhooks as the async layer (see client.py /
-webhook_receiver.py).
-"""
+"""Post-production pipeline - transcode ladder, thumbnails, captions on CPU."""
 import hashlib
 import json
 import os
@@ -27,8 +20,7 @@ from pydantic import BaseModel, Field
 MAX_DOWNLOAD_MB = 300
 MAX_CAPTIONS_MB = 5
 MAX_DURATION_S = 600  # caps a request's encode time; raise when self-hosting
-# Kills a hung ffmpeg instead of letting it pin the worker until fal's much
-# longer request timeout; 2x the duration cap leaves headroom for slow rungs.
+# kills hung ffmpeg before fal's much longer request timeout; 2x cap leaves rung headroom
 FFMPEG_TIMEOUT_S = 2 * MAX_DURATION_S
 CACHE_ROOT = Path("/data/cache/post-production")
 DOCKERFILE = Path(__file__).parent / "Dockerfile"
@@ -37,8 +29,7 @@ X264_CRF = "23"
 X264_PRESET = "veryfast"
 AAC_BITRATE = "128k"
 THUMB_MAX_WIDTH = 1280
-# Verified 1920x1080 H.264, 5.04s, 2.4MB, no audio - fal-hosted so CI never
-# depends on a third-party server (see the audio-path sample in test_app.py).
+# fal-hosted (CI must not depend on third-party servers): 1920x1080 H.264, 5.04s, no audio
 SAMPLE_VIDEO = (
     "https://storage.googleapis.com/falserverless/example_outputs/pika/"
     "pika_i2v_v22_output.mp4"
@@ -54,7 +45,7 @@ Post-production is what makes it ship.
 """
 
 
-# --- pure helpers (unit-tested without ffmpeg; see test_app.py) ------------
+# --- pure helpers (unit-tested without ffmpeg) ------------------------------
 
 def normalize_ladder(rungs: list[int], source_height: int) -> tuple[list[int], list[str]]:
     """Dedupe + sort descending, and drop rungs that would upscale."""
@@ -110,8 +101,7 @@ class ProbeInfo:
 
 
 def parse_probe(probe: dict) -> ProbeInfo:
-    """Gate the SOURCE: reject stills/audio-only (no playable duration) and
-    absurd durations before any encode time is spent."""
+    """Gate the source: reject stills/audio-only and over-long inputs before encoding."""
     streams = probe.get("streams", [])
     video = [s for s in streams if s.get("codec_type") == "video"]
     duration_raw = probe.get("format", {}).get("duration")
@@ -144,12 +134,7 @@ def parse_probe(probe: dict) -> ProbeInfo:
 def build_rendition_cmd(
     source: Path, srt_path: Path | None, height: int, has_audio: bool, out_path: Path
 ) -> list[str]:
-    """One ladder rung: H.264 + optional AAC + optional mov_text captions.
-
-    +faststart moves the moov atom to the front so the MP4 streams from a
-    CDN without a full download; yuv420p keeps browser players happy when
-    genmedia models emit 4:4:4 or 10-bit sources.
-    """
+    """One rung: +faststart so the MP4 streams from a CDN; yuv420p so browsers can decode 4:4:4/10-bit sources."""
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source)]
     if srt_path is not None:
         cmd += ["-i", str(srt_path)]
@@ -191,9 +176,7 @@ def build_vtt_cmd(srt_path: Path, vtt_path: Path) -> list[str]:
 
 def run_ffmpeg(cmd: list[str], *, error_field: str | None = None,
                error_message: str = "ffmpeg could not process this input") -> None:
-    """User-input failures become typed 422s (error_field set); pipeline
-    failures on already-validated media stay 500s, so the queue marks the
-    job failed rather than blaming the caller."""
+    """error_field set: user-input failures become typed 422s; unset: pipeline failures stay 500s."""
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
     if result.returncode != 0:
         tail = (result.stderr or "").strip()[-400:]
@@ -276,7 +259,7 @@ class Rendition(BaseModel):
 
 
 class Output(BaseModel):
-    # No sync_mode input on purpose: multi-hundred-MB renditions make data-URI transport inappropriate.
+    # no sync_mode on purpose: renditions are too large for data-URI transport
     renditions: list[Rendition] = Field(description="Highest rung first.")
     thumbnails: list[Image] = Field(description="JPEG poster frames, evenly spaced.")
     captions_vtt: File | None = Field(
@@ -291,10 +274,9 @@ class Output(BaseModel):
 
 
 class PostProductionPipeline(fal.App, keep_alive=60):
-    machine_type = "L"  # multi-rendition x264 wants the vCPUs; see README "Cost & tuning"
+    machine_type = "L"  # multi-rendition x264 wants the vCPUs
     app_auth = "private"
-    # The image carries everything (ffmpeg + fal); requirements stays unset -
-    # requirements.txt mirrors the Dockerfile's pip installs instead.
+    # image carries all deps; requirements stays unset - requirements.txt mirrors the Dockerfile's pip installs
     image = ContainerImage.from_dockerfile(str(DOCKERFILE))
 
     def setup(self) -> None:
@@ -306,20 +288,14 @@ class PostProductionPipeline(fal.App, keep_alive=60):
 
     @fal.endpoint("/")
     def process(self, request: Input) -> Output:
-        # Validate caption exclusivity before the download: "both set" must
-        # fail without paying for a 300 MB transfer.
+        # validate caption exclusivity before paying for the download
         caption_source = select_captions(request.captions_srt, request.captions_url)
 
-        # download_file is size-capped and SSRF-guarded; the /data cache is
-        # keyed by URL hash, so a repeat request skips the transfer across
-        # workers, deploys, and CI runs.
         t0 = time.perf_counter()
         cache_dir = CACHE_ROOT / hashlib.sha256(request.video_url.encode()).hexdigest()[:16]
         cached = None
         if cache_dir.is_dir():
-            # download_file stages ".fal_download.tmp.*" scratch files in the
-            # same dir and renames them into place at the end - never treat
-            # one as a hit.
+            # download_file stages ".fal_download.tmp.*" scratch files here - never treat one as a hit
             cached = next(
                 (p for p in cache_dir.iterdir() if not p.name.startswith(".fal_download.tmp")),
                 None,
@@ -345,8 +321,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
         with tempfile.TemporaryDirectory(prefix="postprod-") as tmp:
             workdir = Path(tmp)
 
-            # Materialize + convert captions (SRT -> WebVTT) before spending
-            # encode time, so a bad caption file is a fast typed 422.
+            # convert captions before encoding so a bad SRT is a fast typed 422
             srt_path = vtt_path = None
             if caption_source == "inline":
                 srt_path = workdir / "captions.srt"
@@ -372,8 +347,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                     error_message="not parseable as SRT captions",
                 )
 
-            # One ffmpeg subprocess per rung, in parallel: Python threads only
-            # babysit pipes, so the limit is rung count vs vCPUs, not the GIL.
+            # parallel rungs are safe: threads only babysit ffmpeg pipes, so vCPUs are the limit, not the GIL
             stem = Path(source).stem
             t1 = time.perf_counter()
 
@@ -396,9 +370,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
                 thumb_paths.append(out)
             thumbs_s = time.perf_counter() - t2
 
-            # content_type is explicit on every upload: from_path never
-            # guesses, and an octet-stream video won't play inline in a
-            # browser or the playground.
+            # content_type must be explicit: from_path never guesses, and octet-stream video won't play inline
             t3 = time.perf_counter()
             renditions = []
             rendition_report = []
@@ -434,7 +406,7 @@ class PostProductionPipeline(fal.App, keep_alive=60):
             upload_s = time.perf_counter() - t3
 
         timings = {
-            "download": download_s,  # ~0 on a cache hit
+            "download": download_s,
             "encode_wall": encode_wall_s,  # parallel: max(rung), not sum
             "thumbnails": thumbs_s,
             "upload": upload_s,
