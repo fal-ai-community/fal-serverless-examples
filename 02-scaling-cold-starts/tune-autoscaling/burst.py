@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""Fire one measured burst at a deployed tune-autoscaling app.
+"""Fire one measured burst at a deployed tune-autoscaling app and write trace.json."""
 
-Stdlib plus fal (already a declared dependency of this example). No httpx:
-requirements.txt must mirror App.requirements exactly, so anything imported
-here that is not in that list would have to ship to the GPU runner.
-
-What it records, per request: when it was sent, when it came back, and the
-app's own report of which runner served it, whether that runner was cold,
-and how long that runner's setup() took. That is enough to reconstruct the
-runner ramp and the billed windows with no metrics API and no ADMIN key.
-
-Retries are OFF on purpose. A retry would fold two queue waits into one
-observation and quietly corrupt the latency distribution.
-"""
-
+# Stdlib plus fal only: anything else imported here would have to ship in
+# App.requirements (requirements.txt must mirror it exactly).
 from __future__ import annotations
 
 import argparse
@@ -48,12 +37,7 @@ SCALE_KEYS = (
 
 
 def select_app_config(apps_document: dict, app: str) -> dict:
-    """Find one app's live scaling config in `fal apps list --json` output.
-
-    Read live rather than trusted from app.py: keep_alive, min/max
-    concurrency, both buffers, scaling_delay and request_timeout are
-    INHERITED across deploys, so the code may not be what is running.
-    """
+    """One app's live scaling config; knobs outlive deploys, so app.py may lie."""
     alias = app.rsplit("/", maxsplit=1)[-1]
     for entry in apps_document.get("apps", []):
         if entry.get("alias") == alias:
@@ -159,18 +143,7 @@ def build_trace(
 
 
 def cross_check_analytics(app: str, headers: dict) -> dict:
-    """Optional: compare derived billable seconds against fal's own figure.
-
-    Never required to produce a chart, and must never be ABLE to raise: a
-    completed burst has already cost real GPU time and every record still
-    lives only in memory when this runs, so a DNS failure, connection
-    error, or timeout here (a bare URLError/socket.timeout - not a subclass
-    of HTTPError) would otherwise destroy that measurement. Every failure
-    mode, HTTPError included, comes back as the same reported-failure shape.
-
-    /v1/serverless/analytics needs a Key-format credential; a stored
-    browser session gets 403, which is reported rather than raised.
-    """
+    """Optional cross-check against fal analytics; must never be ABLE to raise."""
     url = f"{ANALYTICS_URL}?app={app}&timeframe=minute"
     request = urllib.request.Request(url, headers=headers)
     try:
@@ -307,12 +280,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(trace, handle, indent=2, sort_keys=True)
             handle.write("\n")
 
-    # Deliberate ordering: the trace is written to disk BEFORE the optional
-    # cross-check runs. The burst above is expensive and irreplaceable - every
-    # recorded request lives only in memory until this write happens - while
-    # the cross-check is neither: it is optional and (per its docstring)
-    # cannot raise. Running it first would risk the entire measurement for a
-    # feature whose own purpose is to be skippable.
+    # The trace hits disk BEFORE the skippable cross-check - the burst is
+    # expensive and irreplaceable.
     write_trace()
 
     if args.from_analytics:

@@ -1,24 +1,4 @@
-"""Queue client for the deployed pipeline - the raw HTTP a backend really sends.
-
-Deliberately httpx-only (no fal_client) so every URL and header for calling a
-PRIVATE serverless app through fal's queue is visible and verifiable:
-
-    submit  POST https://queue.fal.run/{owner}/{app}[?fal_webhook=...]
-    status  GET  https://queue.fal.run/{owner}/{app}/requests/{id}/status?logs=1
-    result  GET  https://queue.fal.run/{owner}/{app}/requests/{id}
-
-Statuses are IN_QUEUE -> IN_PROGRESS -> COMPLETED (there is no FAILED status:
-failures arrive as COMPLETED with an `error`, and the result URL then returns
-a non-2xx with the error body).
-
-Usage:
-    export FAL_KEY=<key_id>:<key_secret>
-    python client.py --app <username>/post-production-pipeline \
-        [--video-url URL] [--srt-file captions.srt] [--ladder 1080,720,480] \
-        [--webhook https://your-host/fal-webhook]
-
-Dependency: pip install httpx==0.28.1
-"""
+"""Queue client for the deployed pipeline - the raw HTTP a backend really sends."""
 
 import argparse
 import json
@@ -68,8 +48,7 @@ def main() -> int:
     if args.srt_file:
         payload["captions_srt"] = Path(args.srt_file).read_text(encoding="utf-8")
 
-    # SUBMIT - the queue answers immediately with request handles; the
-    # optional fal_webhook parameter must be URL-encoded.
+    # fal_webhook must be URL-encoded
     submit_url = f"{QUEUE}/{args.app}"
     if args.webhook:
         submit_url += "?" + urlencode({"fal_webhook": args.webhook})
@@ -85,7 +64,7 @@ def main() -> int:
         )
         print("polling too, as the fallback a real backend keeps:")
 
-    # POLL - ?logs=1 streams the app's own log lines into the status body.
+    # ?logs=1 includes the app's own log lines in the status body
     status_url = f"{QUEUE}/{args.app}/requests/{request_id}/status"
     result_url = f"{QUEUE}/{args.app}/requests/{request_id}"
     seen_logs = 0
@@ -119,7 +98,7 @@ def main() -> int:
     else:
         sys.exit(f"timed out after {args.timeout:.0f}s; check {status_url}")
 
-    # RESULT - a failed request returns non-2xx here, with the error body.
+    # no FAILED status: failures arrive COMPLETED; result URL gives non-2xx + error
     result = httpx.get(result_url, headers=headers, timeout=60)
     if not result.is_success:
         print(f"FAILED: HTTP {result.status_code}")

@@ -1,11 +1,4 @@
-"""Serve thousands of per-user LoRAs with routing hints - FLUX.2 [klein] 4B.
-
-One shared warm fleet serves every user's
-personal LoRA: adapters live on /data, a KV store maps user -> adapter, each
-runner keeps a small GPU LRU of loaded adapters, and provide_hints() tells
-fal's router which users this runner already has hot. Hints are best-effort
-affinity - any runner can serve any user; a miss just pays the adapter load.
-"""
+"""Serve thousands of per-user LoRAs with routing hints on FLUX.2 [klein] 4B."""
 
 import gc
 import hashlib
@@ -36,6 +29,7 @@ MAX_LORA_BYTES = 300 * 1024 * 1024
 SYNTHETIC_RANK = 8
 USER_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 USER_ID_RE = re.compile(USER_ID_PATTERN)
+AdapterSource = Literal["gpu-cache", "disk", "downloaded"]
 _HF_REPO_RE = re.compile(r"^[\w][\w.-]*/[\w][\w.-]*$")
 _OOM_MARKERS = (
     "out of memory",
@@ -43,12 +37,7 @@ _OOM_MARKERS = (
     "cudnn_status_alloc_failed",
 )
 
-# Real, license-verified klein-4B LoRAs (Apache-2.0 / MIT), spanning all four
-# key-format families diffusers 0.39 loads: ai-toolkit, kohya, raw-PEFT
-# (fal-trainer output), diffusers-native. The five klein-style-fleet entries
-# were trained with the train-serve-lora recipe - its output URL is exactly what
-# /register accepts. The demo's "thousands" come from synthetic registrations;
-# these eight are the visually-distinct featured users.
+# Entries stay licensed (Apache-2.0/MIT) and span all 4 diffusers-0.39 key formats.
 _FLEET = "https://huggingface.co/rehan-fal/klein-style-fleet/resolve/main"
 FEATURED_USERS: dict[str, dict] = {
     "ukiyo-e": {
@@ -102,8 +91,7 @@ class Input(BaseModel):
             "latin-1 and comma-free - hint strings ride an HTTP header."
         ),
         examples=["ukiyo-e"],
-        # ui.hint marks the field whose value doubles as the routing hint
-        # (the platform playground reads this from the OpenAPI schema).
+        # ui.hint marks the routing-hint field; the playground reads it from OpenAPI.
         json_schema_extra={"ui": {"hint": True}},
     )
     prompt: str = Field(
@@ -136,7 +124,7 @@ class ServingInfo(BaseModel):
     worker_id: str = Field(
         description="Stable id of the runner that served this request."
     )
-    adapter_source: Literal["gpu-cache", "disk", "downloaded"] = Field(
+    adapter_source: AdapterSource = Field(
         description=(
             "'gpu-cache' = adapter was already loaded (hint hit or recent use); "
             "'disk' = loaded from /data; 'downloaded' = fetched/generated first."
@@ -201,10 +189,7 @@ class RegisterOutput(BaseModel):
 
 
 def hint_for(user_id: str) -> str:
-    """The routing hint for a user. Short and fixed-shape by construction:
-    user_id is pattern-validated, so the hint is latin-1, comma-free and
-    at most 45 bytes. For URL-keyed fleets use a digest instead:
-    f"lora:{sha256(url.encode()).hexdigest()[:16]}"."""
+    """Routing hint - validated user_id keeps it latin-1, comma-free, <=45 bytes."""
     return f"{HINT_PREFIX}{user_id}"
 
 
@@ -239,8 +224,7 @@ def looks_like_safetensors(head: bytes, file_size: int) -> bool:
 
 
 def is_oom_error(exc: BaseException | None) -> bool:
-    """Walk the cause chain looking for GPU/host OOM. OOM must propagate as a
-    retryable failure - never be swallowed into a permanent 422."""
+    """Walk the cause chain for GPU/host OOM - OOM stays retryable, never a 422."""
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))
@@ -254,8 +238,7 @@ def is_oom_error(exc: BaseException | None) -> bool:
 
 
 def lora_incompatible_message(exc: BaseException) -> str | None:
-    """diffusers reports architecture mismatches as tensor size/match errors;
-    map those to a caller-friendly message, None for anything else."""
+    """Map diffusers size/match errors to a caller-friendly message; None otherwise."""
     msg = str(exc).lower()
     if "size" in msg and "match" in msg:
         return (
@@ -292,20 +275,17 @@ class PerUserLoras(fal.App, keep_alive=300):
     ]
 
     def setup(self) -> None:
-        """Load -> seed featured users -> warmup THROUGH the LoRA path."""
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"  # before any HF download
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = (
+            "1"  # must be set before any HF download
+        )
 
         import torch
         from diffusers import Flux2KleinPipeline
 
-        # Base weights land in the account-wide /data HF cache, so only the
-        # first boot ever downloads from the Hub.
         self.pipe = Flux2KleinPipeline.from_pretrained(
             MODEL_ID, torch_dtype=torch.bfloat16
         ).to("cuda")
 
-        # Serving state. _resident is the GPU adapter LRU *and* the exact set
-        # provide_hints() advertises - the LRU bound is the hint-list bound.
         # Lock first: provide_hints() assumes the lock exists once _resident does.
         self._cache_lock = threading.Lock()
         self._resident: OrderedDict[str, float] = OrderedDict()  # user_id -> scale
@@ -313,8 +293,7 @@ class PerUserLoras(fal.App, keep_alive=300):
         self.kv = KVStore(KV_DB_NAME)
         ADAPTER_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Seeding featured users is idempotent: files persist on /data across
-        # runners and boots; KV writes are last-write-wins with fixed values.
+        # Seeding must stay idempotent: multiple runners boot concurrently.
         for uid, meta in FEATURED_USERS.items():
             path = self._adapter_path(uid)
             if not path.is_file():
@@ -331,9 +310,7 @@ class PerUserLoras(fal.App, keep_alive=300):
                 },
             )
 
-        # Warm up through the full serving path (hint-miss -> disk load ->
-        # set_adapters -> one real generation): a runner that can't serve
-        # adapters must never enter the pool.
+        # Warm up the full LoRA path so no adapter-broken runner enters the pool.
         scale, _ = self._activate_adapter("ukiyo-e")
         self.pipe.set_adapters(["ukiyo-e"], adapter_weights=[scale])
         self.pipe(
@@ -362,14 +339,11 @@ class PerUserLoras(fal.App, keep_alive=300):
         return json.loads(raw)
 
     def _kv_put_user(self, user_id: str, record: dict) -> None:
-        # KV has no atomics: concurrent registration is last-write-wins,
-        # which is the right semantics for "re-register replaces".
+        # KV has no atomics; last-write-wins is the intended re-register semantics.
         self.kv.set(f"user:{user_id}", json.dumps(record))
 
     def _download_to(self, url: str, dest: Path) -> None:
-        """Stream-download with a hard size cap; temp file + atomic rename so
-        concurrent runners never see partial files. (The bulletproof-inputs
-        example covers the fully hardened version of this gate.)"""
+        """Size-capped stream download; tmp + atomic rename hides partials."""
         import httpx
 
         tmp = dest.with_suffix(f".tmp-{os.getpid()}-{time.monotonic_ns()}")
@@ -429,8 +403,7 @@ class PerUserLoras(fal.App, keep_alive=300):
             files = [
                 f
                 for f in HfApi().list_repo_files(repo_id)
-                # Repos often ship a ComfyUI re-export beside the diffusers
-                # weights; picking it fails load_lora_weights.
+                # ComfyUI re-exports fail load_lora_weights.
                 if f.endswith(".safetensors") and "comfy" not in f
             ]
         except Exception as exc:
@@ -472,14 +445,7 @@ class PerUserLoras(fal.App, keep_alive=300):
         return path, True
 
     def _write_synthetic_adapter(self, user_id: str, dest: Path) -> None:
-        """A small, deterministic, structurally-real LoRA for this user.
-
-        Targets the attention projections of the transformer's double blocks
-        (module names introspected at runtime, so this tracks diffusers'
-        actual naming). lora_B is near-zero: outputs shift subtly per user,
-        never garbage. Every synthetic adapter shares one config, so the
-        whole synthetic fleet is structurally uniform.
-        """
+        """Seeded structurally-real LoRA; near-zero lora_B = subtle shift, no junk."""
         import torch
         from safetensors.torch import save_file
 
@@ -507,17 +473,14 @@ class PerUserLoras(fal.App, keep_alive=300):
         finally:
             tmp.unlink(missing_ok=True)  # nothing on /data is auto-pruned
 
-    def _activate_adapter(
-        self, user_id: str
-    ) -> tuple[float, Literal["gpu-cache", "disk", "downloaded"]]:
-        """GPU-LRU hit, else KV -> /data -> load_lora_weights -> insert+evict.
-        Returns (scale, adapter_source)."""
+    def _activate_adapter(self, user_id: str) -> tuple[float, AdapterSource]:
+        """GPU-LRU hit, else KV -> /data -> load_lora_weights -> insert+evict."""
         with self._cache_lock:
             if user_id in self._resident:
                 self._resident.move_to_end(user_id)
                 return self._resident[user_id], "gpu-cache"
 
-        record = self._kv_get_user(user_id)  # 422 if unknown
+        record = self._kv_get_user(user_id)
         path, downloaded = self._ensure_adapter_file(user_id, record)
 
         from safetensors.torch import load_file
@@ -554,9 +517,7 @@ class PerUserLoras(fal.App, keep_alive=300):
             return self._resident[user_id], ("downloaded" if downloaded else "disk")
 
     def provide_hints(self) -> list[str]:
-        # The middleware calls this on every response - including ones that
-        # race setup() or a concurrent insert/evict. Return [] until the cache
-        # exists and snapshot under the lock; never crash here.
+        # May race setup() on any response: return [] until cache exists; never crash.
         resident = getattr(self, "_resident", None)
         if resident is None:
             return []
@@ -600,8 +561,7 @@ class PerUserLoras(fal.App, keep_alive=300):
         inference_s = time.perf_counter() - t1
 
         hint = hint_for(request.user_id)
-        # Echo the hint so callers never compute it: capture this header and
-        # pass it back as hint= (X-Fal-Runner-Hint) on the next request.
+        # Clients echo this header as hint= on the next request, never computing hints.
         response.headers["x-fal-runner-hint"] = hint
 
         repository: Literal["in_memory", "fal_v3"] = (
@@ -622,8 +582,7 @@ class PerUserLoras(fal.App, keep_alive=300):
     @fal.endpoint("/register")
     def register(self, request: RegisterInput, response: Response) -> RegisterOutput:
         if request.user_id in FEATURED_USERS:
-            # setup() re-seeds featured KV records on every boot, so an
-            # override here would silently revert at the next runner start.
+            # setup() re-seeds featured KV records each boot; overrides silently revert.
             raise FieldException(
                 field="user_id",
                 message=(
@@ -640,8 +599,7 @@ class PerUserLoras(fal.App, keep_alive=300):
             prior_synthetic = (
                 prior is not None and json.loads(prior).get("kind") == "synthetic"
             )
-            # Check the prior kind, not just file existence: a prior real
-            # registration left real weights at this path.
+            # Key off prior kind, not the file: a real registration left real weights.
             if not (prior_synthetic and path.is_file()):
                 self._write_synthetic_adapter(request.user_id, path)
             record = {

@@ -1,13 +1,4 @@
-"""Your first image API - FLUX.2 [klein] 4B on a fal GPU.
-
-A real text-to-image API: weights load once
-per worker in setup(), a warmup generation runs before the first request,
-and the endpoint returns a CDN-hosted image the playground renders.
-
-Model: black-forest-labs/FLUX.2-klein-4B - Apache-2.0 and ungated (no HF
-token anywhere). Careful: the 9B klein variants are gated + non-commercial;
-do not swap them in here.
-"""
+"""Your first image API - FLUX.2 [klein] 4B on a fal GPU."""
 
 import os
 import random
@@ -17,6 +8,7 @@ import fal
 from fal.toolkit import Image, ImageSizeInput, get_image_size
 from pydantic import BaseModel, Field
 
+# Apache-2.0, ungated; the 9B klein variants are gated + non-commercial - do not swap in
 MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
 MAX_SEED = 2**32 - 1
 GUIDANCE_SCALE = 1.0  # guidance-distilled model; CFG is baked into the weights
@@ -68,7 +60,7 @@ class FirstImageApi(fal.App, keep_alive=300):
     machine_type = ["GPU-L40", "GPU-H100"]  # tried in order until capacity is found
     app_auth = "private"
     startup_timeout = 1200  # the account's first-ever boot downloads ~16 GB to /data
-    # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
+    # authoritative deps; requirements.txt mirrors this exactly
     requirements = [
         "fal==1.78.2",
         "hf-transfer==0.1.9",
@@ -85,18 +77,13 @@ class FirstImageApi(fal.App, keep_alive=300):
         import torch
         from diffusers import Flux2KleinPipeline
 
-        # LOAD: weights land in the account-wide /data cache (fal points
-        # HF_HOME there), so only the first boot ever downloads from the Hub.
         self.pipe = Flux2KleinPipeline.from_pretrained(
             MODEL_ID, torch_dtype=torch.bfloat16
         ).to("cuda")
 
-        # COMPILE would go here. Skipped in this first example - torch.compile
-        # plus shared inductor caches are cold-start engineering, covered by
-        # the cut-cold-starts example with the trade-off measured.
+        # torch.compile intentionally omitted - cold starts are cut-cold-starts' topic
 
-        # WARMUP: pay CUDA init and kernel autotune now, not on the first
-        # user request. One step at full resolution is enough.
+        # warmup: pay CUDA init + kernel autotune now, not on the first request
         self.pipe(
             prompt="warmup",
             height=1024,
@@ -109,8 +96,7 @@ class FirstImageApi(fal.App, keep_alive=300):
     def generate(self, request: Input) -> Output:
         import torch
 
-        # Sizes pass through unclamped; validation patterns are
-        # bulletproof-inputs' topic.
+        # sizes intentionally unclamped; input validation is bulletproof-inputs' topic
         size = get_image_size(request.image_size)
         seed = request.seed if request.seed is not None else random.randint(0, MAX_SEED)
         result = self.pipe(

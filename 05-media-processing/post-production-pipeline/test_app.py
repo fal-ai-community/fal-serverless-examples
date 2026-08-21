@@ -1,12 +1,4 @@
-"""Tests for the post-production pipeline.
-
-Three kinds, all run by CI:
-  * unit tests over the pure helpers - free, no deploy, no ffmpeg binary
-    needed (command builders return argv lists; nothing is executed);
-  * live tests against a real ephemeral deploy (harness/check.py);
-  * webhook-receiver verification tests (skipped unless `cryptography`
-    is installed - it is a client-side dep, not an app dep).
-"""
+"""Tests for the post-production pipeline."""
 
 import hashlib
 import importlib.util
@@ -25,8 +17,7 @@ assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
-# Verified fal-hosted samples (research 2026-08-04): pika = 1920x1080 h264,
-# 5.04s, no audio; seedance = 1280x720 h264 + AAC, 12.04s.
+# verified fal-hosted samples: pika = 1080p h264 no audio; seedance = 720p h264 + AAC
 SAMPLE = app_module.SAMPLE_VIDEO
 AUDIO_SAMPLE = (
     "https://storage.googleapis.com/falserverless/example_outputs/"
@@ -35,7 +26,7 @@ AUDIO_SAMPLE = (
 STILL_IMAGE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
 
 
-# --- unit tests: pure helpers (no deploy, no network, no ffmpeg) -----------
+# --- unit tests (no deploy, no network, no ffmpeg) --------------------------
 
 
 def test_ladder_dedupes_sorts_and_skips_upscales():
@@ -117,7 +108,6 @@ def test_rendition_cmd_toggles_audio_and_captions():
 
 
 def test_run_ffmpeg_error_taxonomy_and_remaining_cmd_builders():
-    # User-input failures become typed 422s; infra failures stay 500s.
     with pytest.raises(FieldException) as excinfo:
         app_module.run_ffmpeg(["false"], error_field="captions_srt")
     assert excinfo.value.field == "captions_srt"
@@ -134,7 +124,7 @@ def test_run_ffmpeg_error_taxonomy_and_remaining_cmd_builders():
     assert vtt[-2:] == ["c.srt", "c.vtt"]
 
 
-# --- live tests: against a real ephemeral deploy (harness/check.py) --------
+# --- live tests (real ephemeral deploy) --------------------------------------
 
 
 def assert_typed_422(exc_info, field: str, type_: str):
@@ -169,8 +159,7 @@ def test_full_pipeline_ladder_captions_thumbnails(app_client):
         assert r["size_bytes"] > 0 and r["encode_ms"] > 0
         assert r["video"]["content_type"] == "video/mp4"
 
-    # +faststart is the point: moov must come before mdat, or the CDN URL
-    # can't stream. Verify on the smallest rendition's actual bytes.
+    # faststart invariant: moov must precede mdat or the CDN URL can't stream
     data = fetch(renditions[-1]["video"]["url"]).content
     moov, mdat = data.find(b"moov"), data.find(b"mdat")
     assert moov != -1, "no moov atom - not a valid MP4?"
@@ -199,8 +188,7 @@ def test_full_pipeline_ladder_captions_thumbnails(app_client):
 
 
 def test_audio_source_transcodes_and_never_upscales(app_client):
-    """720p source with AAC audio: 2160 must be skipped (never upscale),
-    and the audio must survive into the rendition."""
+    """720p+AAC source: 2160 must be skipped (never upscale) and audio must survive."""
     response = app_client.run(
         "/",
         {"video_url": AUDIO_SAMPLE, "ladder": [2160, 360], "num_thumbnails": 1},
@@ -242,9 +230,8 @@ def test_garbage_captions_are_refused_before_encoding(app_client):
     assert_typed_422(excinfo, "captions_srt", "invalid_media")
 
 
-# --- webhook receiver: signature verification (client-side dep) ------------
-# The receiver is product-backend reference code, not part of the app image;
-# its `cryptography` dep is not in requirements.txt, so skip when absent.
+# --- webhook receiver tests ---------------------------------------------------
+# `cryptography` is a client-side dep - keep it out of requirements.txt
 
 requires_crypto = pytest.mark.skipif(
     importlib.util.find_spec("cryptography") is None,

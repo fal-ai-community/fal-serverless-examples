@@ -1,12 +1,4 @@
-"""Tests for 3D progressive rendering.
-
-Two kinds, both run by CI:
-  * unit tests over the pure encoding/SSE helpers - free, no deploy, run on
-    every PR by the static job (numpy-dependent ones skip when numpy is
-    absent);
-  * live tests that consume the real SSE stream on an ephemeral deploy
-    (harness/check.py).
-"""
+"""Tests for the 3D progressive rendering example."""
 
 import base64
 import importlib.util
@@ -27,9 +19,6 @@ app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
 
-# --- decode_voxels: pure stdlib, runs everywhere -------------------------
-
-
 def test_decode_voxels_roundtrips_handbuilt_payload():
     raw = bytes([1, 2, 3, 10, 20, 30, 63, 0, 63, 255, 128, 0])
     rows = app_module.decode_voxels(base64.b64encode(raw).decode())
@@ -39,9 +28,6 @@ def test_decode_voxels_roundtrips_handbuilt_payload():
 def test_decode_voxels_rejects_ragged_payload():
     with pytest.raises(ValueError):
         app_module.decode_voxels(base64.b64encode(b"\x01\x02\x03\x04").decode())
-
-
-# --- encode_voxels: numpy path (skips on static CI without numpy) --------
 
 
 def test_encode_decode_roundtrip_with_colors():
@@ -69,9 +55,6 @@ def test_encode_voxels_clips_out_of_range_colors():
     assert rows == [(1, 1, 1, 0, 255, 255)]
 
 
-# --- SSE framing -----------------------------------------------------------
-
-
 def test_sse_format_is_one_data_frame():
     frame = app_module.sse_format({"type": "status", "progress": 0.5})
     assert frame.startswith("data: ")
@@ -84,15 +67,12 @@ def test_heartbeat_is_a_comment_line():
     assert app_module.SSE_HEARTBEAT.endswith("\n\n")
 
 
-# --- queue semantics: progress disposable, terminal guaranteed -------------
-
-
 def test_put_progress_drops_oldest_when_full():
     q: queue.Queue[dict] = queue.Queue(maxsize=2)
     for i in range(4):
         app_module.put_progress(q, {"type": "geometry", "step": i})
     steps = [q.get_nowait()["step"] for _ in range(2)]
-    assert steps == [2, 3]  # oldest frames were dropped, newest survive
+    assert steps == [2, 3]
 
 
 def test_put_terminal_evicts_progress_to_guarantee_delivery():
@@ -100,9 +80,6 @@ def test_put_terminal_evicts_progress_to_guarantee_delivery():
     app_module.put_progress(q, {"type": "geometry", "step": 0})
     app_module.put_terminal(q, {"type": "complete"})
     assert q.get_nowait() == {"type": "complete"}
-
-
-# --- stream_frames: heartbeat, sentinel, dead-worker taxonomy --------------
 
 
 def test_stream_frames_yields_events_then_stops_at_sentinel():
@@ -134,14 +111,14 @@ def test_stream_frames_emits_heartbeat_on_silence():
 def test_stream_frames_reports_dead_worker_without_sentinel():
     q: queue.Queue[dict | None] = queue.Queue()
     done = threading.Event()
-    done.set()  # worker exited without ever enqueueing the sentinel
+    done.set()
     frames = list(app_module.stream_frames(q, done, heartbeat_s=0.05))
     last = json.loads(frames[-1][6:])
     assert last["type"] == "error"
     assert last["code"] == "worker_died"
 
 
-# --- live tests (harness only: app_client skips without HARNESS_APP_URL) ---
+# Live tests below need an ephemeral deploy: app_client skips without HARNESS_APP_URL.
 
 SAMPLE = app_module.SAMPLE_IMAGE
 
@@ -167,9 +144,7 @@ def test_generate_returns_valid_assets(app_client):
 
 
 def test_stream_event_contract(app_client):
-    """The streaming contract: monotonic progress, geometry strictly before
-    appearance, decodable voxel frames, exactly one terminal event carrying
-    asset URLs."""
+    """Progress monotonic, geometry before appearance, frames decode, one terminal."""
     events = []
     with httpx.stream(
         "POST",

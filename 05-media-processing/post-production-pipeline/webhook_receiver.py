@@ -1,25 +1,4 @@
-"""Verified fal webhook receiver - the piece every product backend needs.
-
-fal signs every webhook delivery with Ed25519. Verifying means nobody can
-forge "your render is done" calls into your backend. The scheme (verified
-against fal's production signer):
-
-    body_hash = sha256(raw_body).hexdigest()
-    message   = f"{request_id}\\n{user_id}\\n{timestamp}\\n{body_hash}"
-    signature = X-Fal-Webhook-Signature header, hex-encoded Ed25519 over message
-    keys      = https://rest.fal.ai/.well-known/jwks.json (cache <= 24h)
-
-Hash the RAW bytes you received - never re-parse and re-serialize the JSON.
-Deliveries repeat until fal sees a 2xx, so handle duplicates (this receiver
-tracks request_ids and marks replays).
-
-Run:
-    pip install httpx==0.28.1 cryptography==50.0.0
-    python webhook_receiver.py --port 8321
-    # expose it publicly, e.g.:  cloudflared tunnel --url http://localhost:8321
-
-Then submit with:  python client.py --app <owner>/<app> --webhook https://<tunnel-host>/fal-webhook
-"""
+"""Signature-verifying fal webhook receiver - reference code for a product backend."""
 
 import argparse
 import base64
@@ -61,7 +40,7 @@ def public_keys() -> list[Ed25519PublicKey]:
 def verify(
     headers: dict[str, str], body: bytes, keys: list[Ed25519PublicKey]
 ) -> tuple[bool, str]:
-    """(ok, reason) for one delivery. `headers` must be lowercase-keyed."""
+    """(ok, reason); `headers` lowercase-keyed, `body` raw bytes, not re-serialized."""
     try:
         request_id = headers["x-fal-webhook-request-id"]
         user_id = headers["x-fal-webhook-user-id"]

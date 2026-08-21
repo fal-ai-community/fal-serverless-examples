@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
-"""Render the committed SVG charts for this example.
+"""Render this example's committed SVG charts from trace.json and frontier.json."""
 
-Stdlib only - requirements.txt mirrors App.requirements exactly, so a
-plotting library here would ship to the GPU. Hand-written SVG also means
-byte-for-byte determinism, which is what lets CI regenerate these files and
-fail on a mismatch without spending a cent.
-
-Two constraints that shape every line below:
-  * GitHub's markdown sanitizer strips inline <svg>, so these are committed
-    FILES referenced as images, never markup pasted into the README.
-  * Mintlify's image CDN strips <foreignObject>, so every label is a real
-    <text> element.
-
-The visual language here is deliberately minimal: two flat-colour series,
-small labels, no gridlines or gradients. Keep render()'s signature stable
-when restyling.
-"""
-
+# Stdlib-only and byte-deterministic: CI regenerates these files and fails on
+# a mismatch; a plotting dependency would also have to ship in App.requirements.
 from __future__ import annotations
 
 import argparse
@@ -30,8 +16,8 @@ import model
 WIDTH, HEIGHT = 960, 420
 PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 64, 24, 40, 48
 
-MEASURED = "#8553ff"  # fal purple: measured series
-MODELLED = "#6366f1"  # indigo: model output
+MEASURED = "#8553ff"  # fal purple
+MODELLED = "#6366f1"
 QUEUE = "#94a3b8"
 AXIS = "#64748b"
 INK = "#0f172a"
@@ -42,6 +28,7 @@ def _n(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
 
 
+# Real <text> labels only - Mintlify's image CDN strips <foreignObject>.
 def _text(
     x: float,
     y: float,
@@ -112,11 +99,7 @@ def burst_timeline(trace: dict) -> str:
     timeline = model.measured_timeline(trace, tick_s=1.0)
     if not timeline:
         raise ValueError("trace produced no timeline rows")
-    # The axis origin is the burst's actual start (t=0), not the first row
-    # measured_timeline() happens to emit. That first row starts at the
-    # earliest runner's setup_start_s, which is well after t=0 whenever
-    # capacity acquisition (PENDING, unbilled) takes a while - anchoring the
-    # axis there instead of at 0 would silently hide that free gap.
+    # Anchor the axis at t=0, not the first row, or the free PENDING gap is hidden.
     t_lo = 0.0
     t_hi = max(row["t"] for row in timeline)
     y_max = max(
@@ -178,8 +161,7 @@ def cost_latency_frontier(frontier: dict) -> str:
         elif point["validated"]:
             marks.append(f'<circle cx="{_n(x)}" cy="{_n(y)}" r="4" fill="{MODELLED}"/>')
         else:
-            # Outside the measured envelope: hollow, so it never reads as an
-            # equal to a validated point.
+            # Extrapolated: hollow, so it never reads as a validated point.
             marks.append(
                 f'<circle cx="{_n(x)}" cy="{_n(y)}" r="4" fill="none" '
                 f'stroke="{MODELLED}" stroke-width="1.5" stroke-dasharray="2 2"/>'
@@ -231,8 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="charts")
     args = parser.parse_args(argv)
 
-    # Readers run this directly, so a missing or unparsable input should
-    # print one clear line, not a raw traceback - same contract as model.py.
     try:
         path = args.trace
         with open(path) as handle:

@@ -1,15 +1,4 @@
-"""Multi-GPU video inference - WAN 2.2 A14B sharded across 4 GPUs with fal.distributed.
-
-One frontier text-to-video model, one video,
-four GPUs. DistributedRunner spawns a worker per GPU and initializes
-torch.distributed (NCCL) before setup() runs; diffusers context parallelism
-(Ulysses sequence parallelism) then splits every denoising step's sequence
-across the ranks, so all four GPUs cooperate on the same clip.
-
-Model: Wan-AI/Wan2.2-T2V-A14B-Diffusers - Apache-2.0, ungated. The MoE pair
-of 14B expert transformers is ~70 GB in bf16: this is what "needs multi-GPU"
-actually looks like.
-"""
+"""Multi-GPU video: WAN 2.2 A14B sharded across 4 GPUs with fal.distributed."""
 
 import os
 import random
@@ -29,13 +18,10 @@ MODEL_ID = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 MODEL_REVISION = "5be7df9619b54f4e2667b2755bc6a756675b5cd7"
 NUM_GPUS = 4
 
-# The HF repo stores fp32 (~126 GB). Each of the 4 workers reads the full
-# weights (sequence parallelism replicates them), so we convert to bf16 once
-# on /data and every later boot reads half the bytes. /data persists
-# account-wide across machines and deploys.
+# HF repo is fp32 (~126 GB); convert once to bf16 on /data (persists account-wide).
 CONVERTED_DIR = "/data/models/wan22-t2v-a14b-bf16"
 
-# WAN generates at 16 fps; sizes are (height, width).
+# 16 fps; sizes are (height, width).
 RESOLUTIONS: dict[str, tuple[int, int]] = {
     "480p": (480, 832),
     "720p": (720, 1280),
@@ -111,8 +97,7 @@ class Input(BaseModel):
 
 
 class Output(BaseModel):
-    # No sync_mode on purpose: multi-hundred-MB clips make data-URI transport
-    # inappropriate.
+    # No sync_mode: multi-hundred-MB clips are unfit for data-URI transport.
     video: File = Field(description="The generated clip (mp4, 16 fps) on the fal CDN.")
     seed: int = Field(description="The seed that produced this video.")
     timings: dict[str, float] = Field(
@@ -121,25 +106,21 @@ class Output(BaseModel):
 
 
 class WanWorker(DistributedWorker):
-    """One process per GPU. torch.distributed is already initialized here."""
+    """One process per GPU; torch.distributed is already initialized here."""
 
     def setup(self, **kwargs) -> None:
         import torch
         from diffusers import ContextParallelConfig, WanPipeline
 
-        # Every rank loads the full pipeline (sequence parallelism shards the
-        # sequence, not the weights) from the bf16 copy setup() prepared.
+        # Sequence, not weights, is sharded: every rank loads the full pipeline.
         pipe = WanPipeline.from_pretrained(CONVERTED_DIR, torch_dtype=torch.bfloat16)
 
-        # Ulysses attention across the runner's process group: each denoising
-        # step's sequence is split over world_size ranks.
         cp = ContextParallelConfig(ulysses_degree=self.world_size)
         pipe.transformer.enable_parallelism(config=cp)
         pipe.transformer_2.enable_parallelism(config=cp)
 
         pipe.vae.enable_tiling()
-        # The A14B MoE experts run in disjoint denoising stages; sequenced CPU
-        # offload keeps only the active component resident (~30 GB of 80 GB).
+        # MoE stages are disjoint; offload keeps only the active expert (~30/80 GB).
         pipe.enable_model_cpu_offload(device=self.device)
         self.pipe = pipe
 
@@ -161,9 +142,7 @@ class WanWorker(DistributedWorker):
         import torch
         from diffusers.utils import export_to_video
 
-        # Context parallelism needs identical inputs on every rank, so the
-        # endpoint picks one seed and all ranks use it (unlike data
-        # parallelism, where each rank would take a different seed).
+        # Context parallelism needs identical inputs on every rank: all share one seed.
         generator = torch.Generator(device="cpu").manual_seed(seed)
         t0 = time.perf_counter()
         result = self.pipe(
@@ -181,8 +160,7 @@ class WanWorker(DistributedWorker):
         generate_seconds = round(time.perf_counter() - t0, 1)
 
         if self.rank != 0:
-            # Ranks cooperated via NCCL inside the pipeline call; only rank 0
-            # materializes the artifact and replies.
+            # Only rank 0 materializes the artifact and replies.
             return {}
 
         path = f"/tmp/wan22-{uuid.uuid4().hex}.mp4"
@@ -194,10 +172,9 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     machine_type = "GPU-H100"
     num_gpus = NUM_GPUS  # class attribute, not a class kwarg
     app_auth = "private"
-    # First-ever boot on an account downloads ~126 GB AND converts to bf16
-    # (~35 min total); every boot after that loads the converted copy (~8 min).
+    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~8 min.
     startup_timeout = 3600
-    # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
+    # Authoritative; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
         "torch==2.12.1",
@@ -214,9 +191,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     async def setup(self) -> None:
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        # One-time per account; see CONVERTED_DIR above. The directory only
-        # ever appears via the atomic rename below, so existence implies a
-        # complete copy.
+        # CONVERTED_DIR appears only via atomic rename below: existence = complete copy.
         if not Path(CONVERTED_DIR).exists():
             import torch
             from diffusers import WanPipeline
@@ -226,8 +201,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
             pipe = WanPipeline.from_pretrained(
                 MODEL_ID, revision=MODEL_REVISION, torch_dtype=torch.bfloat16
             )
-            # Unique staging dir: /data is account-wide, so concurrent first
-            # boots must not write into the same path.
+            # /data is account-wide: concurrent first boots must stage in unique paths.
             tmp_dir = f"{CONVERTED_DIR}.tmp.{uuid.uuid4().hex}"
             pipe.save_pretrained(tmp_dir, safe_serialization=True)
             del pipe
@@ -240,10 +214,8 @@ class MultiGpuVideo(fal.App, keep_alive=300):
         self.runner = DistributedRunner(worker_cls=WanWorker, world_size=NUM_GPUS)
         await self.runner.start(timeout=1800)
 
-        # Warm up the whole distributed path before the first request: worker
-        # errors surface as an "error" key, not an exception. Warming at the
-        # default request shape (33 frames @ 480p) matters - attention kernels
-        # autotune per shape, and a cold shape adds ~40 s to the first request.
+        # Warm at the default request shape: attention kernels autotune per shape
+        # (a cold shape adds ~40 s); worker errors arrive as an "error" key, not raised.
         warmup = await self.runner.invoke(
             _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
         )

@@ -1,9 +1,4 @@
-"""Smoke test - run by the harness against the live ephemeral app.
-
-The harness (harness/check.py) deploys app.py, then executes this file with
-the `app_client` fixture from harness/pytest_plugin.py. Outside the harness
-the fixture skips, so plain `pytest` costs nothing.
-"""
+"""Smoke test - run by the harness against the live ephemeral app."""
 
 import httpx
 import pytest
@@ -20,8 +15,7 @@ def test_processes_to_requested_format(app_client):
 
 
 def test_output_format_sets_content_type_and_cache_hits(app_client):
-    # First call primes the URL-hash cache on /data; the repeat must hit it
-    # regardless of test ordering or a fresh volume.
+    # first call primes the cache so the repeat hits it regardless of test ordering
     app_client.run("/", {"image_url": SAMPLE, "output_format": "jpeg"})
     response = app_client.run("/", {"image_url": SAMPLE, "output_format": "jpeg"})
     assert response["image"]["content_type"] == "image/jpeg"

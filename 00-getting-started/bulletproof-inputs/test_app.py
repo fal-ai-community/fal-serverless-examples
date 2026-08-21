@@ -1,11 +1,4 @@
-"""Tests for the input gauntlet.
-
-Two kinds, both run by CI:
-  * unit tests over the pure gate functions - free, no deploy, run on every
-    PR by the static job;
-  * live tests that fire hostile payloads at a real ephemeral deploy and
-    assert the typed 422 that comes back (harness/check.py).
-"""
+"""Tests for the input gauntlet."""
 
 import base64
 import importlib.util
@@ -18,8 +11,7 @@ import pytest
 from fal.exceptions import FieldException
 
 SAMPLE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
-# ~5.9 MB, comfortably over a 1 MB cap. The download gate runs before the
-# format check, so a non-image is fine here.
+# ~5.9 MB non-image; the download gate fires before the format check.
 BIG_FILE = "https://storage.googleapis.com/falserverless/model_weights/flux2/flux2-tiny-vae.safetensors"
 
 _spec = importlib.util.spec_from_file_location(
@@ -35,8 +27,7 @@ def data_uri(payload: bytes, content_type: str) -> str:
 
 
 def pixel_bomb_uri() -> str:
-    """~400 KB on the wire, ~430 MB decoded. The gate must catch it by
-    header dimensions alone."""
+    """~400 KB on the wire, ~430 MB decoded - must be caught by header dims alone."""
     from PIL import Image as PILImage
 
     PILImage.MAX_IMAGE_PIXELS = None  # let the fixture exist; the app is what we test
@@ -53,9 +44,6 @@ def zip_bomb_uri(members: int = 1, member_mb: int = 200) -> str:
         for i in range(members):
             archive.writestr(f"bomb{i}.bin", b"\0" * (member_mb * 1024 * 1024))
     return data_uri(buf.getvalue(), "application/zip")
-
-
-# --- unit tests: the gates themselves (no deploy, no network) --------------
 
 
 def test_scheme_policy_rejects_file_urls():
@@ -111,9 +99,6 @@ def test_archive_gates(tmp_path):
     assert excinfo.value.type == "invalid_archive"
 
 
-# --- live tests: hostile payloads against a real deploy --------------------
-
-
 def test_valid_image_passes_every_gate(app_client):
     response = app_client.run("/", {"image_url": SAMPLE})
     assert response["accepted"] is True
@@ -137,8 +122,7 @@ def assert_typed_422(exc_info, field: str, type_: str):
 
 
 def test_metadata_endpoint_is_refused(app_client):
-    """The classic SSRF target. The SDK's client blocks it; we assert the
-    caller gets a typed 422, not a 500."""
+    """SDK blocks the classic SSRF target; caller must get a typed 422, not a 500."""
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run("/", {"image_url": "http://169.254.169.254/latest/meta-data/"})
     assert_typed_422(excinfo, "image_url", "file_download_error")
@@ -147,8 +131,7 @@ def test_metadata_endpoint_is_refused(app_client):
 def test_localhost_is_refused(app_client):
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run("/", {"image_url": "http://127.0.0.1:8080/secrets"})
-    # Port policy fires before the SDK's SSRF refusal, so the type is
-    # value_error with the port in the message.
+    # Port policy fires before the SDK's SSRF refusal, hence value_error.
     detail = assert_typed_422(excinfo, "image_url", "value_error")
     assert "8080" in detail["msg"]
 
@@ -173,8 +156,7 @@ def test_pixel_bomb_is_refused_before_decode(app_client):
 
 
 def test_zip_bomb_is_refused_before_extraction(app_client):
-    # 200 KB on the wire, 200 MB extracted - refused against a 64 MB budget
-    # without ever calling extractall().
+    # 200 KB on the wire, 200 MB declared - refused without ever extracting.
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run(
             "/",

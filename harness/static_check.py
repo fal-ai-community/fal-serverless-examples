@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Static checks - no secrets, no deploys, safe for fork PRs.
-
-Verifies every example without touching the network: the folder has the
-required files, exactly one fal.App loads, the smoke payload can be built
-from Field examples, and requirements.txt mirrors App.requirements exactly
-(the repo's pinning rule). CI runs this on every pull request; the real
-deploy-check (harness/check.py) runs behind a maintainer-approved
-environment because it spends money.
-"""
+"""Static per-example checks - no secrets, no deploys, safe for fork PRs."""
 
 from __future__ import annotations
 
@@ -58,8 +50,7 @@ def check_example(example_dir: Path) -> list[str]:
         except Exception as exc:
             errors.append(f"{where}{exc}")
 
-        # Variants that bake dependencies into a container image declare no
-        # requirements - there is nothing for requirements.txt to mirror.
+        # image-based variants declare no requirements - nothing to mirror
         if app_cls.requirements and pinned != app_cls.requirements:
             errors.append(
                 f"{where}requirements.txt does not mirror App.requirements exactly "

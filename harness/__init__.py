@@ -1,1 +1,1 @@
-"""Deploy-check harness package. See harness/README.md."""
+"""Deploy-check harness package."""

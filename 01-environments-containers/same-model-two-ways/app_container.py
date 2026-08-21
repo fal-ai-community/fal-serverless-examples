@@ -1,9 +1,4 @@
-"""Same model, way 2: your own Dockerfile.
-
-Identical model, identical schema, identical pinned versions as app.py - the
-environment is the only variable. fal builds this Dockerfile server-side, so
-no local Docker and no registry push.
-"""
+"""Same model, way 2: a Dockerfile builds the environment (twin of app.py)."""
 
 from pathlib import Path
 
@@ -12,8 +7,7 @@ from fal.container import ContainerImage
 from pydantic import BaseModel, Field
 
 MODEL_ID = "openai/whisper-tiny.en"
-# Canonical ASR sample from the transformers docs ("I have a dream" clip).
-# setup() fetches it from huggingface.co, so cold starts need that host up.
+# Fetched at setup(); cold starts need huggingface.co reachable.
 SAMPLE_AUDIO = "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/mlk.flac"
 DOCKERFILE = Path(__file__).parent / "Dockerfile"
 
@@ -33,7 +27,7 @@ class Output(BaseModel):
 class TranscribeContainer(fal.App, keep_alive=60):
     machine_type = "L"
     app_auth = "private"
-    # Dependencies are baked into the image by the Dockerfile; no `requirements` list.
+    # Dependencies are pinned in the Dockerfile; no `requirements` list here.
     image = ContainerImage.from_dockerfile(str(DOCKERFILE))
 
     def setup(self) -> None:
@@ -43,8 +37,7 @@ class TranscribeContainer(fal.App, keep_alive=60):
         self.pipe = pipeline(
             "automatic-speech-recognition", model=MODEL_ID, dtype=torch.float32
         )
-        # Warmup exercises the full audio-decode path; a mis-built environment
-        # should fail here at setup, not at the first request.
+        # A mis-built environment must fail here at setup, not at the first request.
         warmup = self.pipe(SAMPLE_AUDIO)
         assert warmup["text"].strip(), "warmup transcript is empty"
 

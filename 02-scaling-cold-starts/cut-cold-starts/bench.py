@@ -1,16 +1,4 @@
-"""Measured before/after for the README table - real ephemeral deploys.
-
-Usage (from the repo root, with fal credentials configured):
-
-    HARNESS_STARTUP_TIMEOUT=2700 python 02-scaling-cold-starts/cut-cold-starts/bench.py --variant app_baseline --runs 2
-    HARNESS_STARTUP_TIMEOUT=2700 python 02-scaling-cold-starts/cut-cold-starts/bench.py --variant app --runs 3
-
-Each run: ephemeral deploy -> wait healthy (wall clock = "spawn -> healthy")
--> POST /setup-report -> teardown with runner-stop confirmation. Prints one
-JSON line per run and a markdown table over all runs. The first optimized run
-on a fresh account builds the /data pack + kernel cache (one-time); later
-runs are the steady state every cold start gets.
-"""  # noqa: E501  # usage commands are copy-paste lines
+"""Cold-start before/after benchmark via real ephemeral deploys (usage: README)."""
 
 import argparse
 import json
@@ -74,11 +62,7 @@ def bench_once(app_file: Path) -> tuple[dict, str | None]:
 
 
 def format_table(runs: list[dict]) -> str:
-    """Markdown: one column per run, stage rows in first-seen order.
-
-    Stages a run did not execute render as '-' (e.g. steady-state boots skip
-    the first-boot pack build) - never invented zeros.
-    """
+    """Markdown table, one column per run; skipped stages render '-', never zeros."""
     stage_names: list[str] = []
     for run in runs:
         for name in run["timings"]:

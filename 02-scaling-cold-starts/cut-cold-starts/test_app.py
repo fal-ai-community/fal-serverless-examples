@@ -1,10 +1,4 @@
-"""One suite for both variants plus free (no-GPU, no-deploy) unit tests.
-
-Live tests use the harness `app_client` fixture (skips outside harness runs).
-The harness deploys every app*.py in this folder and runs this file against
-each; HARNESS_VARIANT says which one is live. Free tests exercise the shared
-module logic that must hold before any GPU is spent.
-"""
+"""One suite for both variants: free (no-GPU) unit tests plus live harness tests."""
 
 import ast
 import importlib.util
@@ -21,7 +15,7 @@ sys.path.insert(0, str(HERE))
 import wan_flashpack  # noqa: E402  # after sys.path insert; top level is stdlib-only
 
 EXPECTED_VARIANT = {"app": "optimized", "app_baseline": "baseline"}
-# The same small/seeded request the harness smoke uses (Field examples).
+# Keep in sync with the Field examples the harness smoke payload uses.
 SMALL_REQUEST = {
     "prompt": "A calico cat surfing a small wave at golden hour, cinematic",
     "num_frames": 17,
@@ -34,13 +28,8 @@ def variant() -> str:
     return os.environ.get("HARNESS_VARIANT", "app")
 
 
-# --------------------------- free unit tests -------------------------------
-
-
 def test_publish_classes_creates_missing_module_entry():
-    """On a fal runner the module arrives as a cloudpickle by-value
-    reconstruction with NO sys.modules entry; _publish_classes must create
-    one so transformers introspection and diffusers importlib resolution work."""
+    """_publish_classes must create the entry cloudpickle by-value modules lack."""
     name = "wan_flashpack_test_ghost"
     sys.modules.pop(name, None)
     try:
@@ -53,8 +42,7 @@ def test_publish_classes_creates_missing_module_entry():
 
 
 def test_publish_classes_is_idempotent_on_real_modules():
-    """When the module is normally importable (local runs), the existing
-    entry must be reused, not replaced."""
+    """A normally imported module's sys.modules entry must be reused, not replaced."""
     before = sys.modules["wan_flashpack"]
     mod = wan_flashpack._publish_classes("wan_flashpack", {})
     assert mod is before
@@ -62,8 +50,7 @@ def test_publish_classes_is_idempotent_on_real_modules():
 
 
 def test_module_top_level_is_import_light():
-    """Static CI loads app files with only fal+httpx+pytest installed; the
-    heavy imports must all live inside get_classes()."""
+    """Static CI imports this module with only fal+httpx+pytest installed."""
     tree = ast.parse((HERE / "wan_flashpack.py").read_text())
     top_level_imports: set[str] = set()
     for node in tree.body:
@@ -75,30 +62,23 @@ def test_module_top_level_is_import_light():
 
 
 def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
-    """diffusers' get_class_obj_and_candidates() strips the 'FlashPack' prefix
-    before resolving class names (pipeline_loading_utils.py, diffusers 0.39).
-    Verify the registration loop registers each class under both the full name
-    and the bare name without the prefix, so either resolution path works."""
+    """diffusers 0.39 strips the 'FlashPack' prefix, so classes register both names."""
     source = (HERE / "wan_flashpack.py").read_text()
     tree = ast.parse(source)
 
-    # Find the for loop that registers classes with both names
     found_dual_registration = False
     for node in ast.walk(tree):
         if isinstance(node, ast.For):
-            # Look for a loop with setattr calls for dual registration
             has_full_name_setattr = False
             has_removeprefix_setattr = False
 
             for item in ast.walk(node):
-                # Check for setattr(mod, cls_obj.__name__, cls_obj)
                 if (
                     isinstance(item, ast.Call)
                     and isinstance(item.func, ast.Name)
                     and item.func.id == "setattr"
                     and len(item.args) >= 3
                 ):
-                    # Check if second arg accesses __name__
                     second_arg = item.args[1]
                     if (
                         isinstance(second_arg, ast.Attribute)
@@ -106,7 +86,6 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
                     ):
                         has_full_name_setattr = True
 
-                    # Check for removeprefix call in second arg
                     if (
                         isinstance(second_arg, ast.Call)
                         and isinstance(second_arg.func, ast.Attribute)
@@ -127,16 +106,7 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
 
 
 def test_pipeline_load_receives_explicit_text_encoder():
-    """UMT5 ties encoder.embed_tokens.weight to shared.weight; the flagship
-    FlashPack classes deliberately leave the tied name out of the pack
-    (flashpack_ignore_names), and flashpack's loader assigns packed tensors
-    by REPLACING each Parameter object - silently breaking the tie. The
-    pipeline loader's own .to(device) then crashes on the leftover meta
-    tensor. The fix loads text_encoder itself, re-ties it, and passes it
-    into FlashPackWanPipeline.from_pretrained_flashpack as a kwarg (a
-    supplied component is used as-is and skips the broken path). Guard
-    against someone "simplifying" back to a single call with no
-    text_encoder kwarg."""
+    """Without a re-tied text_encoder kwarg the UMT5 weight tie silently breaks."""
     source = (HERE / "app.py").read_text()
     tree = ast.parse(source)
 
@@ -167,9 +137,7 @@ def test_pipeline_load_receives_explicit_text_encoder():
     )
 
 
-# --------------------------- live tests (harness) ---------------------------
-# The harness deploys each app*.py and runs this whole file against it with
-# HARNESS_APP_URL + HARNESS_VARIANT set; app_client skips otherwise.
+# app_client skips the tests below unless the harness sets HARNESS_APP_URL.
 
 
 def test_small_seeded_generation(app_client):
@@ -200,8 +168,7 @@ def test_rejects_non_4k_plus_1_frames(app_client):
 
 
 def _load_bench():
-    """Load bench.py under a unique module name: plain `import bench` could
-    collide with another example's bench.py in a whole-repo pytest run."""
+    """Load bench.py under a unique name: `import bench` can collide repo-wide."""
     spec = importlib.util.spec_from_file_location(
         "cut_cold_starts_bench", HERE / "bench.py"
     )
@@ -243,7 +210,6 @@ def test_bench_table_formats_stages_in_order():
     lines = table.splitlines()
     assert lines[0].startswith("| stage |")
     assert "| imports | 5.0 | 5.2 |" in table
-    # stages absent from a run render as - (dashes), never invented zeros
     assert "| download + build FlashPack pack (first boot only) | - | 400.0 |" in table
     assert "| setup() total | 90.0 | 650.0 |" in table
     assert "| spawn -> healthy | 100.0 | 700.0 |" in table

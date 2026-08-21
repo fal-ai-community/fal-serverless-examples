@@ -1,12 +1,4 @@
-"""3D progressive rendering: stream SAM-3D reconstruction as it happens.
-
-One H100 app, two endpoints: `/` returns the
-final GLB + Gaussian splat as URLs; `/stream` emits SSE while the two
-diffusion stages run - voxels appear live, then the final assets arrive by
-URL. The pattern to steal: model progress -> bounded queue -> SSE generator,
-where progress frames are DISPOSABLE (drop-oldest) and the single terminal
-event is GUARANTEED.
-"""
+"""3D progressive rendering: stream SAM-3D reconstruction as it happens."""
 
 import base64
 import contextlib
@@ -32,10 +24,9 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     import numpy as np
 
-# Stage-1 voxel coords are indices in a fixed 64-cube grid, so uint8 is
-# LOSSLESS - no per-frame renormalization, no jitter between frames.
+# Voxel coords are indices in a fixed 64-cube grid, so uint8 is lossless.
 GRID_SIZE = 64
-HEARTBEAT_SECONDS = 15.0  # well under typical 60-100s proxy idle timeouts
+HEARTBEAT_SECONDS = 15.0  # under typical 60-100s proxy idle timeouts
 MAX_PENDING_FRAMES = 8
 SSE_HEARTBEAT = ": keepalive\n\n"
 
@@ -98,8 +89,7 @@ class StreamInput(Input):
 
 
 class Output(BaseModel):
-    # No sync_mode on purpose: these assets run to hundreds of MB, so
-    # data-URI transport is never appropriate here.
+    # No sync_mode on purpose: assets run to hundreds of MB, URL-only.
     model_glb: File = Field(description="Final textured mesh (vertex colors), GLB.")
     gaussian_splat: File = Field(description="Gaussian splat, PLY.")
     seed: int = Field(description="Seed actually used.")
@@ -110,12 +100,7 @@ def resolve_seed(seed: int | None) -> int:
 
 
 def encode_voxels(coords: "np.ndarray", colors: "np.ndarray | None" = None) -> str:
-    """Pack voxels as base64 of N x [x,y,z,r,g,b] uint8 rows (6 bytes/voxel).
-
-    coords: (N,3) integer grid indices in [0, GRID_SIZE).
-    colors: (N,3) floats in [0,1], or None for gray. The float->uint8 scaling
-    happens HERE and only here - one encoder, one color contract.
-    """
+    """Pack voxels as base64 of N x [x,y,z,r,g,b] uint8 rows (6 bytes/voxel)."""
     import numpy as np
 
     coords = np.asarray(coords)
@@ -143,8 +128,7 @@ def sse_format(event: dict) -> str:
 
 
 def put_progress(q: queue.Queue, event: dict) -> None:
-    """Enqueue a disposable progress frame. A slow client must never stall
-    the GPU: when the queue is full, drop the OLDEST frame and move on."""
+    """Enqueue a frame; drop oldest when full so a slow client can't stall the GPU."""
     while True:
         try:
             q.put_nowait(event)
@@ -155,8 +139,7 @@ def put_progress(q: queue.Queue, event: dict) -> None:
 
 
 def put_terminal(q: queue.Queue, event: dict | None) -> None:
-    """Enqueue a terminal event (or the None end-of-stream sentinel) with
-    guaranteed delivery, evicting progress frames if the queue is full."""
+    """Enqueue a terminal event (or None sentinel), evicting frames until it fits."""
     while True:
         try:
             q.put(event, timeout=0.1)
@@ -169,10 +152,7 @@ def put_terminal(q: queue.Queue, event: dict | None) -> None:
 def stream_frames(
     q: queue.Queue, worker_done: threading.Event, heartbeat_s: float = HEARTBEAT_SECONDS
 ) -> Iterator[str]:
-    """Drain the queue into SSE frames. Heartbeats are SSE comments (clients'
-    event parsers never see them). Ends at the None sentinel; if the worker
-    died without one, emit a terminal error so 'finished' is never ambiguous
-    with 'connection died'."""
+    """Drain the queue to SSE frames until the None sentinel; dead worker = error."""
     while True:
         try:
             event = q.get(timeout=heartbeat_s)
@@ -201,13 +181,7 @@ def stream_generate(
     emit: Callable[[dict], None],
     cancelled: threading.Event,
 ) -> dict:
-    """The streaming driver: mirror InferencePipeline.run() stage by stage,
-    emitting a frame per solver step via `emit`.
-
-    The pipeline's generators expose generate_iter(), a public per-solver-step
-    iterator (generate() is literally "loop generate_iter, keep the last
-    value") - so progressive output needs no model fork.
-    """
+    """Mirror InferencePipeline.run() stagewise, emitting a frame per solver step."""
     import numpy as np
     import torch
     from sam3d_objects.model.backbone.tdfy_dit.modules import sparse as sp
@@ -232,9 +206,7 @@ def stream_generate(
                 "message": "Preparing pipeline inputs",
             }
         )
-        # InferencePipelinePointMap conditions stage 1 on a MoGe depth
-        # pointmap - without it the condition embedder KeyErrors on
-        # 'pointmap'. Stage 2 does not take it.
+        # Stage 1 needs the pointmap (its embedder KeyErrors without); stage 2 doesn't.
         pointmap_dict = pipeline.compute_pointmap(rgba, None)
         ss_input = pipeline.preprocess_image(
             rgba, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
@@ -303,12 +275,9 @@ def stream_generate(
                         }
                     )
         finally:
-            # Restore even on cancellation/exception: these generators are
-            # shared across requests, and a leaked step count would silently
-            # apply to every later request on this warm container.
+            # Generators are shared across warm requests: restore even on cancel/error.
             ss_gen.inference_steps = prev_ss_steps
 
-        # Final stage-1 coords, pruned/downsampled exactly like run() does.
         if pipeline.downsample_ss_dist > 0:
             coords = prune_sparse_structure(
                 coords, max_neighbor_axes_dist=pipeline.downsample_ss_dist
@@ -335,10 +304,8 @@ def stream_generate(
         n_vox = coords.shape[0]
 
         def voxel_colors(x_t) -> "np.ndarray | None":
-            """Decode an intermediate slat to per-voxel float [0,1] colors via
-            the Gaussian decoder's degree-0 SH. Costs one decode - which is
-            why colors_every is a knob. Returns None if the gaussian layout
-            doesn't map cleanly onto voxels (then frames stay gray)."""
+            """Per-voxel [0,1] colors via degree-0 SH (one Gaussian decode);
+            None when the layout doesn't map onto voxels."""
             st = sp.SparseTensor(coords=coords, feats=x_t[0]).to(image.device)
             st = st * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(
                 image.device
@@ -364,9 +331,7 @@ def stream_generate(
                 ):
                     step += 1
                     check_cancelled()
-                    # Track every step's latent BEFORE the throttle: the final
-                    # decode below needs the LAST one even when its frame is
-                    # skipped by colors_every.
+                    # Capture BEFORE the throttle: final decode needs the last latent.
                     slat_latent = x_t
                     if step % params.colors_every != 0 and step != total_slat_steps:
                         continue
@@ -383,14 +348,14 @@ def stream_generate(
                         }
                     )
         finally:
-            # Same restore rationale as stage 1.
+            # Same shared-generator restore as stage 1.
             slat_gen.inference_steps = prev_slat_steps
         slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
         slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(
             image.device
         )
 
-        # ---- finalize: decode + GLB, exactly like run() --------------------
+        # ---- finalize: decode + GLB ----------------------------------------
         emit(
             {
                 "type": "status",
@@ -441,8 +406,7 @@ class SAM3DStreamApp(
     name="sam-3d-progressive",
     keep_alive=60,  # raise for interactive use; see README "Cost & tuning"
 ):
-    # SAM-3D's own prerequisite is >=32 GB VRAM, which rules out most
-    # smaller tiers; H100 keeps both diffusion stages interactive.
+    # SAM-3D needs >=32 GB VRAM; H100 keeps both diffusion stages interactive.
     machine_type = "GPU-H100"
     app_auth = "private"
     request_timeout = 600
@@ -457,8 +421,7 @@ class SAM3DStreamApp(
         from hydra.utils import instantiate
         from omegaconf import OmegaConf
 
-        # Gated checkpoint: requires one-time access approval on
-        # huggingface.co/facebook/sam-3d-objects and an HF_TOKEN fal secret.
+        # Gated checkpoint: needs HF access approval + an HF_TOKEN fal secret.
         # Pinned revision + /data cache: repeat cold starts skip the download.
         snapshot_download(
             "facebook/sam-3d-objects",
@@ -466,10 +429,7 @@ class SAM3DStreamApp(
             local_dir=str(WEIGHTS_DIR),
         )
 
-        # Mirrors the official notebook/inference.py `Inference` wrapper
-        # (that helper is not part of the pip-installed package).
-        # FAL_PERSISTENT_DIR is not a real pathlib.Path - OmegaConf.load
-        # rejects it with "Unexpected file type".
+        # FAL_PERSISTENT_DIR is not a real pathlib.Path; OmegaConf.load rejects it.
         config_path = Path(str(WEIGHTS_DIR)) / "checkpoints" / "pipeline.yaml"
         config = OmegaConf.load(config_path)
         config.rendering_engine = "pytorch3d"
@@ -479,17 +439,11 @@ class SAM3DStreamApp(
 
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        # No warmup generation on purpose: compile_model=False leaves no
-        # compile cache to prime, and a full two-stage pass would add ~16s to
-        # every cold start that the streaming UX already makes visible.
+        # No warmup on purpose: nothing to prime (compile_model=False); pass adds ~16s.
         print("[sam-3d-progressive] pipeline ready")
 
-    # -- shared input/output plumbing --------------------------------------
-
     def _load_rgba(self, request: Input) -> "np.ndarray":
-        """Fetch image (+ optional mask) and merge to the RGBA the pipeline
-        expects. Runs BEFORE any StreamingResponse is returned, so bad inputs
-        are honest HTTP 422s, never mid-stream error events."""
+        """Fetch image (+ optional mask) as RGBA; pre-stream so bad inputs 422."""
         import numpy as np
 
         try:
@@ -523,8 +477,7 @@ class SAM3DStreamApp(
     def _export_assets(
         self, outputs: dict, fastapi_request: Request
     ) -> tuple[File, File]:
-        """Final assets travel by URL, never inline - the terminal event and
-        the JSON endpoint share this rule."""
+        """Final assets travel by URL, never inline - both endpoints share this rule."""
         with TemporaryDirectory() as tmp:
             splat_path = str(Path(tmp) / "splat.ply")
             outputs["gs"].save_ply(splat_path)
@@ -539,8 +492,6 @@ class SAM3DStreamApp(
                 request=fastapi_request,
             )
         return glb, splat
-
-    # -- endpoints ----------------------------------------------------------
 
     @fal.endpoint("/")
     def generate(self, request: Input, fastapi_request: Request) -> Output:
@@ -569,7 +520,7 @@ class SAM3DStreamApp(
     ) -> StreamingResponse:
         """SSE progressive rendering. Every stream ends in exactly one
         terminal event: complete (asset URLs) or error (sanitized)."""
-        rgba = self._load_rgba(request)  # bad inputs 422 BEFORE we stream
+        rgba = self._load_rgba(request)
         seed = resolve_seed(request.seed)
 
         q: queue.Queue[dict | None] = queue.Queue(maxsize=MAX_PENDING_FRAMES)
@@ -625,10 +576,8 @@ class SAM3DStreamApp(
                     },
                 )
             finally:
-                # Sentinel BEFORE the done flag: if worker_done were set
-                # first, a heartbeat timeout in the gap would misread a
-                # finished stream as worker_died.
-                put_terminal(q, None)  # end-of-stream sentinel, guaranteed
+                # Sentinel BEFORE done flag, else a gap heartbeat reports worker_died.
+                put_terminal(q, None)
                 worker_done.set()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -637,16 +586,14 @@ class SAM3DStreamApp(
             try:
                 yield from stream_frames(q, worker_done)
             finally:
-                # Runs on normal completion AND client disconnect: signal the
-                # worker, which checks between solver steps.
+                # Runs on completion AND disconnect; worker checks between solver steps.
                 cancelled.set()
 
         return StreamingResponse(
             frames(),
             media_type="text/event-stream",
             headers={
-                # Optional fal-gateway nicety: plain synchronous calls to
-                # /stream get the LAST event (complete/error) as the body.
+                # fal-gateway: plain synchronous calls get the LAST event as the body.
                 "x-fal-sse-last-event-as-body": "1",
                 "Cache-Control": "no-cache",
             },

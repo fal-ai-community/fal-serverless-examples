@@ -1,13 +1,4 @@
-"""Tests for train-serve-lora.
-
-Two layers, one file (repo convention):
-
-1. Unit tests for shared.py — run free on every plain `pytest`, no GPU,
-   no live app. They exercise the exact validation code both apps ship.
-2. Live tests — run by the harness against each deployed variant
-   (HARNESS_VARIANT is "app" for the server, "app_trainer" for the
-   trainer); the app_client fixture skips outside the harness.
-"""
+"""Unit tests for shared.py plus harness-run live tests for both apps."""
 
 import importlib.util
 import os
@@ -28,7 +19,7 @@ _spec.loader.exec_module(shared)
 
 VARIANT = os.environ.get("HARNESS_VARIANT", "app")
 
-# The mirror convention: App.requirements in both apps must match this file.
+# App.requirements in both apps must match requirements.txt exactly.
 REQUIREMENTS = (Path(__file__).parent / "requirements.txt").read_text().split()
 
 
@@ -132,7 +123,6 @@ def test_assert_diffusers_keys_rejects_foreign_prefix(tmp_path):
         shared.assert_diffusers_lora_keys(
             {"unet.down.0.lora_A.weight": ((16, 8), "F32")}
         )
-    # and accepts our own trainer's output shape
     shared.assert_diffusers_lora_keys({k: (v, "BF16") for k, v in GOOD_KEYS.items()})
 
 
@@ -267,7 +257,7 @@ def _load_module(name):
     return mod
 
 
-# Allow the loaded modules to import shared without sys.path manipulation
+# Must precede _load_module calls: lets the loaded modules import shared.
 sys.modules.setdefault("shared", shared)
 
 
@@ -373,7 +363,7 @@ def test_preflight_accepts_published_dataset(app_client):
     assert response["ready"] is True
     assert response["num_images"] == 16
     assert response["num_sidecar_captions"] == 16
-    assert response["example_caption"]  # non-empty
+    assert response["example_caption"]
 
 
 @trainer_only

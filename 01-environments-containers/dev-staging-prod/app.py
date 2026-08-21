@@ -1,9 +1,4 @@
-"""Dev -> staging -> prod.
-
-Deliberately boring app: it reports back exactly what each environment gave
-it (secret value + code version), so a promotion or rollback can be proven
-rather than assumed.
-"""
+"""Promotion demo: reports the secret and code version each environment gave it."""
 
 import os
 
@@ -11,7 +6,7 @@ import fal
 from pydantic import BaseModel, Field
 
 STAGE_SECRET = "DEPLOY_STAGE"
-# Bumped by hand to make rollbacks visible - see the README's rollback step.
+# Bumped by hand so rollbacks are visible (README rollback step).
 CODE_VERSION = "1.0.0"
 
 
@@ -38,13 +33,10 @@ class Output(BaseModel):
     )
 
 
-# fal derives the app name from the class name: PromotionDemo deploys as
-# "promotion-demo", the name the README's URLs are written against.
+# Class name -> app name "promotion-demo"; the README's URLs depend on it.
 class PromotionDemo(fal.App, keep_alive=60):
     machine_type = "S"
     app_auth = "private"
-    # Only this app gets DEPLOY_STAGE injected, even though secrets are
-    # account-wide by default. Least privilege costs one line.
     secrets = [STAGE_SECRET]
     requirements = [
         "fal==1.78.2",
