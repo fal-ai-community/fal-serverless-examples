@@ -1,53 +1,47 @@
-# fal-serverless-examples
+<p align="center">
+  <a href="https://fal.ai">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://docs.fal.ai/logo/dark.svg">
+      <img src="https://docs.fal.ai/logo/light.svg" alt="fal" height="96">
+    </picture>
+    <h3 align="center">fal Serverless Examples</h3>
+  </a>
+</p>
 
-Production-grade examples for [fal Serverless](https://fal.ai/docs/documentation/serverless) — a numbered curriculum that takes you from your first app to production-grade serving. Every example ends in a **deployed endpoint**, and CI **re-deploys and smoke-tests each one for real**, so nothing here can silently rot.
+This is a collection of examples for [fal Serverless](https://fal.ai/docs/documentation/serverless). Use these examples to learn fal and to build and deploy your own models and pipelines. This repo supersedes [fal-demos](https://github.com/fal-ai-community/fal-demos).
 
-> The catalog grows tier by tier — each tier's README lists what's inside.
+## Usage
 
-## Catalog
-
-| Directory | Tier | Entries | Focus |
-|---|---|---|---|
-| [`00-getting-started/`](00-getting-started/) | Getting started | 4 examples | First app to first production API: hello-fal, your first image API, media in/out, bulletproof inputs. |
-| [`01-environments-containers/`](01-environments-containers/) | Environments & containers | 2 examples | Runtimes and Dockerfiles side by side, dev-to-prod environment promotion. |
-| [`02-scaling-cold-starts/`](02-scaling-cold-starts/) | Scaling & cold starts | 3 examples | Cold-start engineering with measured before/afters, autoscaling for bursty traffic, serving very large models. |
-| [`04-genmedia-patterns/`](04-genmedia-patterns/) | Genmedia patterns | 4 examples | Production serving for image, video, and 3D: per-user LoRAs, LoRA train-and-serve, multi-GPU video, progressive 3D rendering. |
-| [`05-media-processing/`](05-media-processing/) | Media processing | 1 example | The CPU pipelines around the models: transcode ladder, thumbnails, and captions in one post-production pipeline. |
-
-## What makes these examples different
-
-- **Journey-ordered**: tiers 00→05 follow the path a real team takes — getting started → environments → scaling → genmedia → media processing.
-- **CI-verified, not hoped-for**: the harness in [`harness/`](harness/) ephemeral-deploys every example and runs its smoke test against the live endpoint — a broken example turns CI red instead of rotting quietly.
-- **Deploy is the finish line**: each example ends with `fal deploy`, a playground link, and client code that calls the live endpoint.
-- **AI-native**: [`llms.txt`](llms.txt) indexes the catalog for agents and LLM tools.
-
-## Layout of every example
-
-```
-NN-tier-name/short-example-name/
-  README.md          # problem → output first → code → deploy → cost & tuning → next steps
-  app.py             # the fal app (or a package for bigger examples)
-  requirements.txt   # pinned
-  test_app.py        # smoke test (run by CI against a real ephemeral deploy)
-```
-
-Folder names are short kebab-case.
-
-## Running an example
+First, sign up for an account at [fal.ai](https://fal.ai/), then install the `fal` package and log in:
 
 ```bash
-pip install fal==1.78.2   # each example's requirements.txt pins the exact version
+pip install fal==1.78.2
 fal auth login
-cd 00-getting-started/<example>
-fal run app.py        # iterate
-fal deploy app.py     # ship it
 ```
 
-## Related
+Each example is one folder with an `app.py`. To run one:
 
-- [fal docs](https://fal.ai/docs) — the documentation these examples back ([repo](https://github.com/fal-ai/fal-docs))
-- [fal-demos](https://github.com/fal-ai-community/fal-demos) — predecessor demo repo (being superseded by this catalog)
+```bash
+cd 00-getting-started/hello-fal
+fal run app.py
+```
+
+Your code runs on fal's cloud, not your machine. `fal run` prints two URLs — the API endpoint, and a playground page where you can try it from the browser — and keeps the app alive until you press Ctrl-C. When you're ready to ship, run `fal deploy app.py` instead.
+
+## Examples
+
+The folders are numbered, and going through them in order is a guided tour, from your first app to production serving. New folders are added over time, so the numbering has gaps:
+
+- [**`00-getting-started/`**](00-getting-started/) — your first app, your first image API, moving media in and out, validating inputs.
+- [**`01-environments-containers/`**](01-environments-containers/) — fal's runtime vs your own Dockerfile, and dev → staging → prod.
+- [**`02-scaling-cold-starts/`**](02-scaling-cold-starts/) — cutting cold starts, tuning autoscaling, serving very large models.
+- [**`04-genmedia-patterns/`**](04-genmedia-patterns/) — image, video, and 3D in production: per-user LoRAs, LoRA training, multi-GPU inference, progressive 3D.
+- [**`05-media-processing/`**](05-media-processing/) — the CPU work around the models: transcoding, thumbnails, captions.
+
+Each folder's README lists what's inside. [`llms.txt`](llms.txt) is an index of the catalog for AI tools.
+
+_Every example comes with a test that CI runs against a real fal deploy ([`harness/`](harness/)), on Python **3.11**. Found something broken anyway? [Open an issue](https://github.com/fal-ai-community/fal-serverless-examples/issues)._
 
 ## License
 
-[MIT](LICENSE).
+The [MIT license](LICENSE).
