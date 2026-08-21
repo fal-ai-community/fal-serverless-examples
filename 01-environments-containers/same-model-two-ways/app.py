@@ -7,6 +7,7 @@ a Dockerfile.
 
 Both are deploy-checked against the same test_app.py.
 """
+
 import fal
 from pydantic import BaseModel, Field
 

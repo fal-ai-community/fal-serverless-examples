@@ -15,6 +15,7 @@ things this example needs:
 
 _publish_classes() repairs both at runtime by installing a real module entry.
 """
+
 from __future__ import annotations
 
 import sys

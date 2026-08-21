@@ -5,6 +5,7 @@ The three lessons:
   2. GPU sizing - ~70 GB resident bf16 needs H200-class VRAM (see README math)
   3. /stream    - intermediate-step tiny-VAE previews over SSE
 """
+
 import asyncio
 import base64
 import json
@@ -53,7 +54,9 @@ class Input(BaseModel):
         default=57,
         ge=9,
         le=121,
-        description=f"Frame count at {FRAMES_PER_SECOND} fps; snapped to the model's 8k+1 grid.",
+        description=(
+            f"Frame count at {FRAMES_PER_SECOND} fps; snapped to the model's 8k+1 grid."
+        ),
     )
     seed: int | None = Field(
         default=None, description="Reproducible seed; random if unset."
@@ -67,7 +70,8 @@ class Input(BaseModel):
 
 
 class Output(BaseModel):
-    # No sync_mode field on purpose: multi-hundred-MB videos make data-URI transport inappropriate.
+    # No sync_mode field on purpose: multi-hundred-MB videos make data-URI
+    # transport inappropriate.
     video: File = Field(description="Final video with audio, hosted on the fal CDN.")
     seed: int = Field(description="Seed actually used.")
     num_frames: int = Field(
@@ -105,7 +109,7 @@ class LargeVideoModel(fal.App, keep_alive=300):
     ]
 
     def setup(self) -> None:
-        """Fetch weights, load to GPU, and warm up; each stage timed into self.timings."""
+        """Fetch weights, load to GPU, and warm up; stages timed into self.timings."""
         import torch
         from diffusers import LTX2Pipeline
         from taehv import TAEHV
@@ -137,7 +141,10 @@ class LargeVideoModel(fal.App, keep_alive=300):
     def _generate(
         self, request: Input, preview_cb: Callable[..., dict] | None
     ) -> tuple[str, int, int, dict[str, float]]:
-        """Run one distilled 8-step generation; returns (mp4 path, seed, num_frames, timings)."""
+        """Run one distilled 8-step generation.
+
+        Returns (mp4 path, seed, num_frames, timings).
+        """
         import torch
         from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
         from diffusers.utils import encode_video
@@ -275,7 +282,10 @@ class LargeVideoModel(fal.App, keep_alive=300):
                         detail, status = exc.message, exc.status_code
                     else:
                         detail, status = f"{type(exc).__name__}: {exc}", 500
-                    yield f"data: {json.dumps({'type': 'error', 'detail': detail, 'status_code': status})}\n\n"
+                    err = json.dumps(
+                        {"type": "error", "detail": detail, "status_code": status}
+                    )
+                    yield f"data: {err}\n\n"
                     return
                 yield f"data: {result}\n\n"
             finally:
@@ -316,9 +326,9 @@ class _PreviewSession:
         self.every = every
         self.events: queue.Queue[dict] = queue.Queue()
         self.done = threading.Event()
-        self._latest: "tuple[int, int, torch.Tensor] | None" = None  # (step, total, x0)
+        self._latest: tuple[int, int, torch.Tensor] | None = None  # (step, total, x0)
         self._lock = threading.Lock()
-        self._prev: "tuple[torch.Tensor, float] | None" = None  # (latents, sigma)
+        self._prev: tuple[torch.Tensor, float] | None = None  # (latents, sigma)
         self._worker = threading.Thread(target=self._decode_loop, daemon=True)
         self._worker.start()
 
@@ -376,7 +386,8 @@ class _PreviewSession:
                 parallel=True,
                 show_progress_bar=False,
             )
-            rgb = torch.nn.functional.interpolate(  # half-res previews: ~4x smaller events
+            # half-res previews: ~4x smaller events
+            rgb = torch.nn.functional.interpolate(
                 rgb[0].float(), scale_factor=0.5, mode="area"
             )
             frames = (rgb.clamp(0, 1).permute(0, 2, 3, 1) * 255).to(torch.uint8).cpu()

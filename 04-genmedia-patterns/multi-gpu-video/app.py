@@ -10,6 +10,7 @@ Model: Wan-AI/Wan2.2-T2V-A14B-Diffusers - Apache-2.0, ungated. The MoE pair
 of 14B expert transformers is ~70 GB in bf16: this is what "needs multi-GPU"
 actually looks like.
 """
+
 import os
 import random
 import shutil
@@ -52,21 +53,28 @@ class Input(BaseModel):
     )
     resolution: Literal["480p", "720p"] = Field(
         default="480p",
-        description="480p (832x480) for fast iteration; 720p (1280x720) for final quality.",
+        description=(
+            "480p (832x480) for fast iteration; 720p (1280x720) for final quality."
+        ),
         examples=["480p"],
     )
     num_frames: int = Field(
         default=33,
         ge=9,
         le=81,
-        description="Clip length in frames at 16 fps; must satisfy (n - 1) % 4 == 0. 81 is ~5 s.",
+        description=(
+            "Clip length in frames at 16 fps; must satisfy (n - 1) % 4 == 0. "
+            "81 is ~5 s."
+        ),
         examples=[33],
     )
     num_inference_steps: int = Field(
         default=6,
         ge=2,
         le=40,
-        description="Denoising steps. 6 is a fast preview; WAN's native quality default is 27.",
+        description=(
+            "Denoising steps. 6 is a fast preview; WAN's native quality default is 27."
+        ),
         examples=[6],
     )
     guidance_scale: float = Field(
@@ -85,7 +93,10 @@ class Input(BaseModel):
         default=None,
         ge=0,
         le=2**32 - 1,
-        description="Random when omitted. Echoed back; same seed + same inputs reproduces the clip.",
+        description=(
+            "Random when omitted. Echoed back; same seed + same inputs "
+            "reproduces the clip."
+        ),
     )
 
     @field_validator("num_frames")
@@ -93,13 +104,15 @@ class Input(BaseModel):
     def _frames_on_grid(cls, v: int) -> int:
         if (v - 1) % 4 != 0:
             raise ValueError(
-                "num_frames must satisfy (num_frames - 1) % 4 == 0, e.g. 9, 17, 33, 49, 81"
+                "num_frames must satisfy (num_frames - 1) % 4 == 0, "
+                "e.g. 9, 17, 33, 49, 81"
             )
         return v
 
 
 class Output(BaseModel):
-    # No sync_mode on purpose: multi-hundred-MB clips make data-URI transport inappropriate.
+    # No sync_mode on purpose: multi-hundred-MB clips make data-URI transport
+    # inappropriate.
     video: File = Field(description="The generated clip (mp4, 16 fps) on the fal CDN.")
     seed: int = Field(description="The seed that produced this video.")
     timings: dict[str, float] = Field(
@@ -130,7 +143,7 @@ class WanWorker(DistributedWorker):
         pipe.enable_model_cpu_offload(device=self.device)
         self.pipe = pipe
 
-    def __call__(
+    def __call__(  # type: ignore[override]  # intentional kwargs narrowing
         self,
         streaming: bool = False,  # force-injected by the runner - accept and ignore
         *,
@@ -239,11 +252,15 @@ class MultiGpuVideo(fal.App, keep_alive=300):
 
     @fal.endpoint("/")
     async def generate(self, request: Input) -> Output:
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         result = await self.runner.invoke(_worker_payload(request, seed))
         if "error" in result:
             # 5xx: not billed, and the platform retries on healthy hardware.
-            raise HTTPException(status_code=500, detail=f"generation failed: {result['error']}")
+            raise HTTPException(
+                status_code=500, detail=f"generation failed: {result['error']}"
+            )
 
         try:
             video = File.from_path(result["video_path"], content_type="video/mp4")

@@ -78,9 +78,11 @@ def fetch_taehv() -> Path:
     if dest.exists():
         return dest
     _TAEHV_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=_TAEHV_DIR, delete=False) as tmp:
-        with urllib.request.urlopen(TAEHV_WEIGHTS_URL, timeout=60) as resp:
-            shutil.copyfileobj(resp, tmp)
+    with (
+        tempfile.NamedTemporaryFile(dir=_TAEHV_DIR, delete=False) as tmp,
+        urllib.request.urlopen(TAEHV_WEIGHTS_URL, timeout=60) as resp,
+    ):
+        shutil.copyfileobj(resp, tmp)
     digest = hashlib.sha256(Path(tmp.name).read_bytes()).hexdigest()
     if digest != TAEHV_WEIGHTS_SHA:
         os.unlink(tmp.name)
@@ -97,7 +99,8 @@ def warm_page_cache(directory: str, parallelism: int = 32) -> float:
     """
     t0 = time.perf_counter()
     subprocess.run(
-        f"find {shlex.quote(directory)} -type f | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
+        f"find {shlex.quote(directory)} -type f"
+        f" | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
         shell=True,
         check=True,
     )

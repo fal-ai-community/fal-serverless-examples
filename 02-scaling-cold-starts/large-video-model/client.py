@@ -8,6 +8,7 @@ Usage:
 Writes preview_latest.mp4 as each preview arrives (open it in a looping
 player) and final.mp4 (with audio) when generation completes.
 """
+
 import base64
 import pathlib
 import shutil
@@ -33,9 +34,11 @@ def main() -> None:
                 f" - preview_latest.mp4 updated ({len(data) // 1024} KB)"
             )
         elif event["type"] == "result":
-            with urllib.request.urlopen(event["video"]["url"], timeout=60) as resp:
-                with open("final.mp4", "wb") as out:
-                    shutil.copyfileobj(resp, out)
+            with (
+                urllib.request.urlopen(event["video"]["url"], timeout=60) as resp,
+                open("final.mp4", "wb") as out,
+            ):
+                shutil.copyfileobj(resp, out)
             print(f"done: final.mp4 (seed {event['seed']}, {event['timings']})")
         elif event["type"] == "error":
             print(f"generation failed ({event['status_code']}): {event['detail']}")

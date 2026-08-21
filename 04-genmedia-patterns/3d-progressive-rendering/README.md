@@ -43,9 +43,13 @@ import httpx, json
 from fal.sdk import get_credentials
 
 with httpx.stream(
-    "POST", "<your app URL>/stream",
-    json={"image_url": "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"},
-    headers=get_credentials().to_headers(), timeout=600,
+    "POST",
+    "<your app URL>/stream",
+    json={
+        "image_url": "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png"
+    },
+    headers=get_credentials().to_headers(),
+    timeout=600,
 ) as r:
     for line in r.iter_lines():
         if line.startswith("data: "):
@@ -96,8 +100,9 @@ Once registered, the fal clients stream it natively (they append `/stream`):
 ```python
 import fal_client
 
-for event in fal_client.stream("<username>/sam-3d-progressive",
-                               arguments={"image_url": "https://…/photo.png"}):
+for event in fal_client.stream(
+    "<username>/sam-3d-progressive", arguments={"image_url": "https://…/photo.png"}
+):
     print(event["type"], event.get("progress"))
 ```
 

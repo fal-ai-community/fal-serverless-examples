@@ -16,6 +16,7 @@ nowhere at all - which is why this example measures them instead.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -243,7 +244,7 @@ def simulate(
             done = [c for c in runner["inflight"] if c <= t]
             if done:
                 runner["inflight"] = [c for c in runner["inflight"] if c > t]
-                runner["last_activity"] = max(runner["last_activity"], max(done))
+                runner["last_activity"] = max(runner["last_activity"], *done)
 
         for runner in alive:
             while (
@@ -382,7 +383,8 @@ def _by_runner(requests: list[dict]) -> dict[str, list[dict]]:
 def _check_schema(trace: dict) -> None:
     if trace.get("schema") != TRACE_SCHEMA:
         raise ValueError(
-            f"unsupported trace schema {trace.get('schema')!r}; expected {TRACE_SCHEMA!r}"
+            f"unsupported trace schema {trace.get('schema')!r}; "
+            f"expected {TRACE_SCHEMA!r}"
         )
 
 
@@ -402,10 +404,10 @@ def calibrate(trace: dict) -> Calibration:
     # time. Round-trip minus arrival would NOT work: in a spike, warm
     # requests also queued behind a cold start, so that inflates service time
     # and drives the derived SETUP start negative.
-    gaps = []
+    gaps: list[float] = []
     for requests in _by_runner(ok).values():
         completions = sorted(float(r["completed_s"]) for r in requests)
-        gaps.extend(b - a for a, b in zip(completions, completions[1:]))
+        gaps.extend(b - a for a, b in itertools.pairwise(completions))
     if not gaps:
         raise ValueError(
             "no runner served two requests; cannot measure service time - "
@@ -495,7 +497,7 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRo
     end = max(w.last_completion_s + keep_alive for w in windows.values())
 
     timeline: list[TimelineRow] = []
-    steps = int(math.ceil((end - start) / tick_s)) + 1
+    steps = math.ceil((end - start) / tick_s) + 1
     for step in range(steps):
         t = round(start + step * tick_s, 6)
         setup = idle = running = 0
@@ -786,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Readers run this directly, so a bad trace should print one clear line,
     # not a raw traceback. Only these three input-shaped failures are
-    # handled here - a missing file, unparseable JSON, or a trace whose
+    # handled here - a missing file, unparsable JSON, or a trace whose
     # schema calibrate() rejects; anything else is unexpected and should
     # surface with its full traceback rather than being swallowed.
     try:

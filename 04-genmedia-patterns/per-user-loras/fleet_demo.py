@@ -5,11 +5,13 @@ affinity at scale.
 Usage:
     pip install fal-client==1.0.0
     python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200
-    python fleet_demo.py --app <username>/per-user-loras --users 1000 --requests 200 --no-hints
+    python fleet_demo.py --app <username>/per-user-loras --users 1000 \
+        --requests 200 --no-hints
 
 Requires FAL_KEY (or `fal auth login`). Scale the app to >=2 runners first to
 see affinity: fal apps scale per-user-loras --min-concurrency 2
 """
+
 import argparse
 import collections
 import concurrent.futures as cf
@@ -41,17 +43,23 @@ def register_users(app: str, users: list[str], workers: int) -> dict[str, str]:
             hints[uid] = reg["hint"]
 
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:
-        done = 0
-        for _ in pool.map(_reg, users):
-            done += 1
+        for done, _ in enumerate(pool.map(_reg, users), start=1):
             if done % 100 == 0:
                 print(f"registered {done}/{len(users)}")
     return hints
 
 
-def drive_traffic(app: str, users: list[str], hints: dict[str, str],
-                  n_requests: int, use_hints: bool, workers: int, seed: int,
-                  zipf: float, use_queue: bool = False) -> tuple[list[dict], dict[str, int]]:
+def drive_traffic(
+    app: str,
+    users: list[str],
+    hints: dict[str, str],
+    n_requests: int,
+    use_hints: bool,
+    workers: int,
+    seed: int,
+    zipf: float,
+    use_queue: bool = False,
+) -> tuple[list[dict], dict[str, int]]:
     # Zipf-skewed popularity: a few hot users, long tail. Within a keep_alive
     # window real avatar traffic is concentrated (active users iterate in
     # edit-generate loops), so the default exponent leans hot; lower --zipf
@@ -76,8 +84,13 @@ def drive_traffic(app: str, users: list[str], hints: dict[str, str],
         # Clients never compute hints: send the server-issued one when we have
         # it (from /register, or captured off an earlier response below).
         kwargs = {"hint": hint} if use_hints and hint else {}
-        arguments = {"user_id": uid, "prompt": rng.choice(PROMPTS),
-                     "num_inference_steps": 1, "seed": i, "sync_mode": True}
+        arguments = {
+            "user_id": uid,
+            "prompt": rng.choice(PROMPTS),
+            "num_inference_steps": 1,
+            "seed": i,
+            "sync_mode": True,
+        }
         # subscribe() = queue path (production default); run() = sync path.
         call = fal_client.subscribe if use_queue else fal_client.run
         serving = call(app, arguments, **kwargs)["serving"]
@@ -96,9 +109,13 @@ def drive_traffic(app: str, users: list[str], hints: dict[str, str],
     return servings, stickiness
 
 
-def report(servings: list[dict], use_hints: bool, stickiness: dict | None = None) -> None:
-    by_worker: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    total = collections.Counter()
+def report(
+    servings: list[dict], use_hints: bool, stickiness: dict | None = None
+) -> None:
+    by_worker: dict[str, collections.Counter] = collections.defaultdict(
+        collections.Counter
+    )
+    total: collections.Counter[str] = collections.Counter()
     for s in servings:
         by_worker[s["worker_id"]][s["adapter_source"]] += 1
         total[s["adapter_source"]] += 1
@@ -108,14 +125,19 @@ def report(servings: list[dict], use_hints: bool, stickiness: dict | None = None
     for wid, c in sorted(by_worker.items()):
         print(f"{wid:<10} {c['gpu-cache']:>9} {c['disk']:>6} {c['downloaded']:>11}")
     n = len(servings)
-    print(f"{'TOTAL':<10} {total['gpu-cache']:>9} {total['disk']:>6} {total['downloaded']:>11}")
+    print(
+        f"{'TOTAL':<10} {total['gpu-cache']:>9} {total['disk']:>6} "
+        f"{total['downloaded']:>11}"
+    )
     print(f"warm-adapter rate: {total['gpu-cache'] / n:.1%}")
     if stickiness and stickiness["repeats"]:
         rate = stickiness["same_worker"] / stickiness["repeats"]
         rand = 1.0 / max(len(by_worker), 1)
-        print(f"repeat-request worker stickiness: {rate:.1%} "
-              f"({stickiness['same_worker']}/{stickiness['repeats']} repeats; "
-              f"random ≈ {rand:.1%}, perfect affinity ≈ 100%)")
+        print(
+            f"repeat-request worker stickiness: {rate:.1%} "
+            f"({stickiness['same_worker']}/{stickiness['repeats']} repeats; "
+            f"random ≈ {rand:.1%}, perfect affinity ≈ 100%)"
+        )
 
 
 def main() -> None:
@@ -125,23 +147,40 @@ def main() -> None:
     ap.add_argument("--requests", type=int, default=200)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--zipf", type=float, default=1.3,
-                    help="traffic skew exponent; 1.0 = flat-ish long tail")
+    ap.add_argument(
+        "--zipf",
+        type=float,
+        default=1.3,
+        help="traffic skew exponent; 1.0 = flat-ish long tail",
+    )
     ap.add_argument("--no-hints", action="store_true")
-    ap.add_argument("--queue", action="store_true",
-                    help="drive via the queue API (subscribe) instead of sync run")
-    ap.add_argument("--skip-register", action="store_true",
-                    help="reuse users registered by a previous run")
+    ap.add_argument(
+        "--queue",
+        action="store_true",
+        help="drive via the queue API (subscribe) instead of sync run",
+    )
+    ap.add_argument(
+        "--skip-register",
+        action="store_true",
+        help="reuse users registered by a previous run",
+    )
     args = ap.parse_args()
 
     users = user_ids(args.users)
     hints: dict[str, str] = {}
     if not args.skip_register:
         hints = register_users(args.app, users, args.workers)
-    servings, stickiness = drive_traffic(args.app, users, hints, args.requests,
-                                         use_hints=not args.no_hints,
-                                         workers=args.workers, seed=args.seed,
-                                         zipf=args.zipf, use_queue=args.queue)
+    servings, stickiness = drive_traffic(
+        args.app,
+        users,
+        hints,
+        args.requests,
+        use_hints=not args.no_hints,
+        workers=args.workers,
+        seed=args.seed,
+        zipf=args.zipf,
+        use_queue=args.queue,
+    )
     report(servings, use_hints=not args.no_hints, stickiness=stickiness)
 
 

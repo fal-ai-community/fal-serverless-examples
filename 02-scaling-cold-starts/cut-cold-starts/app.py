@@ -14,19 +14,19 @@ wan_flashpack.py holds the integration classes - the exact pattern from
 FlashPack's own WAN 2.1 flagship example - and ships to the runner via
 local_python_modules. bench.py measures this app against the baseline.
 """
+
 import random
 import shutil
 import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import fal
+import wan_flashpack
 from fal.toolkit import File, synchronized_inductor_cache
 from pydantic import BaseModel, Field, field_validator
-
-import wan_flashpack
 
 MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 # Resolution is fixed at WAN 2.1 1.3B's native 832x480 so warmup at both frame
@@ -118,7 +118,9 @@ class SetupReportOutput(BaseModel):
 class ColdStartOptimized(fal.App, keep_alive=60):
     machine_type = "GPU-H100"  # pin ONE type: inductor caches are per GPU type
     app_auth = "private"
-    startup_timeout = 2700  # covers the account's first-ever boot (download + pack + compile)
+    startup_timeout = (
+        2700  # covers the account's first-ever boot (download + pack + compile)
+    )
     local_python_modules = ["wan_flashpack"]
     requirements = [
         "fal==1.78.2",  # keep in sync with harness/requirements.txt
@@ -132,7 +134,8 @@ class ColdStartOptimized(fal.App, keep_alive=60):
     ]
 
     def setup(self) -> None:
-        """Pack once to /data, stream via FlashPack, compile against the shared cache."""
+        """Pack once to /data, stream via FlashPack, compile against the
+        shared cache."""
         timings: dict[str, float] = {}
         setup_start = time.perf_counter()
 
@@ -145,7 +148,7 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         # Builds the FlashPack WAN classes and installs the sys.modules entry
         # that transformers introspection and the pack's model_index.json
         # class resolution both need (see wan_flashpack.py's docstring).
-        classes = wan_flashpack.get_classes()
+        classes: dict[str, type[Any]] = wan_flashpack.get_classes()
         FlashPackWanPipeline = classes["FlashPackWanPipeline"]
         stage("imports", t0)
 
@@ -179,7 +182,9 @@ class ColdStartOptimized(fal.App, keep_alive=60):
                 text_encoder=text_encoder,
                 vae=vae,
                 transformer=transformer,
-                scheduler=UniPCMultistepScheduler.from_pretrained(repo_dir / "scheduler"),
+                scheduler=UniPCMultistepScheduler.from_pretrained(
+                    repo_dir / "scheduler"
+                ),
             )
             local_dir = Path(tempfile.mkdtemp(prefix="wan-flashpack-build-")) / "pack"
             local_dir.mkdir(parents=True)
@@ -246,7 +251,8 @@ class ColdStartOptimized(fal.App, keep_alive=60):
             # unchanged, so a later check could be masked.
             if leftover:
                 raise RuntimeError(
-                    f"{component_name}: tensors not materialized from pack: {leftover[:5]}"
+                    f"{component_name}: tensors not materialized from pack: "
+                    f"{leftover[:5]}"
                 )
         pipe.set_progress_bar_config(disable=True)
         self.pipe = pipe
@@ -289,7 +295,9 @@ class ColdStartOptimized(fal.App, keep_alive=60):
         import torch
         from diffusers.utils import export_to_video
 
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         t0 = time.perf_counter()
         frames = self.pipe(
             prompt=request.prompt,

@@ -9,6 +9,7 @@ before your model ever sees them - and the typed errors callers get back.
 See the README for the full threat model: what fal already blocks versus
 what each gate here adds.
 """
+
 import base64
 import binascii
 import hashlib
@@ -39,6 +40,7 @@ DOWNLOAD_DIR = Path("/tmp/bulletproof-inputs")
 # --------------------------------------------------------------------------
 # The app
 # --------------------------------------------------------------------------
+
 
 class Input(BaseModel):
     image_url: str = Field(
@@ -72,7 +74,8 @@ class Input(BaseModel):
         description="Declared-uncompressed-size cap for archives.",
     )
     output_format: Literal["png", "jpeg", "webp"] = Field(
-        default="png", description="Unused by validation - here to show a native enum 422."
+        default="png",
+        description="Unused by validation - here to show a native enum 422.",
     )
 
 
@@ -189,6 +192,7 @@ class BulletproofInputs(fal.App, keep_alive=60):
 # Gates - pure functions, unit-tested without deploying anything
 # --------------------------------------------------------------------------
 
+
 def check_url_policy(url: str, field: str) -> None:
     """Scheme and port policy. The SDK's SSRF client already restricts
     http(s) fetches to globally routable IPs, but it does not restrict
@@ -201,14 +205,17 @@ def check_url_policy(url: str, field: str) -> None:
             f"allowed: {', '.join(sorted(ALLOWED_SCHEMES))}",
             type="value_error",
         )
-    if parsed.scheme != "data" and parsed.port is not None:
-        if parsed.port not in ALLOWED_PORTS:
-            raise FieldException(
-                field=field,
-                message=f"port {parsed.port} is not allowed; allowed: "
-                f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
-                type="value_error",
-            )
+    if (
+        parsed.scheme != "data"
+        and parsed.port is not None
+        and parsed.port not in ALLOWED_PORTS
+    ):
+        raise FieldException(
+            field=field,
+            message=f"port {parsed.port} is not allowed; allowed: "
+            f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
+            type="value_error",
+        )
 
 
 def check_pixel_budget(width: int, height: int, max_pixels: int, field: str) -> None:
@@ -275,7 +282,8 @@ def inspect_zip(
     if unsafe:
         raise FieldException(
             field=field,
-            message=f"archive contains paths that escape the extraction directory: {unsafe[0]}",
+            message="archive contains paths that escape the extraction "
+            f"directory: {unsafe[0]}",
             type="invalid_archive",
         )
     return ArchiveStats(
@@ -295,7 +303,9 @@ def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
     """
     header, _, payload = url.partition(",")
     if not payload:
-        raise FieldException(field=field, message="malformed data URI", type="value_error")
+        raise FieldException(
+            field=field, message="malformed data URI", type="value_error"
+        )
     is_base64 = ";base64" in header
     max_bytes = max_mb * 1024 * 1024
     estimated = len(payload) * 3 // 4 if is_base64 else len(payload)
@@ -307,10 +317,14 @@ def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
             type="file_too_large",
         )
     try:
-        data = base64.b64decode(payload, validate=True) if is_base64 else payload.encode()
+        data = (
+            base64.b64decode(payload, validate=True) if is_base64 else payload.encode()
+        )
     except (binascii.Error, ValueError) as exc:
         raise FieldException(
-            field=field, message="data URI payload is not valid base64", type="value_error"
+            field=field,
+            message="data URI payload is not valid base64",
+            type="value_error",
         ) from exc
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -342,5 +356,7 @@ def download_guarded(url: str, max_mb: int, field: str) -> Path:
         # SSRF refusals arrive here verbatim ("Hostname resolves to a
         # non-routable address", "URL scheme 'ftp' is not allowed", ...).
         raise FieldException(
-            field=field, message=f"could not download: {detail}", type="file_download_error"
+            field=field,
+            message=f"could not download: {detail}",
+            type="file_download_error",
         ) from exc

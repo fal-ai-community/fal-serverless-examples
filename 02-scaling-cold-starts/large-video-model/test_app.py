@@ -3,6 +3,7 @@
 '/' is the harness-smoked JSON endpoint; '/stream' is exercised with a raw
 SSE client because the harness only speaks request/response.
 """
+
 import base64
 import json
 import os

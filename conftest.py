@@ -6,9 +6,10 @@ repo. Outside a harness run the fixture skips, so plain `pytest` costs
 nothing. pytest imports this file by path, so no addopts/sys.path setup is
 required from the caller.
 """
+
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from harness.pytest_plugin import app_client  # noqa: E402,F401
+from harness.pytest_plugin import app_client  # noqa: F401

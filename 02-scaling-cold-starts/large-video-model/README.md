@@ -125,8 +125,11 @@ import fal_client
 
 for event in fal_client.stream(
     "<your-username>/large-video-model",
-    {"prompt": "a red fox trotting through fresh snow at golden hour",
-     "resolution": "1024x576", "num_frames": 97},
+    {
+        "prompt": "a red fox trotting through fresh snow at golden hour",
+        "resolution": "1024x576",
+        "num_frames": 97,
+    },
     path="/stream",
 ):
     print(event["type"])

@@ -6,6 +6,7 @@ Hub, deserializes them through CPU, casts to serving dtypes, moves to GPU,
 and compiles kernels from scratch. app.py is the same model and endpoints
 with all three cold-start levers pulled; bench.py measures both.
 """
+
 import random
 import tempfile
 import time
@@ -90,7 +91,9 @@ class SetupReportOutput(BaseModel):
 
 
 class ColdStartBaseline(fal.App, keep_alive=60):
-    machine_type = "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
+    machine_type = (
+        "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
+    )
     app_auth = "private"
     startup_timeout = 2700  # ~29 GB Hub download + CPU deserialize + full compile
     # Identical pins to app.py so both share one cached environment and the
@@ -118,6 +121,7 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         t0 = time.perf_counter()
         import torch
         from diffusers import WanPipeline
+
         stage("imports", t0)
 
         # The Hub repo ships fp32 (~29 GB); serving dtypes are bf16 for the
@@ -164,7 +168,9 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         import torch
         from diffusers.utils import export_to_video
 
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         t0 = time.perf_counter()
         frames = self.pipe(
             prompt=request.prompt,

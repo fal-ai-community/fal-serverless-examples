@@ -5,6 +5,7 @@ Imported by BOTH apps and shipped to each runner via `local_python_modules` — 
 here runs on CPU with stdlib + Pillow + safetensors, so the unit tests in
 test_app.py exercise the exact code the runners execute, for free.
 """
+
 from __future__ import annotations
 
 import math
@@ -15,10 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # --- the published demo artifacts (see README "How the demo was made") ----
-# NOTE: when this moves to the fal HF org, update HF_REPO here and the URLs in README.md.
+# NOTE: when this moves to the fal HF org, update HF_REPO here and the URLs
+# in README.md.
 HF_REPO = "rehan-fal/flux-2-klein-4b-paper-diorama-lora"
-DATASET_ZIP_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
-REFERENCE_ADAPTER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
+DATASET_ZIP_URL = (
+    f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
+)
+REFERENCE_ADAPTER_URL = (
+    f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
+)
 
 # --- the model pair: gradients on base, 4-step inference on distilled -----
 TRAIN_MODEL_ID = "black-forest-labs/FLUX.2-klein-base-4B"
@@ -35,14 +41,14 @@ DEMO_LORA = "paper-diorama"
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 
 # --- input bounds -----------------------------------------------------------
-MAX_ZIP_MB = 200            # streamed cap on the dataset download
+MAX_ZIP_MB = 200  # streamed cap on the dataset download
 MAX_ZIP_ENTRIES = 200
-MAX_UNCOMPRESSED_MB = 500   # zip-bomb gate: declared size, before extraction
-MIN_IMAGE_EDGE = 256        # hard floor; below this, training is hopeless
-RECOMMENDED_EDGE = 1024     # BFL's style-LoRA guidance; smaller -> warning
-MAX_IMAGES = 50             # style LoRAs want 10-40; caps the precompute bill
-MAX_ADAPTER_MB = 300        # klein-4B rank-16 adapters are ~100 MB
-PROBE_TENSOR_COUNT = 4      # smallest tensors only: keeps the CPU data probe cheap
+MAX_UNCOMPRESSED_MB = 500  # zip-bomb gate: declared size, before extraction
+MIN_IMAGE_EDGE = 256  # hard floor; below this, training is hopeless
+RECOMMENDED_EDGE = 1024  # BFL's style-LoRA guidance; smaller -> warning
+MAX_IMAGES = 50  # style LoRAs want 10-40; caps the precompute bill
+MAX_ADAPTER_MB = 300  # klein-4B rank-16 adapters are ~100 MB
+PROBE_TENSOR_COUNT = 4  # smallest tensors only: keeps the CPU data probe cheap
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -101,9 +107,7 @@ def validate_safetensors_headers(
 
     size_mb = path.stat().st_size / (1024 * 1024)
     if size_mb > max_mb:
-        raise ArtifactError(
-            f"adapter is {size_mb:.0f} MB; maximum is {max_mb} MB"
-        )
+        raise ArtifactError(f"adapter is {size_mb:.0f} MB; maximum is {max_mb} MB")
     try:
         with safe_open(str(path), framework="pt", device="cpu") as f:
             keys = list(f.keys())
@@ -114,7 +118,9 @@ def validate_safetensors_headers(
                 for k in keys
             }
             # probe the few smallest tensors (CPU, cheap): finite + signal
-            probe = sorted(keys, key=lambda k: math.prod(shapes[k][0]))[:PROBE_TENSOR_COUNT]
+            probe = sorted(keys, key=lambda k: math.prod(shapes[k][0]))[
+                :PROBE_TENSOR_COUNT
+            ]
             any_nonzero = False
             for k in probe:
                 t = f.get_tensor(k)
@@ -122,7 +128,9 @@ def validate_safetensors_headers(
                     raise ArtifactError(f"non-finite values in {k}")
                 any_nonzero = any_nonzero or bool(t.count_nonzero())
             if not any_nonzero:
-                raise ArtifactError("probed tensors are all zeros - corrupt or untrained")
+                raise ArtifactError(
+                    "probed tensors are all zeros - corrupt or untrained"
+                )
     except safetensors.SafetensorError as exc:
         raise ArtifactError(f"not a valid safetensors file: {exc}") from None
     return shapes
@@ -148,7 +156,7 @@ def assert_diffusers_lora_keys(shapes: dict[str, tuple[tuple[int, ...], str]]) -
 class PreparedDataset:
     """What prepare_dataset returns: training-ready items + a preflight report."""
 
-    items: list[tuple[Path, str]]   # (processed RGB png path, final caption)
+    items: list[tuple[Path, str]]  # (processed RGB png path, final caption)
     num_images: int
     num_sidecar_captions: int
     warnings: list[str]
@@ -173,7 +181,9 @@ def _safe_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
                 f"archive entry {info.filename!r} escapes the extraction directory",
                 "invalid_archive",
             )
-        if any(p.lower() == "__macosx" for p in parts) or Path(info.filename).name.startswith("._"):
+        if any(p.lower() == "__macosx" for p in parts) or Path(
+            info.filename
+        ).name.startswith("._"):
             continue
         total += info.file_size
         if total > MAX_UNCOMPRESSED_MB * 1024 * 1024:
@@ -228,7 +238,8 @@ def prepare_dataset(
     if not images:
         raise DatasetError(
             "image_data_url",
-            f"no images found in the archive (accepted: {', '.join(sorted(IMAGE_SUFFIXES))})",
+            "no images found in the archive "
+            f"(accepted: {', '.join(sorted(IMAGE_SUFFIXES))})",
             "no_images_found",
         )
     if len(images) > MAX_IMAGES:
@@ -253,8 +264,8 @@ def prepare_dataset(
     small: list[str] = []
     for idx, path in enumerate(images):
         try:
-            with PILImage.open(path) as img:
-                img = ImageOps.exif_transpose(img).convert("RGB")
+            with PILImage.open(path) as src:
+                img = ImageOps.exif_transpose(src).convert("RGB")
                 img.load()
         except Exception as exc:
             raise DatasetError(
@@ -274,6 +285,7 @@ def prepare_dataset(
         processed = out_dir / f"{idx:03d}.png"
         img.save(processed, format="PNG")
         caption = captions.get(path.with_suffix("").name) or default_caption
+        assert caption is not None  # missing_captions raised above otherwise
         if trigger_phrase:
             caption = f"{trigger_phrase} {caption}"
         items.append((processed, caption))
@@ -281,7 +293,8 @@ def prepare_dataset(
     if small:
         warnings.append(
             f"{len(small)} image(s) below {RECOMMENDED_EDGE}px shortest edge "
-            f"({', '.join(small[:5])}); BFL recommends >={RECOMMENDED_EDGE}px for style LoRAs"
+            f"({', '.join(small[:5])}); "
+            f"BFL recommends >={RECOMMENDED_EDGE}px for style LoRAs"
         )
     return PreparedDataset(
         items=items,

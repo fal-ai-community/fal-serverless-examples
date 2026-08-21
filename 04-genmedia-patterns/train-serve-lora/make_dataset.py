@@ -10,6 +10,7 @@ your own deployment of the first-image-api example (e.g. <username>/first-image-
     pip install fal-client==1.0.0
     python make_dataset.py --out paper-diorama-16.zip
 """
+
 import argparse
 import io
 import time

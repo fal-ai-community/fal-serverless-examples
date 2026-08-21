@@ -6,6 +6,7 @@ runner keeps a small GPU LRU of loaded adapters, and provide_hints() tells
 fal's router which users this runner already has hot. Hints are best-effort
 affinity - any runner can serve any user; a miss just pays the adapter load.
 """
+
 import gc
 import hashlib
 import json
@@ -30,13 +31,17 @@ MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
 ADAPTER_DIR = Path("/data/examples/per-user-loras/adapters")
 KV_DB_NAME = "per-user-loras"
 HINT_PREFIX = "lora:"
-MAX_RESIDENT_ADAPTERS = 8   # LRU bound = provide_hints() bound (16 KB header budget)
+MAX_RESIDENT_ADAPTERS = 8  # LRU bound = provide_hints() bound (16 KB header budget)
 MAX_LORA_BYTES = 300 * 1024 * 1024
 SYNTHETIC_RANK = 8
 USER_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 USER_ID_RE = re.compile(USER_ID_PATTERN)
 _HF_REPO_RE = re.compile(r"^[\w][\w.-]*/[\w][\w.-]*$")
-_OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_alloc_failed")
+_OOM_MARKERS = (
+    "out of memory",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+)
 
 # Real, license-verified klein-4B LoRAs (Apache-2.0 / MIT), spanning all four
 # key-format families diffusers 0.39 loads: ai-toolkit, kohya, raw-PEFT
@@ -48,35 +53,43 @@ _FLEET = "https://huggingface.co/rehan-fal/klein-style-fleet/resolve/main"
 FEATURED_USERS: dict[str, dict] = {
     "ukiyo-e": {
         "url": f"{_FLEET}/ukiyo-e/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "ukiyo-e woodblock print",
+        "scale": 1.0,
+        "trigger": "ukiyo-e woodblock print",
     },
     "stained-glass": {
         "url": f"{_FLEET}/stained-glass/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "stained glass window",
+        "scale": 1.0,
+        "trigger": "stained glass window",
     },
     "claymation": {
         "url": f"{_FLEET}/claymation/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "claymation stop-motion",
+        "scale": 1.0,
+        "trigger": "claymation stop-motion",
     },
     "neon-noir": {
         "url": f"{_FLEET}/neon-noir/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "neon noir",
+        "scale": 1.0,
+        "trigger": "neon noir",
     },
     "blueprint": {
         "url": f"{_FLEET}/blueprint/pytorch_lora_weights.safetensors",
-        "scale": 1.0, "trigger": "architectural blueprint",
+        "scale": 1.0,
+        "trigger": "architectural blueprint",
     },
     "wild-africa": {
         "url": "https://huggingface.co/zfrsgtcu/flux-wild-africa/resolve/main/African_Documentary_V2.safetensors",
-        "scale": 1.0, "trigger": "afrodoc",
+        "scale": 1.0,
+        "trigger": "afrodoc",
     },
     "mikkoani": {
         "url": "https://huggingface.co/mikkoph/mikkoani-klein4b/resolve/main/klein4b-mikkoani.safetensors",
-        "scale": 1.0, "trigger": "@mikkoani illustration",
+        "scale": 1.0,
+        "trigger": "@mikkoani illustration",
     },
     "spritesheet": {
         "url": "https://huggingface.co/fal/flux-2-klein-4b-spritesheet-lora/resolve/main/flux-spritesheet-lora.safetensors",
-        "scale": 1.0, "trigger": "2x2 sprite sheet",
+        "scale": 1.0,
+        "trigger": "2x2 sprite sheet",
     },
 }
 
@@ -94,7 +107,9 @@ class Input(BaseModel):
         json_schema_extra={"ui": {"hint": True}},
     )
     prompt: str = Field(
-        description="What to generate. Include the user's trigger word if their LoRA has one.",
+        description=(
+            "What to generate. Include the user's trigger word if their LoRA has one."
+        ),
         examples=["ukiyo-e woodblock print of a red fox in a forest clearing"],
     )
     image_size: ImageSizeInput = Field(
@@ -102,7 +117,9 @@ class Input(BaseModel):
         description="A preset name or a custom {width, height}.",
     )
     num_inference_steps: int = Field(
-        default=4, ge=1, le=8,
+        default=4,
+        ge=1,
+        le=8,
         description="Denoising steps. klein is distilled for 4; more buys little.",
     )
     seed: int | None = Field(
@@ -116,15 +133,23 @@ class Input(BaseModel):
 
 
 class ServingInfo(BaseModel):
-    worker_id: str = Field(description="Stable id of the runner that served this request.")
+    worker_id: str = Field(
+        description="Stable id of the runner that served this request."
+    )
     adapter_source: Literal["gpu-cache", "disk", "downloaded"] = Field(
         description=(
             "'gpu-cache' = adapter was already loaded (hint hit or recent use); "
             "'disk' = loaded from /data; 'downloaded' = fetched/generated first."
         )
     )
-    hint: str = Field(description="The routing hint for this user - echo it via the hint= client option.")
-    resident_adapters: int = Field(description="Adapters currently in this runner's GPU LRU.")
+    hint: str = Field(
+        description=(
+            "The routing hint for this user - echo it via the hint= client option."
+        )
+    )
+    resident_adapters: int = Field(
+        description="Adapters currently in this runner's GPU LRU."
+    )
 
 
 class Output(BaseModel):
@@ -134,7 +159,9 @@ class Output(BaseModel):
         description="Seconds per phase: 'lora' (adapter resolve+load) and 'inference'."
     )
     serving: ServingInfo = Field(
-        description="Where and how this request was served - the routing story, per request."
+        description=(
+            "Where and how this request was served - the routing story, per request."
+        )
     )
 
 
@@ -155,7 +182,9 @@ class RegisterInput(BaseModel):
         examples=["fal/flux-2-klein-4b-spritesheet-lora"],
     )
     scale: float = Field(
-        default=1.0, ge=0.0, le=4.0,
+        default=1.0,
+        ge=0.0,
+        le=4.0,
         description="Scale factor for LoRA application (0.0 to 4.0).",
     )
 
@@ -163,7 +192,9 @@ class RegisterInput(BaseModel):
 class RegisterOutput(BaseModel):
     user_id: str = Field(description="The registered user.")
     kind: Literal["registered", "synthetic"] = Field(
-        description="Whether real weights were downloaded or a synthetic adapter was generated."
+        description=(
+            "Whether real weights were downloaded or a synthetic adapter was generated."
+        )
     )
     adapter_bytes: int = Field(description="Size of the stored adapter file.")
     hint: str = Field(description="Routing hint clients should send for this user.")
@@ -192,7 +223,9 @@ def validate_lora_source(source: str) -> Literal["url", "hf_repo"]:
         )
     raise FieldException(
         field="lora_url",
-        message=f"Not a valid HTTPS URL or Hugging Face repo id (owner/repo): {source!r}",
+        message=(
+            f"Not a valid HTTPS URL or Hugging Face repo id (owner/repo): {source!r}"
+        ),
         type="lora_download_failed",
     )
 
@@ -233,7 +266,9 @@ def lora_incompatible_message(exc: BaseException) -> str | None:
 
 
 def synthetic_seed(user_id: str) -> int:
-    return int.from_bytes(hashlib.sha256(user_id.encode()).digest()[:4], "big") % (2**31)
+    return int.from_bytes(hashlib.sha256(user_id.encode()).digest()[:4], "big") % (
+        2**31
+    )
 
 
 class PerUserLoras(fal.App, keep_alive=300):
@@ -241,7 +276,9 @@ class PerUserLoras(fal.App, keep_alive=300):
     app_auth = "private"
     min_concurrency = 0
     max_concurrency = 3
-    startup_timeout = 1200  # first boot downloads base model + featured adapters to /data
+    startup_timeout = (
+        1200  # first boot downloads base model + featured adapters to /data
+    )
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
         "fal==1.78.2",
@@ -283,10 +320,16 @@ class PerUserLoras(fal.App, keep_alive=300):
             if not path.is_file():
                 print(f"[setup] downloading featured adapter {uid}")
                 self._download_to(meta["url"], path)
-            self._kv_put_user(uid, {
-                "kind": "featured", "url": meta["url"], "scale": meta["scale"],
-                "path": str(path), "trigger": meta["trigger"],
-            })
+            self._kv_put_user(
+                uid,
+                {
+                    "kind": "featured",
+                    "url": meta["url"],
+                    "scale": meta["scale"],
+                    "path": str(path),
+                    "trigger": meta["trigger"],
+                },
+            )
 
         # Warm up through the full serving path (hint-miss -> disk load ->
         # set_adapters -> one real generation): a runner that can't serve
@@ -300,7 +343,9 @@ class PerUserLoras(fal.App, keep_alive=300):
             num_inference_steps=1,
             guidance_scale=1.0,
         )
-        print(f"[setup] worker {self._worker_id} ready; resident={list(self._resident)}")
+        print(
+            f"[setup] worker {self._worker_id} ready; resident={list(self._resident)}"
+        )
 
     @staticmethod
     def _adapter_path(user_id: str) -> Path:
@@ -335,7 +380,10 @@ class PerUserLoras(fal.App, keep_alive=300):
                 if declared > MAX_LORA_BYTES:
                     raise FieldException(
                         field="lora_url",
-                        message=f"LoRA is {declared} bytes; the limit is {MAX_LORA_BYTES // 2**20} MB.",
+                        message=(
+                            f"LoRA is {declared} bytes; "
+                            f"the limit is {MAX_LORA_BYTES // 2**20} MB."
+                        ),
                         type="lora_too_large",
                     )
                 written = 0
@@ -345,7 +393,10 @@ class PerUserLoras(fal.App, keep_alive=300):
                         if written > MAX_LORA_BYTES:
                             raise FieldException(
                                 field="lora_url",
-                                message=f"LoRA exceeds the {MAX_LORA_BYTES // 2**20} MB limit.",
+                                message=(
+                                    "LoRA exceeds the "
+                                    f"{MAX_LORA_BYTES // 2**20} MB limit."
+                                ),
                                 type="lora_too_large",
                             )
                         f.write(chunk)
@@ -376,7 +427,8 @@ class PerUserLoras(fal.App, keep_alive=300):
 
         try:
             files = [
-                f for f in HfApi().list_repo_files(repo_id)
+                f
+                for f in HfApi().list_repo_files(repo_id)
                 # Repos often ship a ComfyUI re-export beside the diffusers
                 # weights; picking it fails load_lora_weights.
                 if f.endswith(".safetensors") and "comfy" not in f
@@ -392,7 +444,8 @@ class PerUserLoras(fal.App, keep_alive=300):
                 field="lora_url",
                 message=(
                     f"Repo '{repo_id}' must contain exactly one non-comfy "
-                    f".safetensors file (found {len(files)}). Pass the direct file URL instead."
+                    f".safetensors file (found {len(files)}). "
+                    "Pass the direct file URL instead."
                 ),
                 type="lora_download_failed",
             )
@@ -454,7 +507,9 @@ class PerUserLoras(fal.App, keep_alive=300):
         finally:
             tmp.unlink(missing_ok=True)  # nothing on /data is auto-pruned
 
-    def _activate_adapter(self, user_id: str) -> tuple[float, str]:
+    def _activate_adapter(
+        self, user_id: str
+    ) -> tuple[float, Literal["gpu-cache", "disk", "downloaded"]]:
         """GPU-LRU hit, else KV -> /data -> load_lora_weights -> insert+evict.
         Returns (scale, adapter_source)."""
         with self._cache_lock:
@@ -462,21 +517,21 @@ class PerUserLoras(fal.App, keep_alive=300):
                 self._resident.move_to_end(user_id)
                 return self._resident[user_id], "gpu-cache"
 
-        record = self._kv_get_user(user_id)          # 422 if unknown
+        record = self._kv_get_user(user_id)  # 422 if unknown
         path, downloaded = self._ensure_adapter_file(user_id, record)
 
         from safetensors.torch import load_file
 
         state_dict = load_file(str(path), device="cpu")
         with self._cache_lock:
-            if user_id in self._resident:            # raced another request
+            if user_id in self._resident:  # raced another request
                 self._resident.move_to_end(user_id)
                 return self._resident[user_id], "gpu-cache"
             try:
                 self.pipe.load_lora_weights(state_dict, adapter_name=user_id)
             except Exception as exc:
                 if is_oom_error(exc):
-                    raise                             # retryable 5xx, never a 422
+                    raise  # retryable 5xx, never a 422
                 msg = lora_incompatible_message(exc) or str(exc)
                 raise FieldException(
                     field="user_id",
@@ -492,7 +547,10 @@ class PerUserLoras(fal.App, keep_alive=300):
 
                 gc.collect()
                 torch.cuda.empty_cache()
-            print(f"[lru] loaded adapter {user_id} (source={'downloaded' if downloaded else 'disk'})")
+            print(
+                f"[lru] loaded adapter {user_id} "
+                f"(source={'downloaded' if downloaded else 'disk'})"
+            )
             return self._resident[user_id], ("downloaded" if downloaded else "disk")
 
     def provide_hints(self) -> list[str]:
@@ -515,7 +573,9 @@ class PerUserLoras(fal.App, keep_alive=300):
         lora_s = time.perf_counter() - t0
 
         size = get_image_size(request.image_size)
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         t1 = time.perf_counter()
         try:
             result = self.pipe(
@@ -544,7 +604,9 @@ class PerUserLoras(fal.App, keep_alive=300):
         # pass it back as hint= (X-Fal-Runner-Hint) on the next request.
         response.headers["x-fal-runner-hint"] = hint
 
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         return Output(
             image=Image.from_pil(result.images[0], repository=repository),
             seed=seed,
@@ -571,6 +633,7 @@ class PerUserLoras(fal.App, keep_alive=300):
                 type="user_reserved",
             )
         path = self._adapter_path(request.user_id)
+        kind: Literal["registered", "synthetic"]
         if request.lora_url is None:
             kind = "synthetic"
             prior = self.kv.get(f"user:{request.user_id}")
@@ -581,7 +644,12 @@ class PerUserLoras(fal.App, keep_alive=300):
             # registration left real weights at this path.
             if not (prior_synthetic and path.is_file()):
                 self._write_synthetic_adapter(request.user_id, path)
-            record = {"kind": kind, "url": None, "scale": request.scale, "path": str(path)}
+            record = {
+                "kind": kind,
+                "url": None,
+                "scale": request.scale,
+                "path": str(path),
+            }
         else:
             kind = "registered"
             source_kind = validate_lora_source(request.lora_url)
@@ -591,7 +659,12 @@ class PerUserLoras(fal.App, keep_alive=300):
                 else request.lora_url
             )
             self._download_to(url, path)  # re-register replaces the file
-            record = {"kind": kind, "url": url, "scale": request.scale, "path": str(path)}
+            record = {
+                "kind": kind,
+                "url": url,
+                "scale": request.scale,
+                "path": str(path),
+            }
         self._kv_put_user(request.user_id, record)
         # Registration invalidates any older resident copy of this user.
         with self._cache_lock:

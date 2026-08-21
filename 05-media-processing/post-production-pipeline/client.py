@@ -19,6 +19,7 @@ Usage:
 
 Dependency: pip install httpx==0.28.1
 """
+
 import argparse
 import json
 import os
@@ -37,12 +38,20 @@ DEFAULT_VIDEO = (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--app", required=True, help="owner/app-name of your deploy")
     parser.add_argument("--video-url", default=DEFAULT_VIDEO)
-    parser.add_argument("--ladder", default="1080,720,480", help="comma-separated rung heights")
-    parser.add_argument("--srt-file", default=None, help="local .srt sent as inline captions")
-    parser.add_argument("--webhook", default=None, help="public URL fal POSTs the result to")
+    parser.add_argument(
+        "--ladder", default="1080,720,480", help="comma-separated rung heights"
+    )
+    parser.add_argument(
+        "--srt-file", default=None, help="local .srt sent as inline captions"
+    )
+    parser.add_argument(
+        "--webhook", default=None, help="public URL fal POSTs the result to"
+    )
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--poll-interval", type=float, default=2.0)
     args = parser.parse_args()
@@ -70,7 +79,10 @@ def main() -> int:
     request_id = handles["request_id"]
     print(f"queued: request_id={request_id}")
     if args.webhook:
-        print(f"fal will POST the result to {args.webhook} (signed; see webhook_receiver.py)")
+        print(
+            f"fal will POST the result to {args.webhook} "
+            "(signed; see webhook_receiver.py)"
+        )
         print("polling too, as the fallback a real backend keeps:")
 
     # POLL - ?logs=1 streams the app's own log lines into the status body.
@@ -92,11 +104,16 @@ def main() -> int:
         if body["status"] != last_status:
             last_status = body["status"]
             position = body.get("queue_position")
-            print(f"  status: {last_status}"
-                  + (f" (queue position {position})" if position is not None else ""))
+            print(
+                f"  status: {last_status}"
+                + (f" (queue position {position})" if position is not None else "")
+            )
         if last_status == "COMPLETED":
             if body.get("error"):
-                print(f"  completed with error: {body['error']} ({body.get('error_type')})")
+                print(
+                    "  completed with error: "
+                    f"{body['error']} ({body.get('error_type')})"
+                )
             break
         time.sleep(args.poll_interval)
     else:

@@ -16,6 +16,7 @@ The visual language here is deliberately minimal: two flat-colour series,
 small labels, no gridlines or gradients. Keep render()'s signature stable
 when restyling.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import model  # noqa: E402
+import model
 
 WIDTH, HEIGHT = 960, 420
 PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 64, 24, 40, 48
@@ -119,8 +120,8 @@ def burst_timeline(trace: dict) -> str:
     t_lo = 0.0
     t_hi = max(row["t"] for row in timeline)
     y_max = max(
-        max(model.live_runners(r) for r in timeline),
-        max(r["queue_depth"] for r in timeline),
+        *(model.live_runners(r) for r in timeline),
+        *(r["queue_depth"] for r in timeline),
         1,
     )
     x0, x1 = PAD_LEFT, WIDTH - PAD_RIGHT
@@ -230,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="charts")
     args = parser.parse_args(argv)
 
-    # Readers run this directly, so a missing or unparseable input should
+    # Readers run this directly, so a missing or unparsable input should
     # print one clear line, not a raw traceback - same contract as model.py.
     try:
         path = args.trace

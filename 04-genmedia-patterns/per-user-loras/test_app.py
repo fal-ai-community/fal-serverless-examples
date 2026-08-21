@@ -4,6 +4,7 @@ Unit tests of the pure helpers run free (no GPU, no deploy); integration
 tests take the harness `app_client` fixture and skip unless HARNESS_APP_URL
 is set (harness/check.py sets it after the ephemeral deploy).
 """
+
 import importlib.util
 import os
 import struct
@@ -15,6 +16,7 @@ import pytest
 _spec = importlib.util.spec_from_file_location(
     "per_user_loras_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_mod)
 
@@ -152,23 +154,33 @@ def _direct_post(path: str, payload: dict, hint: str | None = None) -> httpx.Res
 
 class TestGenerate:
     def test_featured_user_smoke(self, app_client):
-        result = app_client.run("/", {
-            "user_id": "ukiyo-e",
-            "prompt": "ukiyo-e woodblock print of a red fox in a forest clearing",
-            "seed": 42,
-        })
+        result = app_client.run(
+            "/",
+            {
+                "user_id": "ukiyo-e",
+                "prompt": "ukiyo-e woodblock print of a red fox in a forest clearing",
+                "seed": 42,
+            },
+        )
         assert result["image"]["url"]
         assert result["seed"] == 42
         assert result["serving"]["hint"] == "lora:ukiyo-e"
-        assert result["serving"]["adapter_source"] in ("gpu-cache", "disk", "downloaded")
+        assert result["serving"]["adapter_source"] in (
+            "gpu-cache",
+            "disk",
+            "downloaded",
+        )
         assert "lora" in result["timings"] and "inference" in result["timings"]
 
     def test_hint_echo_header(self, app_client):
-        resp = _direct_post("/", {
-            "user_id": "ukiyo-e",
-            "prompt": "ukiyo-e woodblock print of a lighthouse at dusk",
-            "seed": 7,
-        })
+        resp = _direct_post(
+            "/",
+            {
+                "user_id": "ukiyo-e",
+                "prompt": "ukiyo-e woodblock print of a lighthouse at dusk",
+                "seed": 7,
+            },
+        )
         resp.raise_for_status()
         assert resp.headers.get("x-fal-runner-hint") == "lora:ukiyo-e"
 
@@ -194,41 +206,61 @@ class TestRegisterFlow:
         assert reg["hint"] == "lora:it-synth-1"
         assert reg["adapter_bytes"] > 0
 
-        first = app_client.run("/", {
-            "user_id": "it-synth-1", "prompt": "a red bicycle", "seed": 5,
-        })
+        first = app_client.run(
+            "/",
+            {
+                "user_id": "it-synth-1",
+                "prompt": "a red bicycle",
+                "seed": 5,
+            },
+        )
         assert first["serving"]["adapter_source"] in ("disk", "downloaded")
 
         # Hint the repeat like a real client - unhinted, a second warm runner
         # could take it, reload from disk, and flake both assertions.
-        resp = _direct_post("/", {
-            "user_id": "it-synth-1", "prompt": "a blue bicycle", "seed": 6,
-        }, hint=first["serving"]["hint"])
+        resp = _direct_post(
+            "/",
+            {
+                "user_id": "it-synth-1",
+                "prompt": "a blue bicycle",
+                "seed": 6,
+            },
+            hint=first["serving"]["hint"],
+        )
         resp.raise_for_status()
         second = resp.json()
         assert second["serving"]["adapter_source"] == "gpu-cache"
         assert second["serving"]["worker_id"] == first["serving"]["worker_id"]
 
     def test_register_real_hf_repo(self, app_client):
-        reg = app_client.run("/register", {
-            "user_id": "it-real-1",
-            "lora_url": "fal/flux-2-klein-4b-spritesheet-lora",
-            "scale": 1.0,
-        })
+        reg = app_client.run(
+            "/register",
+            {
+                "user_id": "it-real-1",
+                "lora_url": "fal/flux-2-klein-4b-spritesheet-lora",
+                "scale": 1.0,
+            },
+        )
         assert reg["kind"] == "registered"
-        gen = app_client.run("/", {
-            "user_id": "it-real-1",
-            "prompt": "2x2 sprite sheet of a walking robot",
-            "seed": 11,
-        })
+        gen = app_client.run(
+            "/",
+            {
+                "user_id": "it-real-1",
+                "prompt": "2x2 sprite sheet of a walking robot",
+                "seed": 11,
+            },
+        )
         assert gen["image"]["url"]
 
     def test_register_bad_url_is_typed_422(self, app_client):
         with pytest.raises(httpx.HTTPStatusError) as excinfo:
-            app_client.run("/register", {
-                "user_id": "it-bad-1",
-                "lora_url": "http://insecure.example.com/w.safetensors",
-            })
+            app_client.run(
+                "/register",
+                {
+                    "user_id": "it-bad-1",
+                    "lora_url": "http://insecure.example.com/w.safetensors",
+                },
+            )
         resp = excinfo.value.response
         assert resp.status_code == 422
         assert resp.json()["detail"][0]["type"] == "lora_download_failed"

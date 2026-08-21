@@ -74,6 +74,7 @@ def rest_url() -> str:
 # Example discovery and app loading
 # --------------------------------------------------------------------------
 
+
 def discover_examples() -> list[Path]:
     dirs = []
     for tier_dir in sorted(REPO_ROOT.glob("[0-9][0-9]-*")):
@@ -125,13 +126,14 @@ def load_app_class(app_file: Path):
     )
     if len(app_classes) != 1:
         raise CheckError(
-            f"{app_file}: expected exactly one fal.App subclass, found {len(app_classes)}"
+            f"{app_file}: expected exactly one fal.App subclass, "
+            f"found {len(app_classes)}"
         )
     return app_classes[0]
 
 
 def pick_endpoint(app_cls) -> tuple[str, object]:
-    """Return (path, function) for the endpoint to smoke; prefer '/'. """
+    """Return (path, function) for the endpoint to smoke; prefer '/'."""
     endpoints = []
     for _, fn in inspect.getmembers(app_cls, inspect.isfunction):
         sig = getattr(fn, "route_signature", None)
@@ -156,7 +158,8 @@ def sample_input(endpoint_fn) -> dict:
     from pydantic import BaseModel
 
     params = [
-        p for name, p in inspect.signature(endpoint_fn).parameters.items()
+        p
+        for name, p in inspect.signature(endpoint_fn).parameters.items()
         if name != "self"
     ]
     if not params:
@@ -164,7 +167,8 @@ def sample_input(endpoint_fn) -> dict:
     model = params[0].annotation
     if not (isinstance(model, type) and issubclass(model, BaseModel)):
         raise CheckError(
-            f"endpoint '{endpoint_fn.__name__}': request parameter must be a pydantic model"
+            f"endpoint '{endpoint_fn.__name__}': request parameter must be "
+            "a pydantic model"
         )
     payload = {}
     for field_name, field_info in model.model_fields.items():
@@ -181,6 +185,7 @@ def sample_input(endpoint_fn) -> dict:
 # --------------------------------------------------------------------------
 # Boot observation: log drain (runner id) + REST runner polling (crash/teardown)
 # --------------------------------------------------------------------------
+
 
 class BootWatcher(threading.Thread):
     """Drains the spawn log queue, printing every line and capturing the
@@ -251,6 +256,7 @@ class RestRunnerPoller(threading.Thread):
 # --------------------------------------------------------------------------
 # Spawn, health, smoke
 # --------------------------------------------------------------------------
+
 
 def spawn_owned(fn):
     """Ephemeral-deploy on a harness-owned daemon thread.
@@ -366,9 +372,10 @@ def run_example_tests(
             cwd=REPO_ROOT,
             env=env,
             timeout=TEST_TIMEOUT_S,
+            check=False,
         )
-    except subprocess.TimeoutExpired:
-        raise CheckError(f"test_app.py timed out after {TEST_TIMEOUT_S:.0f}s")
+    except subprocess.TimeoutExpired as err:
+        raise CheckError(f"test_app.py timed out after {TEST_TIMEOUT_S:.0f}s") from err
     if result.returncode != 0:
         raise CheckError(f"test_app.py failed (pytest exit {result.returncode})")
 
@@ -376,6 +383,7 @@ def run_example_tests(
 # --------------------------------------------------------------------------
 # Teardown
 # --------------------------------------------------------------------------
+
 
 def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
     """Cancel the run stream (that IS the ephemeral teardown), then confirm
@@ -406,7 +414,10 @@ def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
                     data = resp.json()
                     state = str(data.get("state", ""))
                     if data.get("finished_at") or state in {
-                        "TERMINATED", "TERMINATING", "DEAD", "DRAINING",
+                        "TERMINATED",
+                        "TERMINATING",
+                        "DEAD",
+                        "DRAINING",
                     }:
                         log(f"    runner {runner_id} stopped ({state or 'finished'})")
                         return None
@@ -427,6 +438,7 @@ def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
 # --------------------------------------------------------------------------
 # Per-example check
 # --------------------------------------------------------------------------
+
 
 def check(example_dir: Path, teardown_report: dict | None = None) -> None:
     """Deploy-check every variant of one example."""
@@ -483,7 +495,8 @@ def purge_example_modules(example_dir: Path) -> None:
     same-named helper (e.g. utils.py) can't silently receive stale code."""
     prefix = str(example_dir)
     for name in [
-        n for n, mod in list(sys.modules.items())
+        n
+        for n, mod in list(sys.modules.items())
         if (getattr(mod, "__file__", "") or "").startswith(prefix)
     ]:
         del sys.modules[name]
@@ -503,6 +516,7 @@ def preflight(headers: dict) -> None:
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -537,7 +551,11 @@ def main() -> int:
 
     failures = []
     for example_dir in examples:
-        rel = example_dir.relative_to(REPO_ROOT) if example_dir.is_relative_to(REPO_ROOT) else example_dir
+        rel = (
+            example_dir.relative_to(REPO_ROOT)
+            if example_dir.is_relative_to(REPO_ROOT)
+            else example_dir
+        )
         log(f"checking {rel}")
         teardown_report: dict = {}
         try:
@@ -557,7 +575,10 @@ def main() -> int:
             # The check passed, but a billing runner outlived teardown: the run
             # must go red so someone looks at it.
             failures.append(
-                (rel, f"runner {teardown_report['leaked_runner']} not confirmed stopped")
+                (
+                    rel,
+                    f"runner {teardown_report['leaked_runner']} not confirmed stopped",
+                )
             )
 
     log("")

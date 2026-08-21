@@ -27,6 +27,7 @@ import os
 import random
 import time
 import uuid
+from typing import Literal
 
 import fal
 from fal.toolkit import Image, ImageSizeInput, get_image_size
@@ -74,7 +75,9 @@ class Output(BaseModel):
     )
     seed: int = Field(description="The seed that produced this image.")
     served_by: str = Field(
-        description="Opaque per-runner id. Distinct values in one burst = distinct runners."
+        description=(
+            "Opaque per-runner id. Distinct values in one burst = distinct runners."
+        )
     )
     was_cold: bool = Field(
         description="True if this was the first request this runner ever served."
@@ -150,7 +153,9 @@ class TuneAutoscaling(fal.App, keep_alive=300):
             guidance_scale=1.0,  # klein is guidance-distilled; keep at 1.0
             generator=torch.Generator("cuda").manual_seed(seed),
         )
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         return Output(
             image=Image.from_pil(result.images[0], repository=repository),
             seed=seed,

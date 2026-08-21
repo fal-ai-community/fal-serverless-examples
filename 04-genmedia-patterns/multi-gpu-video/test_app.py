@@ -4,6 +4,7 @@ The live test runs only under harness/check.py (the app_client fixture
 skips otherwise), so plain `pytest` costs nothing. One live generation
 total - each one spins 4 GPUs.
 """
+
 import importlib.util
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pytest
 _spec = importlib.util.spec_from_file_location(
     "multi_gpu_video_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
@@ -23,6 +25,7 @@ RESOLUTIONS = app_module.RESOLUTIONS
 
 
 # ---- free unit tests (no GPU, no deploy) ----
+
 
 def test_num_frames_rule_rejects_off_grid():
     with pytest.raises(ValueError):
@@ -47,6 +50,7 @@ def test_defaults_are_the_ci_smoke_config():
 
 
 # ---- live test (harness only) ----
+
 
 def test_generate_smoke(app_client):
     response = app_client.run(

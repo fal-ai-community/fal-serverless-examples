@@ -8,6 +8,7 @@ serve where inference is fast.
 One resident adapter, swapped on demand - deliberately the 20-line version
 of per-user-loras' LRU fleet (see README "Next steps").
 """
+
 import os
 import random
 import shutil
@@ -17,12 +18,11 @@ from pathlib import Path
 from typing import Literal
 
 import fal
+import shared
 from fal.exceptions import FieldException
 from fal.toolkit import Image, ImageSizeInput, download_file, get_image_size
 from fal.toolkit.utils.download_utils import DownloadError
 from pydantic import BaseModel, Field
-
-import shared
 
 
 class Input(BaseModel):
@@ -49,7 +49,9 @@ class Input(BaseModel):
         description="A preset name or a custom {width, height} (multiples of 16).",
     )
     num_inference_steps: int = Field(
-        default=4, ge=1, le=8,
+        default=4,
+        ge=1,
+        le=8,
         description="Denoising steps. klein is distilled for 4; more buys little.",
     )
     seed: int | None = Field(
@@ -76,7 +78,9 @@ class ServingInfo(BaseModel):
 class Output(BaseModel):
     image: Image = Field(description="The generated image.")
     seed: int = Field(description="The seed that produced this image.")
-    timings: dict[str, float] = Field(description="Seconds spent in adapter handling vs inference.")
+    timings: dict[str, float] = Field(
+        description="Seconds spent in adapter handling vs inference."
+    )
     serving: ServingInfo = Field(description="How this request was served.")
 
 
@@ -137,13 +141,18 @@ class KleinLoraServer(fal.App, keep_alive=300):
                     filesize_limit=shared.MAX_ADAPTER_MB,
                 )
                 shared.validate_safetensors_headers(Path(fetched))
-                shared.atomic_replace(Path(fetched), demo_weights)  # same fs: staging is under LORA_ROOT
+                shared.atomic_replace(
+                    Path(fetched), demo_weights
+                )  # same fs: staging is under LORA_ROOT
             except DownloadError as exc:
                 raise RuntimeError(
-                    f"could not seed the demo adapter from {shared.REFERENCE_ADAPTER_URL}: {exc}"
+                    "could not seed the demo adapter from "
+                    f"{shared.REFERENCE_ADAPTER_URL}: {exc}"
                 ) from exc
             except shared.ArtifactError as exc:
-                raise RuntimeError(f"published reference adapter failed validation: {exc}") from exc
+                raise RuntimeError(
+                    f"published reference adapter failed validation: {exc}"
+                ) from exc
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
             self._seeded.add(shared.DEMO_LORA)
@@ -151,7 +160,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
         try:
             self._load_adapter(shared.DEMO_LORA)
         except FieldException as exc:
-            raise RuntimeError(f"demo adapter failed to load at boot: {exc.message}") from exc
+            raise RuntimeError(
+                f"demo adapter failed to load at boot: {exc.message}"
+            ) from exc
         # Warmup THROUGH the adapter: proves the whole serving path at boot.
         self.pipe(
             prompt="warmup",
@@ -245,7 +256,10 @@ class KleinLoraServer(fal.App, keep_alive=300):
         loaded = len(file_modules & injected)
         print(f"[lora] {loaded}/{len(file_modules)} adapter modules loaded from {path}")
         if loaded < len(file_modules):
-            print(f"[lora] unused modules (first 5): {sorted(file_modules - injected)[:5]}")
+            print(
+                "[lora] unused modules (first 5): "
+                f"{sorted(file_modules - injected)[:5]}"
+            )
 
     @fal.endpoint("/")
     def generate(self, request: Input) -> Output:
@@ -257,7 +271,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
         t_lora = time.perf_counter() - t0
 
         size = get_image_size(request.image_size)
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         t1 = time.perf_counter()
         result = self.pipe(
             prompt=request.prompt,
@@ -269,7 +285,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
         )
         t_inference = time.perf_counter() - t1
 
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         image = Image.from_pil(result.images[0], repository=repository)
         return Output(
             image=image,

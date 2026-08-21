@@ -4,6 +4,7 @@ The harness (harness/check.py) deploys app.py, then executes this file with
 the `app_client` fixture from harness/pytest_plugin.py. Outside the harness
 the fixture skips, so plain `pytest` costs nothing.
 """
+
 import httpx
 import pytest
 
@@ -40,7 +41,9 @@ def test_bad_url_is_a_typed_422(app_client):
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run(
             "/",
-            {"image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"},
+            {
+                "image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"
+            },
         )
     assert excinfo.value.response.status_code == 422
     detail = excinfo.value.response.json()["detail"]

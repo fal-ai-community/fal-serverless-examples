@@ -5,6 +5,7 @@ The harness deploys every app*.py in this folder and runs this file against
 each; HARNESS_VARIANT says which one is live. Free tests exercise the shared
 module logic that must hold before any GPU is spent.
 """
+
 import ast
 import importlib.util
 import os
@@ -17,7 +18,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-import wan_flashpack  # top level is stdlib-only by design
+import wan_flashpack  # noqa: E402  # after sys.path insert; top level is stdlib-only
 
 EXPECTED_VARIANT = {"app": "optimized", "app_baseline": "baseline"}
 # The same small/seeded request the harness smoke uses (Field examples).
@@ -34,6 +35,7 @@ def variant() -> str:
 
 
 # --------------------------- free unit tests -------------------------------
+
 
 def test_publish_classes_creates_missing_module_entry():
     """On a fal runner the module arrives as a cloudpickle by-value
@@ -63,7 +65,7 @@ def test_module_top_level_is_import_light():
     """Static CI loads app files with only fal+httpx+pytest installed; the
     heavy imports must all live inside get_classes()."""
     tree = ast.parse((HERE / "wan_flashpack.py").read_text())
-    top_level_imports = set()
+    top_level_imports: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
             top_level_imports.update(a.name.split(".")[0] for a in node.names)
@@ -89,36 +91,39 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
             has_removeprefix_setattr = False
 
             for item in ast.walk(node):
-                if isinstance(item, ast.Call):
-                    # Check for setattr(mod, cls_obj.__name__, cls_obj)
+                # Check for setattr(mod, cls_obj.__name__, cls_obj)
+                if (
+                    isinstance(item, ast.Call)
+                    and isinstance(item.func, ast.Name)
+                    and item.func.id == "setattr"
+                    and len(item.args) >= 3
+                ):
+                    # Check if second arg accesses __name__
+                    second_arg = item.args[1]
                     if (
-                        isinstance(item.func, ast.Name)
-                        and item.func.id == "setattr"
-                        and len(item.args) >= 3
+                        isinstance(second_arg, ast.Attribute)
+                        and second_arg.attr == "__name__"
                     ):
-                        # Check if second arg accesses __name__
-                        second_arg = item.args[1]
-                        if isinstance(second_arg, ast.Attribute):
-                            if second_arg.attr == "__name__":
-                                has_full_name_setattr = True
+                        has_full_name_setattr = True
 
-                        # Check for removeprefix call in second arg
-                        if (
-                            isinstance(second_arg, ast.Call)
-                            and isinstance(second_arg.func, ast.Attribute)
-                            and second_arg.func.attr == "removeprefix"
-                            and isinstance(second_arg.func.value, ast.Attribute)
-                            and second_arg.func.value.attr == "__name__"
-                        ):
-                            has_removeprefix_setattr = True
+                    # Check for removeprefix call in second arg
+                    if (
+                        isinstance(second_arg, ast.Call)
+                        and isinstance(second_arg.func, ast.Attribute)
+                        and second_arg.func.attr == "removeprefix"
+                        and isinstance(second_arg.func.value, ast.Attribute)
+                        and second_arg.func.value.attr == "__name__"
+                    ):
+                        has_removeprefix_setattr = True
 
             if has_full_name_setattr and has_removeprefix_setattr:
                 found_dual_registration = True
                 break
 
-    assert (
-        found_dual_registration
-    ), "Registration loop must use setattr twice for each class: once with __name__ and once with removeprefix('FlashPack')"
+    assert found_dual_registration, (
+        "Registration loop must use setattr twice for each class: once with "
+        "__name__ and once with removeprefix('FlashPack')"
+    )
 
 
 def test_pipeline_load_receives_explicit_text_encoder():
@@ -200,6 +205,7 @@ def _load_bench():
     spec = importlib.util.spec_from_file_location(
         "cut_cold_starts_bench", HERE / "bench.py"
     )
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

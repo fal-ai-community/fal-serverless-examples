@@ -9,3 +9,4 @@
 - The docs pages that walk through examples live in the separate fal-docs repo (github.com/fal-ai/fal-docs) — this repo holds the runnable source those pages link to.
 - Update `llms.txt` when adding an example.
 - Target Python: 3.11 (matches CI).
+- Lint is strict and CI-enforced (`.pre-commit-config.yaml` via prek, `.github/workflows/lint.yml`); ruff/mypy config lives in `pyproject.toml`. Run `prek run --all-files` before pushing. `PLC0415` and `RUF012` are ignored on purpose: function-level imports are the fal setup() pattern, and `fal.App` class attrs don't take ClassVar annotations in teaching code.

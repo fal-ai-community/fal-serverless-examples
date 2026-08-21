@@ -4,6 +4,7 @@ Identical model, identical schema, identical pinned versions as app.py - the
 environment is the only variable. fal builds this Dockerfile server-side, so
 no local Docker and no registry push.
 """
+
 from pathlib import Path
 
 import fal

@@ -13,6 +13,7 @@ runner ramp and the billed windows with no metrics API and no ADMIN key.
 Retries are OFF on purpose. A retry would fold two queue waits into one
 observation and quietly corrupt the latency distribution.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,13 +24,13 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import fal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import model  # noqa: E402  - sibling module, stdlib-only
+import model
 
 PINNED_MACHINE = "GPU-H100"
 SYNC_URL = "https://fal.run/{app}"
@@ -53,7 +54,7 @@ def select_app_config(apps_document: dict, app: str) -> dict:
     concurrency, both buffers, scaling_delay and request_timeout are
     INHERITED across deploys, so the code may not be what is running.
     """
-    alias = app.split("/")[-1]
+    alias = app.rsplit("/", maxsplit=1)[-1]
     for entry in apps_document.get("apps", []):
         if entry.get("alias") == alias:
             return entry
@@ -81,6 +82,7 @@ def read_live_config(app: str) -> dict:
             ["fal", "apps", "list", "--json"],
             capture_output=True,
             text=True,
+            check=False,  # returncode is checked explicitly below
         )
     except FileNotFoundError as error:
         raise RuntimeError(
@@ -142,7 +144,7 @@ def build_trace(
         "schema": model.TRACE_SCHEMA,
         "recorded_at": recorded_at,
         "app": app,
-        "machine_type": (list(config.get("machine_types") or [None]))[0],
+        "machine_type": next(iter(config.get("machine_types") or [None])),
         "fal_version": fal.__version__,
         "rate_usd_per_second": usd_per_second,
         "scale_config": {key: config.get(key) for key in SCALE_KEYS},
@@ -183,7 +185,7 @@ def cross_check_analytics(app: str, headers: dict) -> dict:
                 "stands on its own. Use a Key-format API key to cross-check."
             ),
         }
-    except Exception as error:  # noqa: BLE001 - deliberately catch-all, see above
+    except Exception as error:
         return {
             "ok": False,
             "error": f"{type(error).__name__}: {error}",
@@ -297,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         concurrency=args.concurrency,
         records=records,
         usd_per_second=args.rate,
-        recorded_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        recorded_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
     def write_trace() -> None:

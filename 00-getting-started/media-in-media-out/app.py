@@ -5,6 +5,8 @@ about how media moves through a fal app - URL in, safe bounded download,
 /data caching, processing on a cheap CPU machine, and typed outputs on
 fal's CDN with the content type you asked for.
 """
+
+import contextlib
 import hashlib
 import json
 import time
@@ -87,10 +89,14 @@ class MediaInMediaOut(fal.App, keep_alive=60):
 
         # MEDIA IN - cache on /data keyed by URL hash; repeats skip the transfer.
         t0 = time.perf_counter()
-        cache_dir = CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
+        cache_dir = (
+            CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
+        )
         # download_file stages partial downloads as same-directory .tmp files;
         # never serve one as the cached image.
-        cached = next((p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None)
+        cached = next(
+            (p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None
+        )
         if cached is not None:
             source_path = cached
         else:
@@ -110,7 +116,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         # oversized images before decode allocates.
         t1 = time.perf_counter()
         try:
-            source = PILImage.open(source_path)
+            source: PILImage.Image = PILImage.open(source_path)
             if source.width * source.height > MAX_PIXELS:
                 raise FieldException(
                     field="image_url",
@@ -136,24 +142,27 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                 message="not a decodable image",
                 type="unsupported_image_format",
             ) from None
-        try:
+        # best-effort: bad EXIF metadata must not reject a decodable image
+        with contextlib.suppress(Exception):
             source = ImageOps.exif_transpose(source)
-        except Exception:
-            pass  # best-effort: bad EXIF metadata must not reject a decodable image
         original_size = (source.width, source.height)
         if request.output_format == "jpeg":
             if source.mode != "RGB":
                 source = source.convert("RGB")  # JPEG has no alpha channel
         elif source.mode not in ("RGB", "RGBA"):
             source = source.convert("RGBA")
-        source.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
+        source.thumbnail(
+            (request.max_size, request.max_size), PILImage.Resampling.LANCZOS
+        )
         processed = source
         thumb = processed.copy()  # derive from the smaller image, not the original
-        thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.LANCZOS)
+        thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.Resampling.LANCZOS)
         processed_ms = int((time.perf_counter() - t1) * 1000)
 
         # MEDIA OUT
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         save_kwargs = None
         if request.expires_in_seconds is not None:
             save_kwargs = {

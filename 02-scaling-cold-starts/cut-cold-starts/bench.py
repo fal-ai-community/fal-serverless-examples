@@ -10,7 +10,8 @@ Each run: ephemeral deploy -> wait healthy (wall clock = "spawn -> healthy")
 JSON line per run and a markdown table over all runs. The first optimized run
 on a fresh account builds the /data pack + kernel cache (one-time); later
 runs are the steady state every cold start gets.
-"""
+"""  # noqa: E501  # usage commands are copy-paste lines
+
 import argparse
 import json
 import sys
@@ -93,17 +94,16 @@ def format_table(runs: list[dict]) -> str:
     rows = []
     for name in stage_names:
         cells = [
-            str(run["timings"][name]) if name in run["timings"] else "-"
-            for run in runs
+            str(run["timings"][name]) if name in run["timings"] else "-" for run in runs
         ]
         rows.append(f"| {name} | " + " | ".join(cells) + " |")
     rows.append(
-        "| setup() total | "
-        + " | ".join(str(r["total_seconds"]) for r in runs) + " |"
+        "| setup() total | " + " | ".join(str(r["total_seconds"]) for r in runs) + " |"
     )
     rows.append(
         "| spawn -> healthy | "
-        + " | ".join(str(r["spawn_to_healthy_s"]) for r in runs) + " |"
+        + " | ".join(str(r["spawn_to_healthy_s"]) for r in runs)
+        + " |"
     )
     return "\n".join([header, divider, *rows])
 

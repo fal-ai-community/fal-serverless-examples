@@ -6,6 +6,7 @@ example: same model, same behavior, two ways of building the environment.
 If these tests ever pass against one variant and fail against the other,
 the comparison in the README has stopped being true.
 """
+
 import json
 import os
 import tempfile

@@ -4,6 +4,7 @@ Deliberately boring app: it reports back exactly what each environment gave
 it (secret value + code version), so a promotion or rollback can be proven
 rather than assumed.
 """
+
 import os
 
 import fal

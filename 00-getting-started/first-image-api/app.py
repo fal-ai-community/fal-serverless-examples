@@ -8,8 +8,10 @@ Model: black-forest-labs/FLUX.2-klein-4B - Apache-2.0 and ungated (no HF
 token anywhere). Careful: the 9B klein variants are gated + non-commercial;
 do not swap them in here.
 """
+
 import os
 import random
+from typing import Literal
 
 import fal
 from fal.toolkit import Image, ImageSizeInput, get_image_size
@@ -23,11 +25,15 @@ GUIDANCE_SCALE = 1.0  # guidance-distilled model; CFG is baked into the weights
 class Input(BaseModel):
     prompt: str = Field(
         description="What to generate. klein handles long, specific prompts well.",
-        examples=["a calico cat riding a bicycle through a sunlit wheat field, film photo"],
+        examples=[
+            "a calico cat riding a bicycle through a sunlit wheat field, film photo"
+        ],
     )
     image_size: ImageSizeInput = Field(
         default="landscape_4_3",
-        description="A preset name or a custom {width, height} (multiples of 32 work best).",
+        description=(
+            "A preset name or a custom {width, height} (multiples of 32 work best)."
+        ),
     )
     num_inference_steps: int = Field(
         default=4,
@@ -103,7 +109,8 @@ class FirstImageApi(fal.App, keep_alive=300):
     def generate(self, request: Input) -> Output:
         import torch
 
-        # Sizes pass through unclamped; validation patterns are bulletproof-inputs' topic.
+        # Sizes pass through unclamped; validation patterns are
+        # bulletproof-inputs' topic.
         size = get_image_size(request.image_size)
         seed = request.seed if request.seed is not None else random.randint(0, MAX_SEED)
         result = self.pipe(
@@ -114,6 +121,8 @@ class FirstImageApi(fal.App, keep_alive=300):
             guidance_scale=GUIDANCE_SCALE,
             generator=torch.Generator("cuda").manual_seed(seed),
         )
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         image = Image.from_pil(result.images[0], repository=repository)
         return Output(image=image, seed=seed)
