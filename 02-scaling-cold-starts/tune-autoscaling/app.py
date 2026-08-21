@@ -1,6 +1,7 @@
-"""Catalog slot 02.2 (SERV-1294) - the burst target.
+"""Tune autoscaling - the burst target.
 
-Same model as 00.2 (FLUX.2 [klein] 4B), with two differences that exist so
+Same model as 00-getting-started/first-image-api (FLUX.2 [klein] 4B),
+with two differences that exist so
 one real burst can be measured without any extra credential:
 
   1. machine_type is PINNED to GPU-H100 rather than a fallback list. GPU-L40

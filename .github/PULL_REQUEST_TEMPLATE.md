@@ -2,11 +2,11 @@
 
 ## What this adds/changes
 
-<!-- One example per PR. Link the "Propose an example" issue if this is a new example. -->
+<!-- One example per PR. For new examples, agree scope with the maintainers first (see CONTRIBUTING.md). -->
 
 ## Validation
 
 - [ ] `python harness/static_check.py` passes locally
 - [ ] `python harness/check.py --example <dir>` passed against a real ephemeral deploy (paste the tail of the output)
 - [ ] `requirements.txt` mirrors `App.requirements` exactly, everything pinned
-- [ ] README follows the template section order and shows real output first
+- [ ] README follows the same section order as the existing examples and shows real output first

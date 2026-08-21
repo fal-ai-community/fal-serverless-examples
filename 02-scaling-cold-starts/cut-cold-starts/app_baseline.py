@@ -1,7 +1,7 @@
 """Cut cold starts — the BASELINE app: no levers pulled.
 
-Catalog slot 02.1 (SERV-1286). WAN 2.1 1.3B text-to-video the way everyone
-writes it first: every worker boot downloads ~29 GB of fp32 shards from the
+WAN 2.1 1.3B text-to-video the way everyone writes it first: every
+worker boot downloads ~29 GB of fp32 shards from the
 Hub, deserializes them through CPU, casts to serving dtypes, moves to GPU,
 and compiles kernels from scratch. app.py is the same model and endpoints
 with all three cold-start levers pulled; bench.py measures both.

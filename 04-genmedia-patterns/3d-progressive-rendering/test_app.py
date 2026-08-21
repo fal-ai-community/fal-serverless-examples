@@ -1,4 +1,4 @@
-"""Tests for 04.7 - 3D progressive rendering.
+"""Tests for 3D progressive rendering.
 
 Two kinds, both run by CI:
   * unit tests over the pure encoding/SSE helpers - free, no deploy, run on

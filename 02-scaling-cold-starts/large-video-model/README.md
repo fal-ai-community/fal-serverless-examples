@@ -1,14 +1,10 @@
 # Serve a 20+ GB video model — and watch it generate
 
-<!-- Section order is the quality bar (design doc S4-A). Keep it. -->
-
 Two things go wrong when you put a frontier video model behind an API. The weights are bigger than most GPUs and take minutes to reach the machine, so your first request pays for all of it. And even once the model is warm, generation is a long silence — the caller stares at a spinner while seventy gigabytes of weights do their work. This example serves **LTX-2.3 Distilled** on a single H200 and takes both seriously: `loader.py` gets ~88 GB of weights onto the GPU in about 40 s once they are cached — with the slow tail measured and written down rather than hidden — the GPU choice is arithmetic rather than a guess, and `/stream` sends a playable video of the *in-progress* generation after every denoising step.
 
-> Catalog slot `02.3` ([SERV-1303](https://linear.app/features-and-labels/issue/SERV-1303)). Model: [`diffusers/LTX-2.3-Distilled-Diffusers`](https://huggingface.co/diffusers/LTX-2.3-Distilled-Diffusers) — a 22B-parameter DiT plus a 12B text encoder, **ungated**, so nothing here needs a Hugging Face token. It is **not** Apache-2.0; read [Licensing](#licensing) before you ship it.
+> Model: [`diffusers/LTX-2.3-Distilled-Diffusers`](https://huggingface.co/diffusers/LTX-2.3-Distilled-Diffusers) — a 22B-parameter DiT plus a 12B text encoder, **ungated**, so nothing here needs a Hugging Face token. It is **not** Apache-2.0; read [Licensing](#licensing) before you ship it.
 
 ## What you get
-
-<!-- OUTPUT FIRST: show the result before any code — image/video/audio sample or response JSON. -->
 
 ![Six tiny-VAE previews from one 1024x576, 97-frame generation, sharpening step by step, followed by the finished clip](viewer-demo.gif)
 
@@ -184,7 +180,7 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 `setup()` then runs one warmup generation at the smoke shape before the worker serves traffic, so the first real request pays no autotune tax — that warmup is the last row of the boot breakdown, already included in the totals above.
 
 - **You pay for every second the H200 is alive**, warm or idle; see [fal pricing](https://fal.ai/pricing). That is the lens for every knob below.
-- **`keep_alive=300`.** Five minutes. Video work arrives in bursts — a person iterating on a prompt sends ten requests in ten minutes — and re-warming means paying the boot row again. Shorten it for genuinely sporadic traffic; the autoscaling math (and when `min_concurrency` beats a long `keep_alive`) is [02.2](../tune-autoscaling/)'s subject.
+- **`keep_alive=300`.** Five minutes. Video work arrives in bursts — a person iterating on a prompt sends ten requests in ten minutes — and re-warming means paying the boot row again. Shorten it for genuinely sporadic traffic; the autoscaling math (and when `min_concurrency` beats a long `keep_alive`) is [tune-autoscaling](../tune-autoscaling/)'s subject.
 - **`startup_timeout=1800`** covers exactly one boot in the app's lifetime. Measured cold boot is 392 s and the slowest *warm* boot we saw was 299 s — the margin is for the unlucky node, not for the normal case.
 - **`preview_every`.** The distilled schedule is a fixed 8 steps, so this knob is coarser than it looks: `1` → 6 previews, `2` → 3, `3` → 2, `4` → 1. Anything above `2` undersells the feature. Previews cost the denoise loop almost nothing (the decode and encode run on the worker thread), so raising it saves bandwidth, not GPU time.
 - **Shape.** `1024x576` at 97 frames is the shape worth demoing — ~11 s from request to final video, with six previews landing between 3.4 s and 6.8 s, where the 768×512 smoke shape is over almost before it starts. 121 frames at the same width costs the same 7.7 s of denoising and one more second of muxing, so the top of the accepted envelope is not a cliff. `num_frames` is snapped down to the model's 8k+1 grid by `snap_frames()`, so callers never get a 422 for asking for 60 frames — the response's `num_frames` reports the count actually generated.
@@ -193,7 +189,7 @@ curl -X POST https://queue.fal.run/<your-username>/large-video-model \
 
 ## Licensing
 
-The weights are **not** Apache-2.0 — unlike the FLUX.2 [klein] 4B in 00.2, you cannot treat this model as unconditionally yours to commercialize.
+The weights are **not** Apache-2.0 — unlike the FLUX.2 [klein] 4B in [first-image-api](../../00-getting-started/first-image-api/), you cannot treat this model as unconditionally yours to commercialize.
 
 - **Model weights:** [LTX-2 Community License](https://huggingface.co/Lightricks/LTX-2.3/blob/main/LICENSE). Royalty-free for most users, commercial use included, but two clauses decide whether that applies to you: organizations with **annual revenue of $10M or more** must obtain a commercial license from Lightricks, and distributed outputs must be **disclosed as machine-generated** where context does not already make that obvious. Read the license itself before shipping; the summary here is not legal advice.
 - **No token required.** Both the model repo and the tiny-VAE weights are ungated, which is why CI can redeploy this example with no Hugging Face secret.
@@ -201,7 +197,6 @@ The weights are **not** Apache-2.0 — unlike the FLUX.2 [klein] 4B in 00.2, you
 
 ## Next steps
 
-- [**02.2 — autoscaling for bursty traffic**](../tune-autoscaling/): the `keep_alive` / `min_concurrency` / concurrency math behind the one-line rationale above, on a model that is cheap to be wrong about.
-- **03.1 — stream progressive results with SSE**: the same streaming pattern applied to image generation, where the previews are frames rather than clips.
-- [**04.5 — multi-GPU inference on a frontier video model**](../../04-genmedia-patterns/multi-gpu-video/): what to do when the sizing table above runs out of single-GPU options.
+- [**tune-autoscaling**](../tune-autoscaling/): the `keep_alive` / `min_concurrency` / concurrency math behind the one-line rationale above, on a model that is cheap to be wrong about.
+- [**multi-gpu-video**](../../04-genmedia-patterns/multi-gpu-video/): what to do when the sizing table above runs out of single-GPU options.
 - Concept docs: [parallel file loading](https://fal.ai/docs/documentation/serverless/optimizations/parallel-file-loading) · [machine types](https://fal.ai/docs/documentation/deployment/machine-types) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)

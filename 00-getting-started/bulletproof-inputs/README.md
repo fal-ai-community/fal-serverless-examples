@@ -2,8 +2,6 @@
 
 The moment your endpoint is public, it stops receiving only the inputs you imagined. It receives a URL pointing at `169.254.169.254`, a "thumbnail" that turns out to be 400 MB, a 200 KB PNG that decodes into 430 MB of pixels and OOM-kills the worker mid-request, and a zip that unpacks to 200 GB. This example is the gauntlet those inputs hit before your model sees them — and, just as importantly, the **typed errors** callers get back instead of an opaque 500.
 
-> Catalog slot `00.4` ([SERV-1309](https://linear.app/features-and-labels/issue/SERV-1309)).
-
 ## What you get
 
 A clean request returns the audit trail of gates it passed:
@@ -81,6 +79,5 @@ curl -X POST https://queue.fal.run/<your-username>/bulletproof-inputs \
 
 ## Next steps
 
-- **00.3 — Media in, media out**: the file plumbing these gates protect.
-- **08.2 — Resilience**: OOM-safe serving, GPU health, retries and cancellation, once inputs are trustworthy.
+- **[media-in-media-out](../media-in-media-out/)**: the file plumbing these gates protect.
 - Concept docs: [errors](https://fal.ai/docs/documentation/model-apis/errors) · [inputs & outputs](https://fal.ai/docs/documentation/development/handle-inputs-and-outputs) · [retries](https://fal.ai/docs/documentation/serverless/reliability/retries)

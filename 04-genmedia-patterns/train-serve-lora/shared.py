@@ -1,4 +1,4 @@
-"""Shared, GPU-free helpers for the train-serve-lora example (04.4).
+"""Shared, GPU-free helpers for the train-serve-lora example.
 
 Imported by BOTH apps and shipped to each runner via `local_python_modules` — the
 "Import Code" mechanism this example teaches (docs: import-code). Everything
@@ -31,7 +31,7 @@ LORA_CONFIG_NAME = "config.json"
 DEMO_LORA = "paper-diorama"
 
 # lora_name doubles as a /data directory name; the strict pattern keeps it
-# path-safe by construction (same discipline as 04.3's user_id).
+# path-safe by construction (same discipline as per-user-loras' user_id).
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 
 # --- input bounds -----------------------------------------------------------
@@ -130,7 +130,7 @@ def validate_safetensors_headers(
 
 def assert_diffusers_lora_keys(shapes: dict[str, tuple[tuple[int, ...], str]]) -> None:
     """The trainer's publish gate: our own artifacts must be diffusers-native
-    (`transformer.<module>.lora_A/B.weight`) so Flux2KleinPipeline (and 04.3's
+    (`transformer.<module>.lora_A/B.weight`) so Flux2KleinPipeline (and per-user-loras'
     /register, and fal's hosted klein LoRA endpoints) load them directly."""
     bad = [
         k

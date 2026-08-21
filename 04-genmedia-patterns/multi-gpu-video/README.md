@@ -10,8 +10,6 @@ still work that way). This example serves the same class of model with none of t
 and diffusers context parallelism splits every denoising step across four H100s -
 one prompt, one video, four GPUs cooperating.
 
-> Catalog slot `04.5` ([SERV-1316](https://linear.app/features-and-labels/issue/SERV-1316))
-
 ## What you get
 
 A text prompt in; a CDN-hosted mp4 (16 fps) out, with the seed echoed so the same inputs
@@ -179,8 +177,8 @@ this page.)
   fast path; WAN's native quality settings (720p, 81 frames, 27 steps) use the same
   endpoint and seed semantics.
 
-Measured on real 4x GPU-H100 runs (CI harness + gating spike deploys 2026-08-04/05,
-registered-deploy validation 2026-08-11; fal 1.78.2, diffusers 0.39.0) - one-time
+Measured on real 4x GPU-H100 runs (validation deploys 2026-08-04/05, registered-deploy
+run 2026-08-11; fal 1.78.2, diffusers 0.39.0) - one-time
 measurements, not a guarantee:
 
 | Config | Wall-clock |
@@ -196,8 +194,8 @@ through the queue with generous client timeouts rather than synchronous HTTP.
 
 ## Next steps
 
-- [Tier 04 - Genmedia patterns](../README.md) - the neighboring video, LoRA, and audio
-  serving examples as they land
+- [Tier 04 - Genmedia patterns](../README.md) - the neighboring LoRA and 3D
+  serving examples
 - [Streaming progress over SSE](https://docs.fal.ai/serverless/distributed/streaming) -
   add preview frames from rank 0 with `add_streaming_result`
 - [Tier 02 - Scaling & cold starts](../../02-scaling-cold-starts/README.md) - compiled

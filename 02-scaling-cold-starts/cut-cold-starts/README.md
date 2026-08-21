@@ -2,7 +2,7 @@
 
 Every GPU serverless cold start pays three costs before a model can serve a single request: pulling weights off the Hub, deserializing them through CPU into GPU memory, and compiling kernels for the shapes it will run. On this example's model (WAN 2.1 text-to-video), the third cost dominates — `torch.compile` alone eats roughly three-quarters of a from-scratch boot, dwarfing the download. Anyone who scales to zero between bursts, autoscales under bursty traffic, or just doesn't want every fresh worker to re-pay that tax hits this problem. This example deploys the same model twice — once with every cold-start lever pulled, once with none — so the before/after is a real measured deploy, not a claim.
 
-> Catalog slot `02.1` ([SERV-1286](https://linear.app/features-and-labels/issue/SERV-1286)). Model: [`Wan-AI/Wan2.1-T2V-1.3B-Diffusers`](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers).
+> Model: [`Wan-AI/Wan2.1-T2V-1.3B-Diffusers`](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B-Diffusers).
 
 ## What you get
 
@@ -106,15 +106,15 @@ HARNESS_STARTUP_TIMEOUT=2700 python 02-scaling-cold-starts/cut-cold-starts/bench
 ## Cost & tuning
 
 - **You pay for every second of that table.** Both apps bill from `setup()` start through teardown, same as any fal app — a cold start isn't free just because no request has landed yet. Under bursty traffic, the difference between paying ~275 s vs. ~96–133 s on every scale-from-zero event compounds fast; see [fal pricing](https://fal.ai/pricing).
-- **`keep_alive=60`** (both apps) holds a warm worker for 60 seconds after the last request — enough to absorb back-to-back requests in a burst without a second cold start. Raise it if your traffic pattern has gaps longer than that but you still want to avoid cold starts between them; this example doesn't tune autoscaling further, that's 02.2.
+- **`keep_alive=60`** (both apps) holds a warm worker for 60 seconds after the last request — enough to absorb back-to-back requests in a burst without a second cold start. Raise it if your traffic pattern has gaps longer than that but you still want to avoid cold starts between them; this example doesn't tune autoscaling further, that's [tune-autoscaling](../tune-autoscaling/)'s subject.
 - **`startup_timeout=2700`** on the optimized app is sized for the worst case it will ever see once — the account's first-ever boot (download + pack build + compile), measured at 520.3 s here with real headroom to spare. The baseline sets the same value even though it never builds a cache, because its steady-state boot (~275 s, every time) still needs generous headroom under contention.
 - **Bump `PACK_VERSION`** whenever `MODEL_ID`, serving dtypes, or the torch/diffusers/flashpack pins change. A stale pack or kernel cache built under old pins must never be loaded under new ones — bumping the version string is what forces a fresh first boot instead of a silent mismatch.
-- **When not to bother with any of this:** a model with a short or no `torch.compile` step (see 00.2's `first-image-api`, which skips compile entirely — nothing here to cache), an app that rarely scales from zero (a high `keep_alive` or `min_concurrency` already solves the problem more simply than any of these three levers), or a model small enough that a cold cold-start is already a few seconds.
+- **When not to bother with any of this:** a model with a short or no `torch.compile` step (see [`first-image-api`](../../00-getting-started/first-image-api/), which skips compile entirely — nothing here to cache), an app that rarely scales from zero (a high `keep_alive` or `min_concurrency` already solves the problem more simply than any of these three levers), or a model small enough that a cold cold-start is already a few seconds.
 - **Smoke/CI knobs:** `num_frames=17, num_inference_steps=8` (this README's `curl` example and `test_app.py`'s `SMALL_REQUEST`) generate a video fast and cheaply enough for CI's live smoke test without touching the cold-start levers at all — they only affect `generate()`, not `setup()`.
 
 ## Next steps
 
-- **02.2 — Tune autoscaling for bursty traffic**: `keep_alive`, concurrency, and the cost math this example's fixed `keep_alive=60` only gestures at. See the [tier README](../README.md) for the folder once it lands.
-- **02.3 — Serve a 20+ GB video model**: parallel loading and GPU-sizing reasoning for models too big for this example's single-GPU FlashPack pattern. See the [tier README](../README.md) for the folder once it lands.
+- [**tune-autoscaling**](../tune-autoscaling/): `keep_alive`, concurrency, and the cost math this example's fixed `keep_alive=60` only gestures at.
+- [**large-video-model**](../large-video-model/): parallel loading and GPU-sizing reasoning for models too big for this example's single-GPU FlashPack pattern.
 - [FlashPack](https://github.com/fal-ai/flashpack) — the disk→GPU streaming library this example builds on.
 - Concept docs: [application setup](https://fal.ai/docs/documentation/development/app-setup) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage) · [machine types](https://fal.ai/docs/documentation/deployment/machine-types) · [optimize cold starts](https://fal.ai/docs/documentation/serverless/optimizations/optimize-cold-starts)

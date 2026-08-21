@@ -1,38 +1,33 @@
 # fal-serverless-examples
 
-> Production-grade fal Serverless examples, organized as a numbered curriculum (tiers 00-08) from first app to production operations. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
+> Production-grade fal Serverless examples, organized as a numbered tier curriculum from first app to production-grade serving; the catalog grows tier by tier. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
 
 ## Catalog
 
 - [Tier 00 - Getting started](00-getting-started/README.md): first app, first image API, media I/O, input hardening
-- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, migrations, environment promotion
+- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, environment promotion
 - [Tier 02 - Scaling & cold starts](02-scaling-cold-starts/README.md): cold-start engineering, autoscaling, very large models
-- [Tier 03 - Streaming & realtime](03-streaming-realtime/README.md): SSE, WebSocket, WebRTC realtime apps
-- [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): ComfyUI, text-to-video, per-user LoRAs, multi-GPU, TTS, music, 3D
-- [Tier 05 - Media processing](05-media-processing/README.md): transcode ladders, 3D LODs, image variants, audio finishing, provenance, batch
-- [Tier 06 - Pipelines & apps](06-pipelines-apps/README.md): workflows, queue + webhooks backends, routing, failover, client chaining
-- [Tier 07 - Integrations](07-integrations/README.md): Next.js, Vercel, n8n, MCP deploy
-- [Tier 08 - Production ops](08-production-ops/README.md): observability, resilience, CI testing, marketplace, cost tracking
+- [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): per-user LoRAs, LoRA train-and-serve, multi-GPU video, 3D progressive rendering
+- [Tier 05 - Media processing](05-media-processing/README.md): post-production transcode/thumbnail/caption pipeline
 
 ## Live examples
 
-- [00.1 hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the CI deploy-check
-- [00.2 first-image-api](00-getting-started/first-image-api/README.md): FLUX.2 [klein] 4B text-to-image API - load/warmup discipline, machine-type fallback, seed contract, sync_mode, playground + clients
-- [00.3 media-in-media-out](00-getting-started/media-in-media-out/README.md): file plumbing on a CPU machine - URL inputs, bounded downloads cached on /data, CDN outputs with output_format -> content-type, per-file retention
-- [00.4 bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
-- [01.1 same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
-- [01.3 dev-staging-prod](01-environments-containers/dev-staging-prod/README.md): one codebase across environments - env-scoped secrets, promotion-is-redeploy, and the verified three-step rollback (set-rev alone does not move traffic)
-- [02.2 tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
-- [02.3 large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE
-- [04.3 per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
-- [04.4 train-serve-lora](04-genmedia-patterns/train-serve-lora/README.md): train a FLUX.2-klein LoRA in-app and serve it - long-request trainer pattern (keep_alive=0, request_timeout, skip_retry), dataset preflight with typed 422s, atomic /data handoff, one-slot adapter serving on distilled klein
-- [04.5 multi-gpu-video](04-genmedia-patterns/multi-gpu-video/README.md): WAN 2.2 A14B (2x14B MoE, ~70 GB bf16) sharded across 4 GPUs with fal.distributed + diffusers Ulysses context parallelism - one video, four GPUs; bf16 /data pre-conversion, per-shape warmup, the {"error": ...} worker contract, single-flight runner semantics
-- [04.7 3d-progressive-rendering](04-genmedia-patterns/3d-progressive-rendering/README.md): SAM-3D Objects with progressive SSE streaming - voxel frames during both diffusion stages via the official pipeline's generate_iter (no model fork), final GLB + Gaussian splat by URL, single-file Three.js viewer
-- [05.1 post-production-pipeline](05-media-processing/post-production-pipeline/README.md): transcode ladder + thumbnails + captions on a CPU machine - parallel ffmpeg rungs in a pinned container, faststart MP4s, soft-muxed captions with VTT sidecar, and a queue + Ed25519-verified-webhook client pair
+- [hello-fal](00-getting-started/hello-fal/README.md): the smallest deployable fal app - one typed endpoint through fal run, fal deploy, and the CI deploy-check
+- [first-image-api](00-getting-started/first-image-api/README.md): FLUX.2 [klein] 4B text-to-image API - load/warmup discipline, machine-type fallback, seed contract, sync_mode, playground + clients
+- [media-in-media-out](00-getting-started/media-in-media-out/README.md): file plumbing on a CPU machine - URL inputs, bounded downloads cached on /data, CDN outputs with output_format -> content-type, per-file retention
+- [bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
+- [same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
+- [dev-staging-prod](01-environments-containers/dev-staging-prod/README.md): one codebase across environments - env-scoped secrets, promotion-is-redeploy, and the verified three-step rollback (set-rev alone does not move traffic)
+- [cut-cold-starts](02-scaling-cold-starts/cut-cold-starts/README.md): the same WAN 2.1 model deployed twice - every cold-start lever pulled vs none - FlashPack weights on /data, portable torch.compile caches, and a measured 2.1-2.9x setup() reduction with the full before/after table
+- [tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
+- [large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE
+- [per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
+- [train-serve-lora](04-genmedia-patterns/train-serve-lora/README.md): train a FLUX.2-klein LoRA in-app and serve it - long-request trainer pattern (keep_alive=0, request_timeout, skip_retry), dataset preflight with typed 422s, atomic /data handoff, one-slot adapter serving on distilled klein
+- [multi-gpu-video](04-genmedia-patterns/multi-gpu-video/README.md): WAN 2.2 A14B (2x14B MoE, ~70 GB bf16) sharded across 4 GPUs with fal.distributed + diffusers Ulysses context parallelism - one video, four GPUs; bf16 /data pre-conversion, per-shape warmup, the {"error": ...} worker contract, single-flight runner semantics
+- [3d-progressive-rendering](04-genmedia-patterns/3d-progressive-rendering/README.md): SAM-3D Objects with progressive SSE streaming - voxel frames during both diffusion stages via the official pipeline's generate_iter (no model fork), final GLB + Gaussian splat by URL, single-file Three.js viewer
+- [post-production-pipeline](05-media-processing/post-production-pipeline/README.md): transcode ladder + thumbnails + captions on a CPU machine - parallel ffmpeg rungs in a pinned container, faststart MP4s, soft-muxed captions with VTT sidecar, and a queue + Ed25519-verified-webhook client pair
 
 ## Docs
 
 - [fal Serverless documentation](https://fal.ai/docs/documentation/serverless): concept docs these examples back
-- [Example template](templates/example/README.md): the structure every example follows
 - [Deploy-check harness](harness/README.md): how CI re-deploys and smoke-tests every example
-- [Project context](CONTEXT.md): full catalog map, ticket links, conventions

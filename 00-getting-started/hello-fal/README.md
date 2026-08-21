@@ -2,8 +2,6 @@
 
 You have Python code that needs to run on serverless infrastructure — with a real HTTP API, typed inputs and outputs, and a path to production — without writing a Dockerfile or managing a server. This is the smallest complete fal app: one endpoint, deployed the same way the biggest ones are.
 
-> Catalog slot `00.1` ([SERV-1284](https://linear.app/features-and-labels/issue/SERV-1284)). This is the minimal version that proves the example layout end-to-end; the full "one app, run three ways" walkthrough lands with its ticket.
-
 ## What you get
 
 A live HTTPS endpoint that answers:
@@ -53,9 +51,9 @@ curl -X POST https://fal.run/<your-username>/hello-fal \
 
 - `S` is a CPU tier billed per second; CPU tiers cost far less than GPU tiers — see the machine-types docs for current pricing before reaching for one.
 - `keep_alive=60` trades ~60s of idle billing after each burst for zero cold starts within it. Set it to `0` if you only care about batch-style calls, or higher if your traffic is steady.
-- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — unlike the model-load-dominated cold starts you'll meet in 00.2.
+- Cold start on a CPU tier is dominated by worker boot and environment restore, not model loading — unlike the model-load-dominated cold starts you'll meet in [first-image-api](../first-image-api/).
 
 ## Next steps
 
-- **00.2 — Your first image API**: same shape, but `setup()` loads a real model onto a GPU.
+- **[first-image-api](../first-image-api/)**: same shape, but `setup()` loads a real model onto a GPU.
 - Concept docs: machine types, `fal run` vs `fal deploy`, keep-alive & autoscaling.

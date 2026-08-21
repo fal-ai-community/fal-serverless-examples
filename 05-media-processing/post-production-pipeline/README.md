@@ -2,8 +2,6 @@
 
 A generated video isn't a shippable video. Every genmedia product ends up building the same layer by hand: rendition ladders so playback doesn't buffer, poster thumbnails for the feed, captions muxed in for accessibility — then a queue and a webhook so the backend hears about it. This example is that layer as one deployable fal app: ffmpeg on a cheap CPU machine, with fal's queue as the queue.
 
-> Catalog slot `05.1` ([SERV-1282](https://linear.app/features-and-labels/issue/SERV-1282)).
-
 ## What you get
 
 ```json
@@ -39,7 +37,7 @@ The playground gives `video_url` a drag-and-drop upload widget; the defaults enc
 
 **One endpoint, five stages.** Download → probe gate → parallel ladder → captions → thumbnails + uploads. The app is a stateless CPU processor; all the async machinery (queueing, status, webhooks) comes from the platform, not from app code — see Deploy.
 
-**The environment is a Dockerfile, and that's the point.** ffmpeg is a system package, so this app pins it the honest way: a digest-pinned `python:3.11-slim` base plus apt's ffmpeg, built server-side by fal (no local Docker, no registry). Same pattern, same base digest as [01.1 same-model-two-ways](../../01-environments-containers/same-model-two-ways/) — read that example for why digests beat tags. The report echoes `ffmpeg -version` from inside the container, so provenance is verifiable per request.
+**The environment is a Dockerfile, and that's the point.** ffmpeg is a system package, so this app pins it the honest way: a digest-pinned `python:3.11-slim` base plus apt's ffmpeg, built server-side by fal (no local Docker, no registry). Same pattern, same base digest as [same-model-two-ways](../../01-environments-containers/same-model-two-ways/) — read that example for why digests beat tags. The report echoes `ffmpeg -version` from inside the container, so provenance is verifiable per request.
 
 **Bounded download, cached on `/data`.** `download_file` is SSRF-guarded and size-capped (300 MB here); sources land in a URL-hashed cache directory on [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage), so re-processing the same source (new ladder, new captions) skips the transfer — `report.timings_ms.download` goes to ~0.
 
@@ -49,7 +47,7 @@ The playground gives `video_url` a drag-and-drop upload widget; the defaults enc
 
 **Captions are validated before you pay for encoding.** SRT comes inline (`captions_srt`) or by URL (`captions_url`, at most one); the app converts it to WebVTT first — a malformed file fails as a fast typed 422 (`invalid_media`) before any rendition is encoded — then soft-muxes it into every MP4 as a selectable track.
 
-**Outputs are typed toolkit objects on the fal CDN.** `File`/`Image` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from fal's CDN (`v3.fal.media` / `v3b.fal.media` shards); retention follows your account's media lifecycle. Per-request retention via the `x-fal-object-lifecycle-preference` header (see [00.3 media-in-media-out](../../00-getting-started/media-in-media-out/)) would additionally need the incoming FastAPI request forwarded to each upload call (`from_path(..., request=...)`) — this app skips that to keep the endpoint minimal.
+**Outputs are typed toolkit objects on the fal CDN.** `File`/`Image` with explicit content types (`from_path` deliberately doesn't guess — an `application/octet-stream` MP4 won't stream inline). URLs are served from fal's CDN (`v3.fal.media` / `v3b.fal.media` shards); retention follows your account's media lifecycle. Per-request retention via the `x-fal-object-lifecycle-preference` header (see [media-in-media-out](../../00-getting-started/media-in-media-out/)) would additionally need the incoming FastAPI request forwarded to each upload call (`from_path(..., request=...)`) — this app skips that to keep the endpoint minimal.
 
 ## Deploy
 
@@ -134,7 +132,7 @@ Also verified against the same deploy: a second identical submit got a **new** `
 
 ## Next steps
 
-- **[06.2 — Async queue + webhooks into a product backend](../../06-pipelines-apps/)**: this example's client story grown into a real app (Next.js submits, webhook updates the DB).
-- **[05.3 — Image variant factory](../)**: the same CPU-proxy archetype for images (AVIF/WebP ladders).
+- **Grow the client story into a product backend**: a real app submits through the queue (Next.js submits, webhook updates the DB) — `client.py` and `webhook_receiver.py` here are the seed.
+- **An image variant factory**: the same CPU-proxy archetype for images (AVIF/WebP ladders).
 - **HLS is the natural extension**: per-rung segment playlists + a master playlist. The ladder here is the hard part; HLS is packaging (`-f hls`) plus playlist URL rewriting for the CDN.
 - Concept docs: [queue](https://docs.fal.ai/model-apis/queue) · [webhooks](https://docs.fal.ai/model-apis/webhooks) · [container apps](https://fal.ai/docs/documentation/development/use-custom-container-image) · [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage)

@@ -2,7 +2,7 @@
 
 You want a text-to-image endpoint you own: your model choice, your API schema, your infrastructure — not a black-box third-party API. This example deploys **FLUX.2 [klein] 4B** behind a typed HTTP endpoint on a fal GPU: weights load once per worker, every request hits a warm model, and callers get back a CDN-hosted image.
 
-> Catalog slot `00.2` ([SERV-1293](https://linear.app/features-and-labels/issue/SERV-1293)). Model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — **Apache-2.0 and ungated**, so you can ship what this tutorial teaches commercially, with no Hugging Face token anywhere. (The klein **9B** variants are gated and non-commercial — don't swap them in.)
+> Model: [`black-forest-labs/FLUX.2-klein-4B`](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B) — **Apache-2.0 and ungated**, so you can ship what this tutorial teaches commercially, with no Hugging Face token anywhere. (The klein **9B** variants are gated and non-commercial — don't swap them in.)
 
 ## What you get
 
@@ -37,7 +37,7 @@ The first-ever run downloads ~16 GB of weights into your account's `/data` cache
 **`setup()` — load → compile → warmup.** Everything slow happens once per worker, before the first request is served:
 
 - **Load**: `Flux2KleinPipeline.from_pretrained(...)` with no `cache_dir` — fal points `HF_HOME` at [persistent storage](https://fal.ai/docs/documentation/development/use-persistent-storage) (`/data`), so weights download once per *account*, then every future worker (and every CI deploy) loads from cache. `HF_HUB_ENABLE_HF_TRANSFER=1` accelerates that first download.
-- **Compile**: this example deliberately skips `torch.compile` — it's cold-start engineering with a measurable trade-off, covered where it belongs (example 02.1, compiled caches). The comment in `setup()` marks where it goes.
+- **Compile**: this example deliberately skips `torch.compile` — it's cold-start engineering with a measurable trade-off, covered where it belongs ([cut-cold-starts](../../02-scaling-cold-starts/cut-cold-starts/)). The comment in `setup()` marks where it goes.
 - **Warmup**: one single-step generation pays CUDA init and kernel autotuning during [SETUP](https://fal.ai/docs/documentation/development/app-setup), so the first user request runs at steady-state speed.
 
 **Machine-type fallback list.** `machine_type = ["GPU-L40", "GPU-H100"]` is tried in order until capacity is found: klein-4B in bf16 (~16–18 GB peak) fits comfortably on the cheaper L40, and H100 is the fallback under load — see [machine types](https://fal.ai/docs/documentation/deployment/machine-types).
@@ -103,6 +103,6 @@ curl -X POST https://queue.fal.run/<your-username>/first-image-api \
 
 ## Next steps
 
-- **00.3 — Media in, media out**: file inputs, CDN behavior, and persistent storage patterns this example only touched.
-- **02.1 — Cut cold starts**: `torch.compile`, shared inductor caches, and weight-loading tricks — the "compile" step this example skipped, with the trade-offs measured.
+- **[media-in-media-out](../media-in-media-out/)**: file inputs, CDN behavior, and persistent storage patterns this example only touched.
+- **[cut-cold-starts](../../02-scaling-cold-starts/cut-cold-starts/)**: `torch.compile`, shared inductor caches, and weight-loading tricks — the "compile" step this example skipped, with the trade-offs measured.
 - Concept docs: [application setup](https://fal.ai/docs/documentation/development/app-setup) · [machine types](https://fal.ai/docs/documentation/deployment/machine-types) · [calling your endpoints](https://fal.ai/docs/documentation/development/calling-your-endpoints)

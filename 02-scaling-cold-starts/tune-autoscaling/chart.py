@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the committed SVG charts for slot 02.2 (SERV-1294).
+"""Render the committed SVG charts for this example.
 
 Stdlib only - requirements.txt mirrors App.requirements exactly, so a
 plotting library here would ship to the GPU. Hand-written SVG also means

@@ -1,3 +1,0 @@
-fal==1.78.2
-# Exact mirror of App.requirements in app.py (authoritative; CI static check enforces it), e.g.:
-# torch==2.6.0

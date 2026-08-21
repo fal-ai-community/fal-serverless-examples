@@ -1,12 +1,12 @@
-"""Serve a freshly-trained klein LoRA from /data - the serving half of 04.4.
+"""Serve a freshly-trained klein LoRA from /data - the serving half of this example.
 
-Catalog slot 04.4 (SERV-1312). The trainer (app_trainer.py) writes
+The trainer (app_trainer.py) writes
 /data/loras/<lora_name>/; this app loads adapters from there by name onto
 the DISTILLED klein-4B (4-step inference). Train where gradients behave,
 serve where inference is fast.
 
 One resident adapter, swapped on demand - deliberately the 20-line version
-of 04.3's LRU fleet (see README "Next steps").
+of per-user-loras' LRU fleet (see README "Next steps").
 """
 import os
 import random
@@ -114,7 +114,7 @@ class KleinLoraServer(fal.App, keep_alive=300):
             shared.SERVE_MODEL_ID, torch_dtype=torch.bfloat16
         ).to("cuda")
 
-        # Idempotent /data bootstrap (04.3's featured-user pattern): if the
+        # Idempotent /data bootstrap (per-user-loras' featured-user pattern): if the
         # demo adapter isn't on this account's /data yet, fetch the published
         # reference copy - CI stays green on a fresh account, and the example
         # works before you've run your first training.

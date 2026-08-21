@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fire one measured burst at a deployed tune-autoscaling app (SERV-1294).
+"""Fire one measured burst at a deployed tune-autoscaling app.
 
 Stdlib plus fal (already a declared dependency of this example). No httpx:
 requirements.txt must mirror App.requirements exactly, so anything imported

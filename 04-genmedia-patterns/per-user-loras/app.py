@@ -1,6 +1,6 @@
 """Serve thousands of per-user LoRAs with routing hints - FLUX.2 [klein] 4B.
 
-Catalog slot 04.3 (SERV-1306). One shared warm fleet serves every user's
+One shared warm fleet serves every user's
 personal LoRA: adapters live on /data, a KV store maps user -> adapter, each
 runner keeps a small GPU LRU of loaded adapters, and provide_hints() tells
 fal's router which users this runner already has hot. Hints are best-effort
@@ -41,7 +41,7 @@ _OOM_MARKERS = ("out of memory", "cublas_status_alloc_failed", "cudnn_status_all
 # Real, license-verified klein-4B LoRAs (Apache-2.0 / MIT), spanning all four
 # key-format families diffusers 0.39 loads: ai-toolkit, kohya, raw-PEFT
 # (fal-trainer output), diffusers-native. The five klein-style-fleet entries
-# were trained with example 04.4's recipe - its output URL is exactly what
+# were trained with the train-serve-lora recipe - its output URL is exactly what
 # /register accepts. The demo's "thousands" come from synthetic registrations;
 # these eight are the visually-distinct featured users.
 _FLEET = "https://huggingface.co/rehan-fal/klein-style-fleet/resolve/main"
@@ -323,8 +323,8 @@ class PerUserLoras(fal.App, keep_alive=300):
 
     def _download_to(self, url: str, dest: Path) -> None:
         """Stream-download with a hard size cap; temp file + atomic rename so
-        concurrent runners never see partial files. (00.4 bulletproof-inputs
-        covers the fully hardened version of this gate.)"""
+        concurrent runners never see partial files. (The bulletproof-inputs
+        example covers the fully hardened version of this gate.)"""
         import httpx
 
         tmp = dest.with_suffix(f".tmp-{os.getpid()}-{time.monotonic_ns()}")

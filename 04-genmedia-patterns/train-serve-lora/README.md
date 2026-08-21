@@ -126,7 +126,7 @@ demo adapter *is* that run's output).
 - **`keep_alive=0` on the trainer** means every job pays boot time but idle
   costs nothing — right for occasional training. If you're queueing many
   jobs back-to-back, raise it so the 16 GB weights load once.
-- **The server** follows 00.2's economics (`keep_alive=300`, L40-first) —
+- **The server** follows first-image-api's economics (`keep_alive=300`, L40-first) —
   adapter swaps add one `/data` read + `load_lora_weights` call, visible in
   `timings.lora` and `serving.adapter_source`.
 
@@ -150,11 +150,13 @@ your first training.
 ## Next steps
 
 - **Serve thousands of these** — one adapter per user, LRU-cached on a warm
-  fleet with routing hints: example 04.3. Your `diffusers_lora_file` URL is drop-in
-  for its `/register`.
+  fleet with routing hints: [per-user-loras](../per-user-loras/). Your
+  `diffusers_lora_file` URL is drop-in for its `/register`.
 - **Managed alternative**: [fal's hosted klein trainer](https://fal.ai/models/fal-ai/flux-2-klein-4b-base-trainer)
   is this pattern productized (same field vocabulary, no app to run).
-- **Cold starts**: the 16 GB boot download is example 02.1's problem —
+- **Cold starts**: the 16 GB boot download is the problem
+  [cut-cold-starts](../../02-scaling-cold-starts/cut-cold-starts/) solves —
   FlashPack, `/data` caches, and compiled artifacts.
 - **Progress streaming**: training logs stream through the queue; for
-  first-class SSE progress see example 03.1.
+  first-class SSE progress see
+  [3d-progressive-rendering](../3d-progressive-rendering/).
