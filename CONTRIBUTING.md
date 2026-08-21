@@ -1,8 +1,8 @@
 # Contributing
 
-This catalog is **maintained by the fal team** — examples are planned, built, and validated internally. We're not accepting example contributions from outside fal right now.
+This catalog is **maintained by the fal team** — examples are planned, built, and validated internally, and all contributions come from fal engineers.
 
-**Found a broken example or a mistake?** Please open an issue — CI re-deploys every example against real infrastructure, but reader eyes catch what smoke tests don't. Small correction PRs (typos, broken links) are welcome too.
+**Found a broken example or a mistake?** Please open an issue — CI re-deploys every example against real infrastructure, but reader eyes catch what smoke tests don't.
 
 ## For fal folks adding an example
 
