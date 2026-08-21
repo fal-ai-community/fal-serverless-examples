@@ -1,14 +1,4 @@
-"""Bulletproof inputs - typed 422s, bomb gates, and safe URL ingestion.
-
-Every public endpoint eventually meets a
-hostile input: a URL pointing at your own metadata service, a 400 MB
-"thumbnail", a 200x200 PNG that decodes to 144 megapixels, a 200 KB zip
-that unpacks to 200 GB. This example is the gauntlet those inputs hit
-before your model ever sees them - and the typed errors callers get back.
-
-See the README for the full threat model: what fal already blocks versus
-what each gate here adds.
-"""
+"""Bulletproof inputs - typed 422s, bomb gates, and safe URL ingestion."""
 import base64
 import binascii
 import hashlib
@@ -23,7 +13,7 @@ from fal.toolkit import download_file
 from fal.toolkit.utils.download_utils import DownloadError
 from pydantic import BaseModel, Field
 
-# Defaults mirror what fal's own production ingestion enforces.
+# Defaults mirror fal's production ingestion.
 DEFAULT_MAX_DOWNLOAD_MB = 100
 DEFAULT_MAX_PIXELS = 89_478_485  # PIL's own bomb threshold; ~9460x9460
 DEFAULT_MAX_ARCHIVE_ENTRIES = 10_000
@@ -31,14 +21,9 @@ DEFAULT_MAX_UNCOMPRESSED_MB = 512
 ALLOWED_SCHEMES = {"http", "https", "data"}
 ALLOWED_PORTS = {80, 443}
 ALLOWED_FORMATS = {"PNG", "JPEG", "WEBP"}
-# Hostile per-request downloads are scratch, not model weights - keep them
-# off the persistent /data volume.
+# Scratch downloads stay off the persistent /data volume.
 DOWNLOAD_DIR = Path("/tmp/bulletproof-inputs")
 
-
-# --------------------------------------------------------------------------
-# The app
-# --------------------------------------------------------------------------
 
 class Input(BaseModel):
     image_url: str = Field(
@@ -117,17 +102,14 @@ class BulletproofInputs(fal.App, keep_alive=60):
 
         gates = []
 
-        # 1. URL policy, before a single byte moves.
         check_url_policy(request.image_url, "image_url")
         gates.append("url_policy")
 
-        # 2. Bounded download. SSRF protection comes from the SDK; the cap
-        #    is ours (download_file's filesize_limit defaults to None).
+        # download_file's filesize_limit defaults to None - the cap must be passed.
         path = download_guarded(request.image_url, request.max_download_mb, "image_url")
         size_bytes = path.stat().st_size
         gates.append("download_cap")
 
-        # 3. Header-only open: dimensions and format without decoding.
         try:
             image = PILImage.open(path)
         except Exception as exc:
@@ -145,11 +127,10 @@ class BulletproofInputs(fal.App, keep_alive=60):
             )
         gates.append("format_allowlist")
 
-        # 4. The bomb gate - still no pixels allocated.
+        # Header dims only - no pixels decoded until load().
         check_pixel_budget(image.width, image.height, request.max_pixels, "image_url")
         gates.append("pixel_budget")
 
-        # 5. Only now is it safe to decode.
         try:
             image.load()
         except Exception as exc:
@@ -185,14 +166,8 @@ class BulletproofInputs(fal.App, keep_alive=60):
         )
 
 
-# --------------------------------------------------------------------------
-# Gates - pure functions, unit-tested without deploying anything
-# --------------------------------------------------------------------------
-
 def check_url_policy(url: str, field: str) -> None:
-    """Scheme and port policy. The SDK's SSRF client already restricts
-    http(s) fetches to globally routable IPs, but it does not restrict
-    ports, and `data:` URIs bypass it entirely - so state the policy here."""
+    """Scheme/port policy - the SDK's SSRF client ignores ports, and data: URIs bypass it."""
     parsed = urlparse(url)
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise FieldException(
@@ -212,10 +187,7 @@ def check_url_policy(url: str, field: str) -> None:
 
 
 def check_pixel_budget(width: int, height: int, max_pixels: int, field: str) -> None:
-    """The decompression-bomb gate. Runs on header dimensions BEFORE any
-    decode: a 12000x12000 PNG is ~400 KB on the wire and ~430 MB decoded,
-    which OOM-kills a worker (and every request multiplexed onto it).
-    Pillow only warns at this size, so make it a deterministic 422."""
+    """Bomb gate on header dimensions, before any decode - Pillow only warns at this size."""
     area = width * height
     if area > max_pixels:
         raise FieldException(
@@ -229,22 +201,12 @@ def check_pixel_budget(width: int, height: int, max_pixels: int, field: str) -> 
 def inspect_zip(
     path: Path, max_entries: int, max_uncompressed_mb: int, field: str
 ) -> ArchiveStats:
-    """Archive gates, all applied BEFORE extraction.
-
-    fal.toolkit's CompressedFile extracts with no limits at all, so an
-    archive is only safe if you inspect the central directory first: entry
-    count (metadata bombs exhaust inodes even under a byte cap), declared
-    uncompressed size, and member paths. The compression ratio is computed
-    and returned in the stats so callers can flag bomb-like archives; it is
-    not a gate here.
-    """
+    """Archive gates, applied before extraction - fal's CompressedFile extracts with no limits."""
     max_uncompressed = max_uncompressed_mb * 1024 * 1024
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
     except (zipfile.BadZipFile, OSError) as exc:
-        # Corrupt, truncated, or not a zip at all - all the caller's problem,
-        # none of them a 500.
         raise FieldException(
             field=field, message="not a readable zip archive", type="invalid_archive"
         ) from exc
@@ -265,8 +227,7 @@ def inspect_zip(
         )
     compressed = sum(info.compress_size for info in infos) or 1
     ratio = uncompressed / compressed
-    # Pre-extraction path check: this app never extracts, but callers who do
-    # must reject absolute or ..-traversal member names first.
+    # Callers who extract must reject absolute/..-traversal member names first.
     unsafe = [
         info.filename
         for info in infos
@@ -286,13 +247,7 @@ def inspect_zip(
 
 
 def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
-    """Materialize a data: URI, sized before it is decoded.
-
-    Two reasons not to hand these to download_file: it logs the URL it
-    fetches, so a data: URI dumps its entire base64 payload into your runner
-    logs; and the size cap would only apply after decoding. Base64 inflates
-    by 4/3, so the encoded length tells you the decoded size for free.
-    """
+    """Materialize a data: URI - download_file would log the full payload and cap only post-decode."""
     header, _, payload = url.partition(",")
     if not payload:
         raise FieldException(field=field, message="malformed data URI", type="value_error")
@@ -320,15 +275,10 @@ def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
 
 
 def download_guarded(url: str, max_mb: int, field: str) -> Path:
-    """Fetch a user-supplied URL with every failure mapped onto a typed error.
-
-    Left uncaught, a DownloadError is a plain exception - a 500 that tells
-    the caller nothing and looks like your bug, not their bad input.
-    """
+    """Fetch a user-supplied URL, mapping every DownloadError onto a typed 422 (else it's a 500)."""
     if urlparse(url).scheme == "data":
         return read_data_uri(url, DOWNLOAD_DIR, max_mb, field)
-    # download_file takes no timeout kwarg in fal 1.78.2; the platform request
-    # timeout is the bound on this fetch.
+    # No timeout kwarg in fal 1.78.2; the platform request timeout bounds this fetch.
     try:
         return download_file(url, DOWNLOAD_DIR, filesize_limit=max_mb)
     except DownloadError as exc:
@@ -339,8 +289,7 @@ def download_guarded(url: str, max_mb: int, field: str) -> Path:
                 message=f"file exceeds the {max_mb} MB limit",
                 type="file_too_large",
             ) from exc
-        # SSRF refusals arrive here verbatim ("Hostname resolves to a
-        # non-routable address", "URL scheme 'ftp' is not allowed", ...).
+        # SSRF refusals from the SDK arrive here verbatim.
         raise FieldException(
             field=field, message=f"could not download: {detail}", type="file_download_error"
         ) from exc

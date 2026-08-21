@@ -1,13 +1,4 @@
-"""Watch a generation live from the terminal.
-
-Usage:
-    pip install fal-client==1.0.0
-    export FAL_KEY=...
-    python client.py <owner>/large-video-model "a red fox trotting through fresh snow"
-
-Writes preview_latest.mp4 as each preview arrives (open it in a looping
-player) and final.mp4 (with audio) when generation completes.
-"""
+"""Usage: FAL_KEY=... python client.py <owner>/large-video-model "<prompt>" - streams previews to preview_latest.mp4, then final.mp4."""
 import base64
 import pathlib
 import shutil

@@ -1,11 +1,4 @@
-"""Cut cold starts — the BASELINE app: no levers pulled.
-
-WAN 2.1 1.3B text-to-video the way everyone writes it first: every
-worker boot downloads ~29 GB of fp32 shards from the
-Hub, deserializes them through CPU, casts to serving dtypes, moves to GPU,
-and compiles kernels from scratch. app.py is the same model and endpoints
-with all three cold-start levers pulled; bench.py measures both.
-"""
+"""The baseline WAN 2.1 app: no cold-start levers pulled."""
 import random
 import tempfile
 import time
@@ -17,8 +10,8 @@ from fal.toolkit import File
 from pydantic import BaseModel, Field, field_validator
 
 MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-# Resolution is fixed at WAN 2.1 1.3B's native 832x480 so warmup at both frame
-# extremes covers every shape the compiled transformer will ever serve.
+# Fixed native resolution: warmup at both frame extremes then covers every
+# shape the compiled transformer will ever serve.
 WIDTH, HEIGHT = 832, 480
 WARMUP_FRAME_COUNTS = (17, 81)
 FPS = 16
@@ -93,9 +86,8 @@ class ColdStartBaseline(fal.App, keep_alive=60):
     machine_type = "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
     app_auth = "private"
     startup_timeout = 2700  # ~29 GB Hub download + CPU deserialize + full compile
-    # Identical pins to app.py so both share one cached environment and the
-    # benchmark isolates the levers, not pip-install noise. requirements.txt
-    # mirrors this list exactly (static check enforces it).
+    # Identical pins to app.py (shared cached env, benchmark isolates the
+    # levers); requirements.txt mirrors this list exactly.
     requirements = [
         "fal==1.78.2",  # keep in sync with harness/requirements.txt
         "flashpack==0.4.0",
@@ -120,9 +112,8 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         from diffusers import WanPipeline
         stage("imports", t0)
 
-        # The Hub repo ships fp32 (~29 GB); serving dtypes are bf16 for the
-        # transformer and text encoder, fp32 for the VAE - the same dtypes
-        # the optimized app packs, so the two apps serve identical pipelines.
+        # Same serving dtypes as the optimized app's pack, so the two apps
+        # serve identical pipelines.
         t0 = time.perf_counter()
         self.pipe = WanPipeline.from_pretrained(
             MODEL_ID,
@@ -137,10 +128,8 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         self.pipe.set_progress_bar_config(disable=True)
         stage("download + load weights (Hub, safetensors -> CPU -> GPU)", t0)
 
-        # Same compiled end state as app.py - but no shared cache, so every
-        # boot pays the full kernel compilation. Warmup at both frame-count
-        # extremes marks the latent time dim dynamic; output_type='latent'
-        # skips VAE decode (compile only cares about transformer shapes).
+        # Warmup at both frame extremes marks the latent time dim dynamic;
+        # output_type='latent' skips VAE decode (compile only sees transformer).
         t0 = time.perf_counter()
         self.pipe.transformer = torch.compile(self.pipe.transformer, dynamic=True)
         for frames in WARMUP_FRAME_COUNTS:

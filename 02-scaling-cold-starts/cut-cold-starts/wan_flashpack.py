@@ -1,20 +1,4 @@
-"""The four FlashPack + WAN 2.1 classes, exactly as FlashPack's flagship WAN
-example defines them (github.com/fal-ai/flashpack, tests/test_wan_pipeline.py),
-wrapped in a factory so this module's top level stays stdlib-only — the
-deploying client and CI's static checks import this file without torch.
-
-Shipped to the runner via `local_python_modules` (cloudpickle by-value). A
-by-value module reconstructs WITHOUT a sys.modules entry, which breaks two
-things this example needs:
-
-  - transformers 5.x reads sys.modules[cls.__module__] when instantiating any
-    PreTrainedModel subclass -> KeyError;
-  - diffusers' pipeline loader resolves the component classes recorded in the
-    pack's model_index.json via importlib.import_module("wan_flashpack")
-    -> ModuleNotFoundError.
-
-_publish_classes() repairs both at runtime by installing a real module entry.
-"""
+"""FlashPack + WAN 2.1 integration classes, built lazily so the top level stays stdlib-only."""
 from __future__ import annotations
 
 import sys
@@ -24,12 +8,7 @@ _CLASSES: dict[str, type] = {}
 
 
 def _publish_classes(module_name: str, classes: dict[str, type]) -> types.ModuleType:
-    """Make `module_name` importable with `classes` as attributes.
-
-    Reuses the existing sys.modules entry when the module was imported
-    normally (local runs, tests); creates one when running from a cloudpickle
-    by-value reconstruction (fal runner).
-    """
+    """Make `module_name` importable: cloudpickle by-value reconstruction leaves no sys.modules entry."""
     module = sys.modules.get(module_name)
     if module is None:
         module = types.ModuleType(module_name)
@@ -44,8 +23,8 @@ def get_classes() -> dict[str, type]:
     if _CLASSES:
         return _CLASSES
 
-    # Publish the module entry BEFORE defining the classes: transformers may
-    # introspect the defining module during class creation, not just __init__.
+    # Publish BEFORE defining the classes: transformers may introspect the
+    # defining module during class creation.
     _publish_classes(__name__, {})
 
     from diffusers.models import AutoencoderKLWan, WanTransformer3DModel
@@ -61,8 +40,7 @@ def get_classes() -> dict[str, type]:
     class FlashPackWanTransformer3DModel(
         WanTransformer3DModel, FlashPackDiffusersModelMixin
     ):
-        # rope buffers are recomputed at init; packing them would only bloat
-        # the file (upstream flagship does the same).
+        # rope buffers are recomputed at init; packing them only bloats the file.
         flashpack_ignore_prefixes = ["rope"]
 
     class FlashPackAutoencoderKLWan(AutoencoderKLWan, FlashPackDiffusersModelMixin):
@@ -95,12 +73,8 @@ def get_classes() -> dict[str, type]:
                 expand_timesteps=expand_timesteps,
             )
 
-    # diffusers' get_class_obj_and_candidates() strips a "FlashPack" prefix
-    # from the class names recorded in model_index.json before resolving
-    # them against this module (pipeline_loading_utils.py, diffusers 0.39):
-    # "FlashPackUMT5EncoderModel" is looked up here as "UMT5EncoderModel".
-    # Register every class under both names so either resolution path lands
-    # on the mixin subclass.
+    # diffusers 0.39 strips the "FlashPack" prefix when resolving
+    # model_index.json class names - register every class under both names.
     mod = sys.modules[__name__]
     for cls_obj in (
         FlashPackWanTransformer3DModel,

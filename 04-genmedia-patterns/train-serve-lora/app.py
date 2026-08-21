@@ -1,13 +1,4 @@
-"""Serve a freshly-trained klein LoRA from /data - the serving half of this example.
-
-The trainer (app_trainer.py) writes
-/data/loras/<lora_name>/; this app loads adapters from there by name onto
-the DISTILLED klein-4B (4-step inference). Train where gradients behave,
-serve where inference is fast.
-
-One resident adapter, swapped on demand - deliberately the 20-line version
-of per-user-loras' LRU fleet (see README "Next steps").
-"""
+"""Serve trained klein LoRAs from /data - the serving half of train-serve-lora."""
 import os
 import random
 import shutil
@@ -84,9 +75,9 @@ class KleinLoraServer(fal.App, keep_alive=300):
     machine_type = ["GPU-L40", "GPU-H100"]  # tried in order until capacity is found
     app_auth = "private"
     startup_timeout = 1200  # first boot: ~16 GB of weights + the demo adapter
-    local_python_modules = ["shared"]  # Import Code: same module the trainer ships
-    # One-slot adapter state: concurrent requests must never interleave
-    # _load_adapter/set_adapters (correctness, not tuning).
+    local_python_modules = ["shared"]  # same module the trainer ships
+    # Correctness, not tuning: concurrent requests must never interleave
+    # _load_adapter/set_adapters on the one-slot adapter state.
     max_multiplexing = 1
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
@@ -103,8 +94,7 @@ class KleinLoraServer(fal.App, keep_alive=300):
     ]
 
     def setup(self) -> None:
-        """Load -> seed -> adopt -> warm up, all through the adapter path,
-        so a healthy worker is proven able to serve LoRA traffic."""
+        """Load -> seed -> warm up through the adapter path, so a healthy worker is proven able to serve LoRA traffic."""
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         import torch
@@ -114,20 +104,17 @@ class KleinLoraServer(fal.App, keep_alive=300):
             shared.SERVE_MODEL_ID, torch_dtype=torch.bfloat16
         ).to("cuda")
 
-        # Idempotent /data bootstrap (per-user-loras' featured-user pattern): if the
-        # demo adapter isn't on this account's /data yet, fetch the published
-        # reference copy - CI stays green on a fresh account, and the example
-        # works before you've run your first training.
+        # Seed the demo adapter onto /data if absent, so a fresh account
+        # (and CI) works before any training has run.
         self._resident: str | None = None
         self._adapter_id: str | None = None
         self._counter = 0
         self._seeded: set[str] = set()
         demo_weights = shared.lora_weights_path(shared.DEMO_LORA)
         if not demo_weights.exists():
-            # Fetch into a private staging dir and validate BEFORE anything
-            # can land at the canonical path - a corrupt published adapter
-            # must never brick /data (every later boot would skip seeding,
-            # then fail validation, forever).
+            # Validate in staging BEFORE anything lands at the canonical path -
+            # a corrupt published adapter must never brick /data for every
+            # later boot.
             shared.LORA_ROOT.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(dir=str(shared.LORA_ROOT), prefix=".seed-"))
             try:
@@ -195,7 +182,6 @@ class KleinLoraServer(fal.App, keep_alive=300):
         except (RuntimeError, ValueError) as exc:
             detail = str(exc)
             if "size mismatch for" in detail or "Target modules" in detail:
-                # The diagnostic that answers most bad-LoRA support tickets.
                 raise FieldException(
                     field="lora_name",
                     message=(
@@ -228,7 +214,7 @@ class KleinLoraServer(fal.App, keep_alive=300):
         return "seeded" if name in self._seeded else "disk"
 
     def _log_key_audit(self, path: Path, adapter_id: str) -> None:
-        """'N/M modules loaded' - the other half of LoRA debuggability."""
+        """Log 'N/M adapter modules loaded' for LoRA debuggability."""
         from peft.tuners.tuners_utils import BaseTunerLayer
 
         lora_sd = self.pipe.lora_state_dict(str(path))

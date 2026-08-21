@@ -1,27 +1,4 @@
-"""Tune autoscaling - the burst target.
-
-Same model as 00-getting-started/first-image-api (FLUX.2 [klein] 4B),
-with two differences that exist so
-one real burst can be measured without any extra credential:
-
-  1. machine_type is PINNED to GPU-H100 rather than a fallback list. GPU-L40
-     has no published price at all, so a silent fallback would make the
-     dollar figures unattributable. burst.py asserts the machine it landed on.
-  2. Every response self-reports which runner served it, whether that runner
-     was cold, and how long its setup() took. That is the whole measurement:
-     distinct served_by values give the runner ramp, was_cold marks who paid
-     a cold start, and setup_duration_s IS the cold start, measured on the
-     runner rather than inferred from a client-side timer.
-
-The scaling knobs below reproduce the UN-TUNED config trace.json was
-measured under - not a recommendation (README.md's "Cost & tuning" says
-what to change instead) - because changing them would desynchronise this
-file from the committed trace and break a reader's ability to redeploy this
-exact app and reproduce that measurement. min_concurrency and
-concurrency_buffer are both 0, which also keeps the CI deploy-check to
-exactly one runner - the only one harness/check.py can observe and confirm
-stopped.
-"""
+"""The burst target: FLUX.2 klein, self-reporting runner id, coldness and setup time."""
 
 import os
 import random
@@ -89,14 +66,13 @@ class TuneAutoscaling(fal.App, keep_alive=300):
     app_auth = "private"
     startup_timeout = 1200  # the account's first-ever boot pulls ~16 GB to /data
 
-    # The un-tuned config this example's burst was measured under - not a
-    # recommendation. See README.md "Cost & tuning" for what the frontier
-    # says to change instead, and why.
-    min_concurrency = 0  # bursty traffic means long quiet periods: scale to zero
-    max_concurrency = 4  # spend ceiling; the burst queues rather than surprising you
-    concurrency_buffer = 0  # no idle buffer while ramping; README.md prices raising it
+    # The un-tuned config trace.json was measured under - changing it desyncs
+    # the committed trace; 0/0 also keeps the CI deploy-check to one runner.
+    min_concurrency = 0
+    max_concurrency = 4
+    concurrency_buffer = 0
 
-    # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
+    # Authoritative; requirements.txt must mirror this exactly.
     requirements = [
         "fal==1.78.2",
         "hf-transfer==0.1.9",
@@ -125,8 +101,6 @@ class TuneAutoscaling(fal.App, keep_alive=300):
             guidance_scale=1.0,
         )
 
-        # requests_served is what makes was_cold meaningful: only the first
-        # request on this runner paid for the setup above.
         self.worker_id = uuid.uuid4().hex[:12]
         self.setup_duration_s = time.perf_counter() - started
         self.requests_served = 0

@@ -1,23 +1,4 @@
-"""Train a FLUX.2-klein LoRA on fal serverless - the trainer half of this example.
-
-The interesting part is the settings block:
-this is the long-job pattern the docs imply but never assemble in one place.
-
-  keep_alive=0                       a training job pays for exactly what it
-                                     uses; no idle GPU, no adapter-state leak
-  request_timeout=7200               training outlives the 3600s default;
-                                     7200 is the account-level maximum
-  skip_retry_conditions=["timeout"]  a timed-out training must NOT be silently
-                                     re-run (and re-billed) by the queue
-  max_concurrency=1                  one training per GPU - concurrent jobs on
-                                     one runner would fight for VRAM
-
-`POST /` is a dataset preflight: the exact validation head of `/train`,
-no GPU time. (Hosted fal trainers validate inline instead - this split
-exists so CI can exercise the input path without paying for a train.)
-Training math in `/train` is the official diffusers klein DreamBooth
-script's core, inlined - see the pinned source link at TRAINING_SOURCE.
-"""
+"""Train a FLUX.2-klein LoRA on fal serverless - the trainer half of train-serve-lora."""
 import copy
 import json
 import os
@@ -40,8 +21,7 @@ TRAINING_SOURCE = (
     "examples/dreambooth/train_dreambooth_lora_flux2_klein.py"
 )
 
-# The product-matching hidden defaults (fixed on purpose - the public surface
-# stays small; change them here, not per-request):
+# Fixed on purpose: hyperparameters change here, never per-request.
 RANK = 16
 LORA_ALPHA = 16
 LORA_DROPOUT = 0.05
@@ -125,11 +105,10 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
     app_auth = "private"
     startup_timeout = 1200     # first-ever boot downloads ~16 GB of base weights
     request_timeout = 7200     # account-level max; a 10k-step run needs it
-    skip_retry_conditions = ["timeout"]
-    max_concurrency = 1
-    # Import Code: ship shared.py with the app. local_python_modules pickles
-    # the module by value - app_files ships the file but ephemeral `fal run`
-    # can't resolve the import at deserialization time (verified live).
+    skip_retry_conditions = ["timeout"]  # a timed-out training must never be re-run (re-billed) by the queue
+    max_concurrency = 1                  # concurrent trainings on one runner fight for VRAM
+    # Must be local_python_modules, not app_files: ephemeral `fal run` can't
+    # resolve an app_files import at deserialization time (verified live).
     local_python_modules = ["shared"]
     # Authoritative deploy-time deps; requirements.txt mirrors this exactly.
     requirements = [
@@ -146,8 +125,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
     ]
 
     def setup(self) -> None:
-        """Load the BASE model (gradients need the undistilled weights).
-        Hard-fail: a trainer that can't load its model must not look healthy."""
+        """Load the BASE model (gradients need the undistilled weights); hard-fail so an unhealthy trainer never looks ready."""
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         import torch
@@ -159,8 +137,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
 
     @fal.endpoint("/")
     def preflight(self, request: PreflightInput) -> PreflightOutput:
-        """Validate a dataset without spending a training run on it.
-        This is byte-for-byte the head of /train."""
+        """Validate a dataset without spending a training run on it - byte-for-byte the head of /train."""
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
             zip_path = _fetch_dataset(request.image_data_url, work / "dl")
@@ -175,12 +152,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
 
     @fal.endpoint("/train")
     def train(self, request: TrainInput) -> TrainOutput:
-        """Fine-tune a LoRA and publish it to /data (atomic) + the CDN.
-
-        The loop is the core of the official diffusers klein DreamBooth
-        script (TRAINING_SOURCE), inlined so you can read it: precompute
-        embeddings/latents once, offload encoders, train transformer-only.
-        """
+        """Fine-tune a LoRA and publish it to /data (atomic) + the CDN."""
         import numpy as np
         import torch
         from diffusers import Flux2KleinPipeline
@@ -199,7 +171,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         device = "cuda"
         t_start = time.perf_counter()
 
-        # ------------------------------------------------ 1. dataset (same head as /)
+        # 1. dataset (same head as /)
         with tempfile.TemporaryDirectory(prefix="train-") as td:
             staging = Path(td)
             zip_path = _fetch_dataset(request.image_data_url, staging / "dl")
@@ -207,11 +179,10 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             print(f"[train] dataset ok: {ds.num_images} images, "
                   f"{ds.num_sidecar_captions} sidecar captions, {len(ds.warnings)} warnings")
 
-            # ------------------------------------------------ 2. precompute (once)
-            # Text: encoded with the PIPELINE's inference default layers (9, 18, 27)
-            # - NOT the script's CLI default [10, 20, 30] - because the serving app
-            # re-encodes prompts with pipeline defaults and the LoRA must train
-            # against the embeddings it will be served with.
+            # 2. precompute (once)
+            # Text uses the PIPELINE's default encoder layers, not the script's
+            # CLI default: serving re-encodes with pipeline defaults and the
+            # LoRA must train against the embeddings it will be served with.
             pipe.text_encoder.to(device)
             pipe.vae.to(device)
             embeds, text_ids_list = [], []
@@ -221,10 +192,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                     embeds.append(pe)
                     text_ids_list.append(ti)
 
-            # Images: min-edge resize + center crop to RESOLUTION (deterministic
-            # dataset prep; the tensor math below is the script's), then VAE
-            # encode -> patchify -> BatchNorm-normalize (klein has no
-            # scaling/shift factor; it normalizes with the VAE's BN stats).
+            # klein's VAE has no scaling/shift factor; latents normalize with its BatchNorm stats.
             bn_mean = pipe.vae.bn.running_mean.view(1, -1, 1, 1).to(device)
             bn_std = torch.sqrt(
                 pipe.vae.bn.running_var.view(1, -1, 1, 1) + pipe.vae.config.batch_norm_eps
@@ -232,7 +200,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             latents = []
             with torch.no_grad():
                 for path, _ in ds.items:
-                    img = PILImage.open(path)  # already RGB, EXIF-normalized
+                    img = PILImage.open(path)  # prepare_dataset already made it RGB, EXIF-normalized
                     scale = RESOLUTION / min(img.size)
                     img = img.resize(
                         (round(img.width * scale), round(img.height * scale)),
@@ -244,29 +212,23 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                     px = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0)
                     px = (px.permute(2, 0, 1) * 2 - 1).unsqueeze(0)
                     px = px.to(device, dtype=pipe.vae.dtype)
-                    lat = pipe.vae.encode(px).latent_dist.mode()  # script uses mode()
+                    lat = pipe.vae.encode(px).latent_dist.mode()
                     lat = Flux2KleinPipeline._patchify_latents(lat)
                     lat = (lat - bn_mean) / bn_std
                     latents.append(lat)
-            # The single biggest VRAM/speed lever: encoders leave the GPU for the
-            # whole loop; only the transformer stays.
+            # Biggest VRAM lever: only the transformer stays on the GPU for the loop.
             pipe.text_encoder.to("cpu")
             pipe.vae.to("cpu")
             free_memory()
             print(f"[train] precompute done in {time.perf_counter() - t_start:.0f}s "
                   f"({len(latents)} latents cached)")
 
-        # ------------------------------------------------ 3. LoRA on the transformer
+        # 3. LoRA on the transformer
         transformer = pipe.transformer
         transformer.requires_grad_(False)
-        # The official script's README documents this wider list as the
-        # fal-trainer-equivalent targets (--lora_layers in README_flux2.md):
-        # attention + feed-forward + context projections. The script's bare
-        # default (attention-only) trains adapters too weak to express a
-        # style at lora_scale 1.0 - validated empirically on this example.
-        # Single-block attention outputs (plain `attn.to_out` Linears) are
-        # added per-index; range(24) is the 9B count and peft ignores names
-        # that don't exist in the 4B (20).
+        # Wider than the script's attention-only default, which trains adapters
+        # too weak to express a style at lora_scale 1.0 (validated empirically).
+        # range(24) is the 9B block count; peft ignores names absent in the 4B.
         target_modules = [
             "attn.to_k", "attn.to_q", "attn.to_v", "attn.to_out.0",
             "attn.to_qkv_mlp_proj",
@@ -285,11 +247,8 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 target_modules=target_modules,
             )
         )
-        # Deliberate deviation from the script's bf16 path: LoRA master
-        # weights train in fp32 (the script itself does this for fp16, and
-        # kohya/ai-toolkit/fal's own trainers keep trainable weights fp32).
-        # In bf16, AdamW's ~5e-5 steps round away against lora_A's ~0.0625
-        # init magnitude (bf16 ULP there is ~2.4e-4) - silent degradation.
+        # LoRA master weights must train in fp32: in bf16, AdamW's ~5e-5 steps
+        # round away against lora_A's ~0.0625 init (bf16 ULP there is ~2.4e-4).
         cast_training_params([transformer], dtype=torch.float32)
         transformer.enable_gradient_checkpointing()
         transformer.train()
@@ -301,9 +260,8 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
             weight_decay=1e-4,
             eps=1e-8,
         )
-        # The official README recipe holds lr constant after warmup; cosine
-        # (fal's product default) decays to ~0 and wastes the final third of
-        # a style run - validated empirically on this example.
+        # Constant-after-warmup on purpose: cosine decays to ~0 and wastes the
+        # final third of a style run (validated empirically).
         lr_sched = get_scheduler(
             "constant_with_warmup",
             optimizer=optimizer,
@@ -313,7 +271,6 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
         sched = copy.deepcopy(pipe.scheduler)  # never mutate the pipeline's copy
 
         def get_sigmas(timesteps, n_dim, dtype):
-            # Verbatim helper from the script.
             sigmas = sched.sigmas.to(device=device, dtype=dtype)
             schedule_timesteps = sched.timesteps.to(device)
             step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
@@ -322,17 +279,15 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 sigma = sigma.unsqueeze(-1)
             return sigma
 
-        # handle guidance - the official script's config gate. klein-4B ships
-        # guidance_embeds: false (verified), so this stays None; the gate
-        # exists so a model variant that flips it fails loudly here rather
-        # than silently training a different conditioning path.
+        # klein-4B ships guidance_embeds: false (verified); the gate makes a
+        # variant that flips it fail loudly, not train a different conditioning.
         if transformer.config.guidance_embeds:
             guidance = torch.full([1], 1.0, device=device)
             guidance = guidance.expand(1)
         else:
             guidance = None
 
-        # ------------------------------------------------ 4. the loop
+        # 4. the loop
         gen = torch.Generator(device=device).manual_seed(TRAIN_SEED)
         rng = random.Random(TRAIN_SEED)
         order: list[int] = []
@@ -349,8 +304,6 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                     model_input.shape, device=device, dtype=model_input.dtype, generator=gen
                 )
 
-                # Timestep sampling - script defaults (weighting_scheme="none"
-                # => uniform density, unit loss weighting).
                 u = compute_density_for_timestep_sampling(
                     weighting_scheme="none",
                     batch_size=1,
@@ -362,7 +315,6 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                 timesteps = sched.timesteps[indices].to(device)
                 sigmas = get_sigmas(timesteps, model_input.ndim, model_input.dtype)
 
-                # zt = (1 - sigma) * x + sigma * noise  (flow matching)
                 noisy = (1.0 - sigmas) * model_input + sigmas * noise
                 packed = Flux2KleinPipeline._pack_latents(noisy)
 
@@ -405,18 +357,17 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                         f"lr {lr_sched.get_last_lr()[0]:.2e} "
                         f"elapsed {time.perf_counter() - t_start:.0f}s"
                     )
-            # (CUDA OOM propagates as a 5xx on purpose: retryable platform
-            # fault, never a permanent 422 blaming the user's dataset.)
+            # CUDA OOM propagates as a retryable 5xx on purpose, never a
+            # permanent 422 blaming the user's dataset.
 
-            # -------------------------------------------- 5. gate -> publish
+            # 5. gate -> publish
             transformer.eval()
             lora_layers = get_peft_model_state_dict(transformer)
             shared.LORA_ROOT.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=shared.LORA_ROOT) as td:
                 # temp dir on /data itself => same filesystem => atomic rename
-                # No peft metadata is embedded; diffusers then infers lora_alpha == rank.
-                # That round-trips at scale 1.0 ONLY because RANK == LORA_ALPHA - if you
-                # change one, change both or embed metadata.
+                # No peft metadata: diffusers infers lora_alpha == rank, which
+                # round-trips at scale 1.0 ONLY because RANK == LORA_ALPHA.
                 Flux2KleinPipeline.save_lora_weights(
                     save_directory=td, transformer_lora_layers=lora_layers
                 )
@@ -434,8 +385,8 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                     "lora_alpha": LORA_ALPHA,
                     "resolution": RESOLUTION,
                 }
-                # CDN copy first (portable URL), then config, then weights
-                # LAST - the weights file appearing is the readiness signal.
+                # Order matters: CDN copy, then config, then weights LAST -
+                # the weights file appearing is the readiness signal.
                 lora_file = File.from_path(str(tmp_weights), repository="fal_v3")
                 cfg_tmp = shared.tmp_sibling(shared.lora_config_path(request.lora_name))
                 cfg_tmp.write_text(json.dumps(config, indent=2))
@@ -444,7 +395,7 @@ class KleinLoraTrainer(fal.App, keep_alive=0):
                     tmp_weights, shared.lora_weights_path(request.lora_name)
                 )
         finally:
-            # Fresh adapter per request, belt and braces with keep_alive=0.
+            # Always drop the adapter, even with keep_alive=0.
             try:
                 transformer.delete_adapters("default")
             except Exception:
@@ -467,11 +418,8 @@ def _fetch_dataset(url: str, work_dir: Path) -> Path:
         return download_file(url, work_dir, filesize_limit=shared.MAX_ZIP_MB)
     except DownloadError as exc:
         detail = str(exc)
-        # The SDK reports a declared-Content-Length overflow with "over the
-        # limit" in the message, but rewrites a mid-stream overflow (absent or
-        # dishonest Content-Length) to a generic "Failed to download ..." -
-        # that path surfaces as file_download_error; the cap is stated in the
-        # message either way.
+        # The SDK names the limit only for declared-Content-Length overflows;
+        # mid-stream overflows get a generic message, hence the substring check.
         code = "file_too_large" if ("exceed" in detail or "limit" in detail) else "file_download_error"
         raise FieldException(
             field="image_data_url",

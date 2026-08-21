@@ -1,9 +1,4 @@
-"""Smoke test - run by the harness against the live ephemeral app.
-
-Unit tests of the pure helpers run free (no GPU, no deploy); integration
-tests take the harness `app_client` fixture and skip unless HARNESS_APP_URL
-is set (harness/check.py sets it after the ephemeral deploy).
-"""
+"""Smoke tests for the per-user-loras app - pure-helper units plus harness integration tests."""
 import importlib.util
 import os
 import struct
@@ -132,15 +127,11 @@ class TestSyntheticSeed:
         assert 0 <= app_mod.synthetic_seed("u1") < 2**31
 
 
-# ---------------------------------------------------------------------------
-# Integration tests - run by the harness against the live ephemeral deploy.
 # The app_client fixture skips every test below when HARNESS_APP_URL is unset.
-# ---------------------------------------------------------------------------
 
 
 def _direct_post(path: str, payload: dict, hint: str | None = None) -> httpx.Response:
-    """Raw POST so header assertions and routing hints are possible
-    (app_client sends and returns json only)."""
+    """Raw POST so header assertions and routing hints are possible (app_client is json-only)."""
     import fal.sdk
 
     url = os.environ["HARNESS_APP_URL"].rstrip("/") + path
@@ -199,8 +190,7 @@ class TestRegisterFlow:
         })
         assert first["serving"]["adapter_source"] in ("disk", "downloaded")
 
-        # Hint the repeat like a real client - unhinted, a second warm runner
-        # could take it, reload from disk, and flake both assertions.
+        # Hint the repeat - unhinted, a second warm runner could take it and flake both assertions.
         resp = _direct_post("/", {
             "user_id": "it-synth-1", "prompt": "a blue bicycle", "seed": 6,
         }, hint=first["serving"]["hint"])
