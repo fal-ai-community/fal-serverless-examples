@@ -1,4 +1,5 @@
 """Same model, way 2: a Dockerfile builds the environment (twin of app.py)."""
+
 from pathlib import Path
 
 import fal

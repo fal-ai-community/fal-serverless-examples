@@ -1,4 +1,5 @@
 """Serve a 20+ GB video model (LTX-2.3 22B distilled) on one H200."""
+
 import asyncio
 import base64
 import json
@@ -47,7 +48,9 @@ class Input(BaseModel):
         default=57,
         ge=9,
         le=121,
-        description=f"Frame count at {FRAMES_PER_SECOND} fps; snapped to the model's 8k+1 grid.",
+        description=(
+            f"Frame count at {FRAMES_PER_SECOND} fps; snapped to the model's 8k+1 grid."
+        ),
     )
     seed: int | None = Field(
         default=None, description="Reproducible seed; random if unset."
@@ -128,7 +131,10 @@ class LargeVideoModel(fal.App, keep_alive=300):
     def _generate(
         self, request: Input, preview_cb: Callable[..., dict] | None
     ) -> tuple[str, int, int, dict[str, float]]:
-        """Run one distilled 8-step generation; returns (mp4 path, seed, num_frames, timings)."""
+        """Run one distilled 8-step generation.
+
+        Returns (mp4 path, seed, num_frames, timings).
+        """
         import torch
         from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES
         from diffusers.utils import encode_video
@@ -224,7 +230,9 @@ class LargeVideoModel(fal.App, keep_alive=300):
                     await asyncio.sleep(0.05)
                 # Freeze the queue, then drain: every preview reaches the client
                 # and nothing follows the terminal event.
-                await loop.run_in_executor(None, session.finish)  # blocking join off the loop
+                await loop.run_in_executor(
+                    None, session.finish
+                )  # blocking join off the loop
                 while not session.events.empty():
                     yield f"data: {json.dumps(session.events.get())}\n\n"
                 try:
@@ -256,7 +264,10 @@ class LargeVideoModel(fal.App, keep_alive=300):
                         detail, status = exc.message, exc.status_code
                     else:
                         detail, status = f"{type(exc).__name__}: {exc}", 500
-                    yield f"data: {json.dumps({'type': 'error', 'detail': detail, 'status_code': status})}\n\n"
+                    err = json.dumps(
+                        {"type": "error", "detail": detail, "status_code": status}
+                    )
+                    yield f"data: {err}\n\n"
                     return
                 yield f"data: {result}\n\n"
             finally:
@@ -275,7 +286,7 @@ def snap_frames(n: int) -> int:
 
 
 class _PreviewSession:
-    """Latest-wins preview handoff: the denoise callback must never block, so it only stores latents; one decode worker fills `events`."""
+    """Latest-wins: callback never blocks, only stores latents; one worker decodes."""
 
     def __init__(
         self,
@@ -292,9 +303,9 @@ class _PreviewSession:
         self.every = every
         self.events: queue.Queue[dict] = queue.Queue()
         self.done = threading.Event()
-        self._latest: "tuple[int, int, torch.Tensor] | None" = None  # (step, total, x0)
+        self._latest: tuple[int, int, torch.Tensor] | None = None  # (step, total, x0)
         self._lock = threading.Lock()
-        self._prev: "tuple[torch.Tensor, float] | None" = None  # (latents, sigma)
+        self._prev: tuple[torch.Tensor, float] | None = None  # (latents, sigma)
         self._worker = threading.Thread(target=self._decode_loop, daemon=True)
         self._worker.start()
 
@@ -350,7 +361,8 @@ class _PreviewSession:
                 parallel=True,
                 show_progress_bar=False,
             )
-            rgb = torch.nn.functional.interpolate(  # half-res previews: ~4x smaller events
+            # half-res previews: ~4x smaller events
+            rgb = torch.nn.functional.interpolate(
                 rgb[0].float(), scale_factor=0.5, mode="area"
             )
             frames = (rgb.clamp(0, 1).permute(0, 2, 3, 1) * 255).to(torch.uint8).cpu()

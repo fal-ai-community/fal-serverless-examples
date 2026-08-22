@@ -1,4 +1,5 @@
-"""Generate the paper-diorama style training set (16 captioned images) with klein itself."""
+"""Generate the paper-diorama training set (16 captioned images) with klein itself."""
+
 import argparse
 import io
 import time

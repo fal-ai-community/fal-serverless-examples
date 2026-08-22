@@ -1,4 +1,6 @@
 """Media in, media out - files, CDN, and persistent storage on fal."""
+
+import contextlib
 import hashlib
 import json
 import time
@@ -80,9 +82,13 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         from PIL import ImageOps
 
         t0 = time.perf_counter()
-        cache_dir = CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
+        cache_dir = (
+            CACHE_ROOT / hashlib.sha256(request.image_url.encode()).hexdigest()[:16]
+        )
         # download_file stages partial downloads as .tmp files - never serve one
-        cached = next((p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None)
+        cached = next(
+            (p for p in sorted(cache_dir.glob("*")) if ".tmp" not in p.name), None
+        )
         if cached is not None:
             source_path = cached
         else:
@@ -101,7 +107,7 @@ class MediaInMediaOut(fal.App, keep_alive=60):
         # pixel gate must sit between open() and load(): reject before decode allocates
         t1 = time.perf_counter()
         try:
-            source = PILImage.open(source_path)
+            source: PILImage.Image = PILImage.open(source_path)
             if source.width * source.height > MAX_PIXELS:
                 raise FieldException(
                     field="image_url",
@@ -127,23 +133,26 @@ class MediaInMediaOut(fal.App, keep_alive=60):
                 message="not a decodable image",
                 type="unsupported_image_format",
             ) from None
-        try:
+        # bad EXIF must not reject a decodable image
+        with contextlib.suppress(Exception):
             source = ImageOps.exif_transpose(source)
-        except Exception:
-            pass  # bad EXIF must not reject a decodable image
         original_size = (source.width, source.height)
         if request.output_format == "jpeg":
             if source.mode != "RGB":
                 source = source.convert("RGB")
         elif source.mode not in ("RGB", "RGBA"):
             source = source.convert("RGBA")
-        source.thumbnail((request.max_size, request.max_size), PILImage.LANCZOS)
+        source.thumbnail(
+            (request.max_size, request.max_size), PILImage.Resampling.LANCZOS
+        )
         processed = source
         thumb = processed.copy()
-        thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.LANCZOS)
+        thumb.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), PILImage.Resampling.LANCZOS)
         processed_ms = int((time.perf_counter() - t1) * 1000)
 
-        repository = "in_memory" if request.sync_mode else "fal_v3"
+        repository: Literal["in_memory", "fal_v3"] = (
+            "in_memory" if request.sync_mode else "fal_v3"
+        )
         save_kwargs = None
         if request.expires_in_seconds is not None:
             save_kwargs = {

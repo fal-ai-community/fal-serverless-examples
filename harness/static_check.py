@@ -11,7 +11,12 @@ REQUIRED_FILES = ("app.py", "README.md", "requirements.txt", "test_app.py")
 
 
 def check_example(example_dir: Path) -> list[str]:
-    from harness.check import discover_variants, load_app_class, pick_endpoint, sample_input
+    from harness.check import (
+        discover_variants,
+        load_app_class,
+        pick_endpoint,
+        sample_input,
+    )
 
     errors = []
     for name in REQUIRED_FILES:
@@ -20,8 +25,11 @@ def check_example(example_dir: Path) -> list[str]:
     if errors:
         return errors
 
-    pinned = [line.strip() for line in (example_dir / "requirements.txt").read_text().splitlines()
-              if line.strip() and not line.strip().startswith("#")]
+    pinned = [
+        line.strip()
+        for line in (example_dir / "requirements.txt").read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
 
     for app_file in discover_variants(example_dir):
         where = "" if app_file.name == "app.py" else f"{app_file.name}: "
@@ -32,7 +40,9 @@ def check_example(example_dir: Path) -> list[str]:
             continue
 
         if not getattr(app_cls, "app_auth", None):
-            errors.append(f"{where}app_auth must be set explicitly (deploys fail without it)")
+            errors.append(
+                f"{where}app_auth must be set explicitly (deploys fail without it)"
+            )
 
         try:
             _, endpoint_fn = pick_endpoint(app_cls)

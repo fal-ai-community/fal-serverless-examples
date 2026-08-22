@@ -1,4 +1,5 @@
-"""FlashPack + WAN 2.1 integration classes, built lazily so the top level stays stdlib-only."""
+"""FlashPack + WAN 2.1 classes, built lazily so the top level stays stdlib-only."""
+
 from __future__ import annotations
 
 import sys
@@ -8,7 +9,7 @@ _CLASSES: dict[str, type] = {}
 
 
 def _publish_classes(module_name: str, classes: dict[str, type]) -> types.ModuleType:
-    """Make `module_name` importable: cloudpickle by-value reconstruction leaves no sys.modules entry."""
+    """Register `module_name` in sys.modules: cloudpickle by-value leaves no entry."""
     module = sys.modules.get(module_name)
     if module is None:
         module = types.ModuleType(module_name)

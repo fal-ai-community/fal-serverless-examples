@@ -1,4 +1,5 @@
 """Promotion demo: reports the secret and code version each environment gave it."""
+
 import os
 
 import fal

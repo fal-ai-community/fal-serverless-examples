@@ -1,4 +1,5 @@
 """One suite run against both build variants (HARNESS_VARIANT selects which)."""
+
 import json
 import os
 import tempfile

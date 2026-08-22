@@ -1,6 +1,7 @@
 """Unit tests for the autoscaling model, plus live tests against an ephemeral deploy."""
 
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import pytest
 _spec = importlib.util.spec_from_file_location(
     "autoscale_model", Path(__file__).parent / "model.py"
 )
+assert _spec is not None and _spec.loader is not None
 model = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = model
 _spec.loader.exec_module(model)
@@ -23,30 +25,30 @@ _spec.loader.exec_module(model)
 PUBLISHED_CHARTS = [
     # (config, expected runners for ongoing = 0, 1, 2, ...)
     (
-        dict(
-            min_concurrency=1,
-            concurrency_buffer=1,
-            max_multiplexing=1,
-            max_concurrency=10,
-        ),
+        {
+            "min_concurrency": 1,
+            "concurrency_buffer": 1,
+            "max_multiplexing": 1,
+            "max_concurrency": 10,
+        },
         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10],
     ),
     (
-        dict(
-            min_concurrency=3,
-            concurrency_buffer=2,
-            max_multiplexing=1,
-            max_concurrency=10,
-        ),
+        {
+            "min_concurrency": 3,
+            "concurrency_buffer": 2,
+            "max_multiplexing": 1,
+            "max_concurrency": 10,
+        },
         [3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10],
     ),
     (
-        dict(
-            min_concurrency=0,
-            concurrency_buffer=2,
-            max_multiplexing=4,
-            max_concurrency=6,
-        ),
+        {
+            "min_concurrency": 0,
+            "concurrency_buffer": 2,
+            "max_multiplexing": 4,
+            "max_concurrency": 6,
+        },
         [2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6],
     ),
 ]
@@ -136,7 +138,7 @@ def test_arrival_schedule_shapes():
     ]
     ramp = model.arrival_schedule("ramp", requests=4, duration_s=10)
     assert ramp[0] == 0.0
-    gaps = [b - a for a, b in zip(ramp, ramp[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(ramp)]
     assert gaps == sorted(gaps) and gaps[0] < gaps[-1]
 
 
@@ -331,9 +333,9 @@ def test_prewarmed_runner_is_never_torn_down_even_when_it_goes_idle_first():
         min_concurrency=1,
         max_concurrency=2,
     )
-    assert (
-        result.waits[2] == 0.0
-    ), "the third request must be served warm by the survivor"
+    assert result.waits[2] == 0.0, (
+        "the third request must be served warm by the survivor"
+    )
     prewarmed = [w for w in result.windows if w.prewarmed]
     assert len(prewarmed) == 1, "min_concurrency=1 prestarts exactly one floor runner"
 
@@ -347,7 +349,7 @@ def test_prewarmed_runner_is_never_torn_down_even_when_it_goes_idle_first():
 
 
 def synthetic_trace(**overrides):
-    """Hand-built trace: two cold runners at t=0, then req 2 warm on r-aaa back-to-back."""
+    """Hand-built trace: two cold runners at t=0; req 2 warm on r-aaa back-to-back."""
     # req 2 arrives at t=34 - the first instant a runner is free: any earlier
     # forces a third runner, and no stagger at all would leave no back-to-back
     # pair to measure service_s from.
@@ -709,9 +711,9 @@ def test_build_frontier_is_deterministic_and_carries_no_wall_clock():
     assert first == second, "regenerating must be byte-identical"
     assert first["schema"] == model.FRONTIER_SCHEMA
     assert first["trace_recorded_at"] == trace["recorded_at"]
-    assert (
-        "generated_at" not in first
-    ), "a wall-clock stamp would break CI byte-identity"
+    assert "generated_at" not in first, (
+        "a wall-clock stamp would break CI byte-identity"
+    )
     assert first["calibration"]["cold_start_s"] == 30.0
     assert first["rate_usd_per_second"] == model.USD_PER_SECOND
     assert first["pareto_front"] == model.pareto_front(first["points"])
@@ -817,6 +819,7 @@ def test_warm_requests_are_not_flagged_cold(app_client):
 _burst_spec = importlib.util.spec_from_file_location(
     "autoscale_burst", Path(__file__).parent / "burst.py"
 )
+assert _burst_spec is not None and _burst_spec.loader is not None
 burst = importlib.util.module_from_spec(_burst_spec)
 _burst_spec.loader.exec_module(burst)
 
@@ -1004,7 +1007,7 @@ def test_cross_check_analytics_still_reports_403_with_its_hint(monkeypatch):
             url="https://api.fal.ai/v1/serverless/analytics",
             code=403,
             msg="Forbidden",
-            hdrs=None,
+            hdrs=None,  # type: ignore[arg-type]  # stub wants Message
             fp=None,
         )
 
@@ -1092,6 +1095,7 @@ def test_read_live_config_reports_the_captured_stderr_on_a_non_zero_exit(monkeyp
 _chart_spec = importlib.util.spec_from_file_location(
     "autoscale_chart", Path(__file__).parent / "chart.py"
 )
+assert _chart_spec is not None and _chart_spec.loader is not None
 chart = importlib.util.module_from_spec(_chart_spec)
 _chart_spec.loader.exec_module(chart)
 
@@ -1137,7 +1141,7 @@ def test_committed_charts_are_current(tmp_path):
         assert committed.exists(), f"{path.name} is not committed"
         assert path.read_bytes() == committed.read_bytes(), (
             f"{path.name} is stale - regenerate with:\n"
-            f"  python chart.py --trace trace.json --frontier frontier.json --out charts/"
+            f"  python chart.py --trace trace.json --frontier frontier.json --out charts/"  # noqa: E501  # copy-paste command
         )
 
 

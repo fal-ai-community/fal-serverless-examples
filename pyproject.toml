@@ -6,3 +6,23 @@
 # The app_client fixture comes from the root conftest.py (skips when no live
 # app is under test).
 addopts = "--import-mode=importlib"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RUF", "PLC", "PLE", "PLW", "T10"]
+ignore = [
+    "PLC0415", # function-level imports are the fal setup() pattern
+    "RUF012", # fal.App class attrs don't take ClassVar in teaching code
+]
+
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true # pydantic reads annotations at runtime
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true # heavy example deps (torch, ...) absent at lint time
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

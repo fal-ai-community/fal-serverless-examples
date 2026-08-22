@@ -11,14 +11,23 @@ This catalog is **maintained by the fal team** — examples are planned, built, 
 3. **Pin everything.** `App.requirements` in `app.py` is authoritative; `requirements.txt` mirrors it exactly. No unpinned installs anywhere, including README snippets.
 4. Set `app_auth` explicitly (deploys fail without it). Every required `Input` field carries `Field(examples=[...])` — that powers the playground and the CI smoke request.
 5. README follows this section order: problem → output first → run it → how it works → deploy → cost & tuning → next steps. Show real output. Never publish a performance claim you can't back with a reproducible run.
-6. Validate before the PR:
+6. Install the commit hooks once - they run ruff (format + strict lint), mypy, codespell, and the repo-convention checks (pins mirror, catalog listings) on every commit, and CI enforces the same set on every PR:
+
+```bash
+uv tool install prek && prek install
+```
+
+   (`pre-commit install` works too; the config is `.pre-commit-config.yaml`.)
+
+7. Validate before the PR:
 
 ```bash
 pip install -r harness/requirements.txt
+prek run --all-files                                # what the lint CI runs
 python harness/static_check.py                      # free
 python harness/check.py --example <your-example>    # real ephemeral deploy (fal auth login; costs a few cents)
 ```
 
-7. PR title: `type(scope): description` — e.g. `feat(02-scaling-cold-starts): tune autoscaling for bursty traffic`. One example per PR; include the deploy-check output tail. Update `llms.txt`.
+8. PR title: `type(scope): description` — e.g. `feat(02-scaling-cold-starts): tune autoscaling for bursty traffic`. One example per PR; include the deploy-check output tail. Update `llms.txt`.
 
 CI runs the static job on every PR; the real deploy-check runs behind the maintainer-approved `deploy-check` environment.

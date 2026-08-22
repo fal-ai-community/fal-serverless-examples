@@ -95,13 +95,16 @@ result = fal_client.subscribe(
     "<your-username>/per-user-loras",
     arguments={"user_id": "ukiyo-e", "prompt": "ukiyo-e woodblock print of a red fox"},
 )
-hint = result["serving"]["hint"]          # "lora:ukiyo-e" (also in the response header)
+hint = result["serving"]["hint"]  # "lora:ukiyo-e" (also in the response header)
 
 # Repeat traffic: send the hint - the router now prefers runners
 # already advertising this user's adapter.
 result = fal_client.subscribe(
     "<your-username>/per-user-loras",
-    arguments={"user_id": "ukiyo-e", "prompt": "ukiyo-e woodblock print of a lighthouse at dusk"},
+    arguments={
+        "user_id": "ukiyo-e",
+        "prompt": "ukiyo-e woodblock print of a lighthouse at dusk",
+    },
     hint=hint,
 )
 print(result["serving"]["adapter_source"])  # "gpu-cache" on a hint hit

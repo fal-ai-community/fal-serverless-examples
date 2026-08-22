@@ -1,14 +1,16 @@
 """Free unit tests plus one live harness smoke test for multi-gpu-video."""
+
 import importlib.util
 from pathlib import Path
 
 import httpx
 import pytest
 
-# pytest runs with --import-mode=importlib (duplicate test_app.py basenames): load app.py by path.
+# --import-mode=importlib (duplicate test_app.py basenames): load app.py by path.
 _spec = importlib.util.spec_from_file_location(
     "multi_gpu_video_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
@@ -38,7 +40,7 @@ def test_defaults_are_the_ci_smoke_config():
     assert i.num_inference_steps == 6
 
 
-# Live: runs only under harness/check.py (app_client skips otherwise); each run spins 4 GPUs.
+# Live: only under harness/check.py (app_client skips otherwise); each run spins 4 GPUs.
 def test_generate_smoke(app_client):
     response = app_client.run(
         "/",

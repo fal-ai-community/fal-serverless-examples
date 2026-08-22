@@ -1,4 +1,5 @@
 """Smoke test - run by the harness against the live ephemeral app."""
+
 import httpx
 import pytest
 
@@ -34,7 +35,9 @@ def test_bad_url_is_a_typed_422(app_client):
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run(
             "/",
-            {"image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"},
+            {
+                "image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"
+            },
         )
     assert excinfo.value.response.status_code == 422
     detail = excinfo.value.response.json()["detail"]

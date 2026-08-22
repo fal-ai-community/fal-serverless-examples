@@ -1,4 +1,5 @@
-"""Multi-GPU video inference - WAN 2.2 A14B sharded across 4 GPUs with fal.distributed."""
+"""Multi-GPU video: WAN 2.2 A14B sharded across 4 GPUs with fal.distributed."""
+
 import os
 import random
 import shutil
@@ -38,21 +39,28 @@ class Input(BaseModel):
     )
     resolution: Literal["480p", "720p"] = Field(
         default="480p",
-        description="480p (832x480) for fast iteration; 720p (1280x720) for final quality.",
+        description=(
+            "480p (832x480) for fast iteration; 720p (1280x720) for final quality."
+        ),
         examples=["480p"],
     )
     num_frames: int = Field(
         default=33,
         ge=9,
         le=81,
-        description="Clip length in frames at 16 fps; must satisfy (n - 1) % 4 == 0. 81 is ~5 s.",
+        description=(
+            "Clip length in frames at 16 fps; must satisfy (n - 1) % 4 == 0. "
+            "81 is ~5 s."
+        ),
         examples=[33],
     )
     num_inference_steps: int = Field(
         default=6,
         ge=2,
         le=40,
-        description="Denoising steps. 6 is a fast preview; WAN's native quality default is 27.",
+        description=(
+            "Denoising steps. 6 is a fast preview; WAN's native quality default is 27."
+        ),
         examples=[6],
     )
     guidance_scale: float = Field(
@@ -71,7 +79,10 @@ class Input(BaseModel):
         default=None,
         ge=0,
         le=2**32 - 1,
-        description="Random when omitted. Echoed back; same seed + same inputs reproduces the clip.",
+        description=(
+            "Random when omitted. Echoed back; same seed + same inputs "
+            "reproduces the clip."
+        ),
     )
 
     @field_validator("num_frames")
@@ -79,7 +90,8 @@ class Input(BaseModel):
     def _frames_on_grid(cls, v: int) -> int:
         if (v - 1) % 4 != 0:
             raise ValueError(
-                "num_frames must satisfy (num_frames - 1) % 4 == 0, e.g. 9, 17, 33, 49, 81"
+                "num_frames must satisfy (num_frames - 1) % 4 == 0, "
+                "e.g. 9, 17, 33, 49, 81"
             )
         return v
 
@@ -100,7 +112,7 @@ class WanWorker(DistributedWorker):
         import torch
         from diffusers import ContextParallelConfig, WanPipeline
 
-        # Sequence parallelism shards the sequence, not the weights: every rank loads the full pipeline.
+        # Sequence, not weights, is sharded: every rank loads the full pipeline.
         pipe = WanPipeline.from_pretrained(CONVERTED_DIR, torch_dtype=torch.bfloat16)
 
         cp = ContextParallelConfig(ulysses_degree=self.world_size)
@@ -108,11 +120,11 @@ class WanWorker(DistributedWorker):
         pipe.transformer_2.enable_parallelism(config=cp)
 
         pipe.vae.enable_tiling()
-        # MoE experts run in disjoint stages; offload keeps only the active one resident (~30 GB of 80 GB).
+        # MoE stages are disjoint; offload keeps only the active expert (~30/80 GB).
         pipe.enable_model_cpu_offload(device=self.device)
         self.pipe = pipe
 
-    def __call__(
+    def __call__(  # type: ignore[override]  # intentional kwargs narrowing
         self,
         streaming: bool = False,  # force-injected by the runner - accept and ignore
         *,
@@ -130,7 +142,7 @@ class WanWorker(DistributedWorker):
         import torch
         from diffusers.utils import export_to_video
 
-        # Context parallelism needs identical inputs on every rank: all ranks use the one seed.
+        # Context parallelism needs identical inputs on every rank: all share one seed.
         generator = torch.Generator(device="cpu").manual_seed(seed)
         t0 = time.perf_counter()
         result = self.pipe(
@@ -160,7 +172,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     machine_type = "GPU-H100"
     num_gpus = NUM_GPUS  # class attribute, not a class kwarg
     app_auth = "private"
-    # First boot per account downloads ~126 GB + converts to bf16 (~35 min); later boots ~8 min.
+    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~8 min.
     startup_timeout = 3600
     # Authoritative; requirements.txt mirrors this exactly.
     requirements = [
@@ -179,7 +191,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     async def setup(self) -> None:
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        # CONVERTED_DIR appears only via the atomic rename below, so existence implies a complete copy.
+        # CONVERTED_DIR appears only via atomic rename below: existence = complete copy.
         if not Path(CONVERTED_DIR).exists():
             import torch
             from diffusers import WanPipeline
@@ -203,7 +215,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
         await self.runner.start(timeout=1800)
 
         # Warm at the default request shape: attention kernels autotune per shape
-        # (a cold shape adds ~40 s); worker errors surface as an "error" key, not an exception.
+        # (a cold shape adds ~40 s); worker errors arrive as an "error" key, not raised.
         warmup = await self.runner.invoke(
             _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
         )
@@ -212,11 +224,15 @@ class MultiGpuVideo(fal.App, keep_alive=300):
 
     @fal.endpoint("/")
     async def generate(self, request: Input) -> Output:
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         result = await self.runner.invoke(_worker_payload(request, seed))
         if "error" in result:
             # 5xx: not billed, and the platform retries on healthy hardware.
-            raise HTTPException(status_code=500, detail=f"generation failed: {result['error']}")
+            raise HTTPException(
+                status_code=500, detail=f"generation failed: {result['error']}"
+            )
 
         try:
             video = File.from_path(result["video_path"], content_type="video/mp4")

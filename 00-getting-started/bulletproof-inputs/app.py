@@ -1,4 +1,5 @@
 """Bulletproof inputs - typed 422s, bomb gates, and safe URL ingestion."""
+
 import base64
 import binascii
 import hashlib
@@ -57,7 +58,8 @@ class Input(BaseModel):
         description="Declared-uncompressed-size cap for archives.",
     )
     output_format: Literal["png", "jpeg", "webp"] = Field(
-        default="png", description="Unused by validation - here to show a native enum 422."
+        default="png",
+        description="Unused by validation - here to show a native enum 422.",
     )
 
 
@@ -167,7 +169,7 @@ class BulletproofInputs(fal.App, keep_alive=60):
 
 
 def check_url_policy(url: str, field: str) -> None:
-    """Scheme/port policy - the SDK's SSRF client ignores ports, and data: URIs bypass it."""
+    """Scheme/port policy - the SDK SSRF client ignores ports; data: URIs bypass it."""
     parsed = urlparse(url)
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise FieldException(
@@ -176,18 +178,21 @@ def check_url_policy(url: str, field: str) -> None:
             f"allowed: {', '.join(sorted(ALLOWED_SCHEMES))}",
             type="value_error",
         )
-    if parsed.scheme != "data" and parsed.port is not None:
-        if parsed.port not in ALLOWED_PORTS:
-            raise FieldException(
-                field=field,
-                message=f"port {parsed.port} is not allowed; allowed: "
-                f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
-                type="value_error",
-            )
+    if (
+        parsed.scheme != "data"
+        and parsed.port is not None
+        and parsed.port not in ALLOWED_PORTS
+    ):
+        raise FieldException(
+            field=field,
+            message=f"port {parsed.port} is not allowed; allowed: "
+            f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
+            type="value_error",
+        )
 
 
 def check_pixel_budget(width: int, height: int, max_pixels: int, field: str) -> None:
-    """Bomb gate on header dimensions, before any decode - Pillow only warns at this size."""
+    """Bomb gate on header dimensions before decode - Pillow only warns at this size."""
     area = width * height
     if area > max_pixels:
         raise FieldException(
@@ -201,7 +206,7 @@ def check_pixel_budget(width: int, height: int, max_pixels: int, field: str) -> 
 def inspect_zip(
     path: Path, max_entries: int, max_uncompressed_mb: int, field: str
 ) -> ArchiveStats:
-    """Archive gates, applied before extraction - fal's CompressedFile extracts with no limits."""
+    """Archive gates, pre-extraction - fal's CompressedFile extracts with no limits."""
     max_uncompressed = max_uncompressed_mb * 1024 * 1024
     try:
         with zipfile.ZipFile(path) as archive:
@@ -236,7 +241,8 @@ def inspect_zip(
     if unsafe:
         raise FieldException(
             field=field,
-            message=f"archive contains paths that escape the extraction directory: {unsafe[0]}",
+            message="archive contains paths that escape the extraction "
+            f"directory: {unsafe[0]}",
             type="invalid_archive",
         )
     return ArchiveStats(
@@ -247,10 +253,12 @@ def inspect_zip(
 
 
 def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
-    """Materialize a data: URI - download_file would log the full payload and cap only post-decode."""
+    """Materialize a data: URI - download_file would log payload, cap post-decode."""
     header, _, payload = url.partition(",")
     if not payload:
-        raise FieldException(field=field, message="malformed data URI", type="value_error")
+        raise FieldException(
+            field=field, message="malformed data URI", type="value_error"
+        )
     is_base64 = ";base64" in header
     max_bytes = max_mb * 1024 * 1024
     estimated = len(payload) * 3 // 4 if is_base64 else len(payload)
@@ -262,10 +270,14 @@ def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
             type="file_too_large",
         )
     try:
-        data = base64.b64decode(payload, validate=True) if is_base64 else payload.encode()
+        data = (
+            base64.b64decode(payload, validate=True) if is_base64 else payload.encode()
+        )
     except (binascii.Error, ValueError) as exc:
         raise FieldException(
-            field=field, message="data URI payload is not valid base64", type="value_error"
+            field=field,
+            message="data URI payload is not valid base64",
+            type="value_error",
         ) from exc
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -275,7 +287,7 @@ def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:
 
 
 def download_guarded(url: str, max_mb: int, field: str) -> Path:
-    """Fetch a user-supplied URL, mapping every DownloadError onto a typed 422 (else it's a 500)."""
+    """Fetch a user-supplied URL, mapping DownloadError onto typed 422 (else a 500)."""
     if urlparse(url).scheme == "data":
         return read_data_uri(url, DOWNLOAD_DIR, max_mb, field)
     # No timeout kwarg in fal 1.78.2; the platform request timeout bounds this fetch.
@@ -291,5 +303,7 @@ def download_guarded(url: str, max_mb: int, field: str) -> Path:
             ) from exc
         # SSRF refusals from the SDK arrive here verbatim.
         raise FieldException(
-            field=field, message=f"could not download: {detail}", type="file_download_error"
+            field=field,
+            message=f"could not download: {detail}",
+            type="file_download_error",
         ) from exc

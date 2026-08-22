@@ -1,4 +1,5 @@
 """Tests for the 3D progressive rendering example."""
+
 import base64
 import importlib.util
 import json
@@ -13,6 +14,7 @@ import pytest
 _spec = importlib.util.spec_from_file_location(
     "sam3d_stream_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
@@ -57,7 +59,7 @@ def test_sse_format_is_one_data_frame():
     frame = app_module.sse_format({"type": "status", "progress": 0.5})
     assert frame.startswith("data: ")
     assert frame.endswith("\n\n")
-    assert json.loads(frame[len("data: "):]) == {"type": "status", "progress": 0.5}
+    assert json.loads(frame[len("data: ") :]) == {"type": "status", "progress": 0.5}
 
 
 def test_heartbeat_is_a_comment_line():
@@ -66,7 +68,7 @@ def test_heartbeat_is_a_comment_line():
 
 
 def test_put_progress_drops_oldest_when_full():
-    q = queue.Queue(maxsize=2)
+    q: queue.Queue[dict] = queue.Queue(maxsize=2)
     for i in range(4):
         app_module.put_progress(q, {"type": "geometry", "step": i})
     steps = [q.get_nowait()["step"] for _ in range(2)]
@@ -74,26 +76,27 @@ def test_put_progress_drops_oldest_when_full():
 
 
 def test_put_terminal_evicts_progress_to_guarantee_delivery():
-    q = queue.Queue(maxsize=1)
+    q: queue.Queue[dict] = queue.Queue(maxsize=1)
     app_module.put_progress(q, {"type": "geometry", "step": 0})
     app_module.put_terminal(q, {"type": "complete"})
     assert q.get_nowait() == {"type": "complete"}
 
 
 def test_stream_frames_yields_events_then_stops_at_sentinel():
-    q = queue.Queue()
+    q: queue.Queue[dict | None] = queue.Queue()
     done = threading.Event()
     q.put({"type": "status"})
     q.put({"type": "complete"})
     q.put(None)
     frames = list(app_module.stream_frames(q, done, heartbeat_s=0.05))
     assert [json.loads(f[6:]) for f in frames] == [
-        {"type": "status"}, {"type": "complete"},
+        {"type": "status"},
+        {"type": "complete"},
     ]
 
 
 def test_stream_frames_emits_heartbeat_on_silence():
-    q = queue.Queue()
+    q: queue.Queue[dict | None] = queue.Queue()
     done = threading.Event()
 
     def finish_later():
@@ -106,7 +109,7 @@ def test_stream_frames_emits_heartbeat_on_silence():
 
 
 def test_stream_frames_reports_dead_worker_without_sentinel():
-    q = queue.Queue()
+    q: queue.Queue[dict | None] = queue.Queue()
     done = threading.Event()
     done.set()
     frames = list(app_module.stream_frames(q, done, heartbeat_s=0.05))
@@ -122,6 +125,7 @@ SAMPLE = app_module.SAMPLE_IMAGE
 
 def _fal_headers():
     from fal.sdk import get_credentials
+
     return get_credentials().to_headers()
 
 
@@ -140,12 +144,14 @@ def test_generate_returns_valid_assets(app_client):
 
 
 def test_stream_event_contract(app_client):
-    """Monotonic progress, geometry strictly before appearance, decodable frames, exactly one terminal event."""
+    """Progress monotonic, geometry before appearance, frames decode, one terminal."""
     events = []
     with httpx.stream(
-        "POST", app_client.url + "/stream",
+        "POST",
+        app_client.url + "/stream",
         json={"image_url": SAMPLE, "seed": 42, "geometry_every": 5, "colors_every": 10},
-        headers=_fal_headers(), timeout=600,
+        headers=_fal_headers(),
+        timeout=600,
     ) as r:
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/event-stream")
@@ -181,8 +187,11 @@ def test_stream_event_contract(app_client):
 def test_stream_rejects_bad_image_before_streaming(app_client):
     resp = httpx.post(
         app_client.url + "/stream",
-        json={"image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"},
-        headers=_fal_headers(), timeout=120,
+        json={
+            "image_url": "https://storage.googleapis.com/falserverless/does-not-exist.png"
+        },
+        headers=_fal_headers(),
+        timeout=120,
     )
     assert resp.status_code == 422
     assert resp.json()["detail"][0]["loc"] == ["body", "image_url"]

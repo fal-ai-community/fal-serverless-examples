@@ -1,4 +1,5 @@
-"""One test suite for both app variants: free (no-GPU) unit tests plus live harness tests."""
+"""One suite for both variants: free (no-GPU) unit tests plus live harness tests."""
+
 import ast
 import importlib.util
 import os
@@ -11,7 +12,7 @@ import pytest
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-import wan_flashpack  # top level is stdlib-only by design
+import wan_flashpack  # noqa: E402  # after sys.path insert; top level is stdlib-only
 
 EXPECTED_VARIANT = {"app": "optimized", "app_baseline": "baseline"}
 # Keep in sync with the Field examples the harness smoke payload uses.
@@ -28,7 +29,7 @@ def variant() -> str:
 
 
 def test_publish_classes_creates_missing_module_entry():
-    """Cloudpickle by-value modules arrive with no sys.modules entry; _publish_classes must create one."""
+    """_publish_classes must create the entry cloudpickle by-value modules lack."""
     name = "wan_flashpack_test_ghost"
     sys.modules.pop(name, None)
     try:
@@ -51,7 +52,7 @@ def test_publish_classes_is_idempotent_on_real_modules():
 def test_module_top_level_is_import_light():
     """Static CI imports this module with only fal+httpx+pytest installed."""
     tree = ast.parse((HERE / "wan_flashpack.py").read_text())
-    top_level_imports = set()
+    top_level_imports: set[str] = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
             top_level_imports.update(a.name.split(".")[0] for a in node.names)
@@ -61,7 +62,7 @@ def test_module_top_level_is_import_light():
 
 
 def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
-    """diffusers 0.39 strips the 'FlashPack' prefix when resolving class names, so each class must register under both names."""
+    """diffusers 0.39 strips the 'FlashPack' prefix, so classes register both names."""
     source = (HERE / "wan_flashpack.py").read_text()
     tree = ast.parse(source)
 
@@ -72,37 +73,40 @@ def test_wan_flashpack_registers_bare_class_names_for_diffusers_prefix_strip():
             has_removeprefix_setattr = False
 
             for item in ast.walk(node):
-                if isinstance(item, ast.Call):
+                if (
+                    isinstance(item, ast.Call)
+                    and isinstance(item.func, ast.Name)
+                    and item.func.id == "setattr"
+                    and len(item.args) >= 3
+                ):
+                    second_arg = item.args[1]
                     if (
-                        isinstance(item.func, ast.Name)
-                        and item.func.id == "setattr"
-                        and len(item.args) >= 3
+                        isinstance(second_arg, ast.Attribute)
+                        and second_arg.attr == "__name__"
                     ):
-                        second_arg = item.args[1]
-                        if isinstance(second_arg, ast.Attribute):
-                            if second_arg.attr == "__name__":
-                                has_full_name_setattr = True
+                        has_full_name_setattr = True
 
-                        if (
-                            isinstance(second_arg, ast.Call)
-                            and isinstance(second_arg.func, ast.Attribute)
-                            and second_arg.func.attr == "removeprefix"
-                            and isinstance(second_arg.func.value, ast.Attribute)
-                            and second_arg.func.value.attr == "__name__"
-                        ):
-                            has_removeprefix_setattr = True
+                    if (
+                        isinstance(second_arg, ast.Call)
+                        and isinstance(second_arg.func, ast.Attribute)
+                        and second_arg.func.attr == "removeprefix"
+                        and isinstance(second_arg.func.value, ast.Attribute)
+                        and second_arg.func.value.attr == "__name__"
+                    ):
+                        has_removeprefix_setattr = True
 
             if has_full_name_setattr and has_removeprefix_setattr:
                 found_dual_registration = True
                 break
 
-    assert (
-        found_dual_registration
-    ), "Registration loop must use setattr twice for each class: once with __name__ and once with removeprefix('FlashPack')"
+    assert found_dual_registration, (
+        "Registration loop must use setattr twice for each class: once with "
+        "__name__ and once with removeprefix('FlashPack')"
+    )
 
 
 def test_pipeline_load_receives_explicit_text_encoder():
-    """from_pretrained_flashpack must get an explicit re-tied text_encoder kwarg or the UMT5 weight tie silently breaks."""
+    """Without a re-tied text_encoder kwarg the UMT5 weight tie silently breaks."""
     source = (HERE / "app.py").read_text()
     tree = ast.parse(source)
 
@@ -164,10 +168,11 @@ def test_rejects_non_4k_plus_1_frames(app_client):
 
 
 def _load_bench():
-    """Load bench.py under a unique name: plain `import bench` could collide in a whole-repo pytest run."""
+    """Load bench.py under a unique name: `import bench` can collide repo-wide."""
     spec = importlib.util.spec_from_file_location(
         "cut_cold_starts_bench", HERE / "bench.py"
     )
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

@@ -1,4 +1,5 @@
 """The baseline WAN 2.1 app: no cold-start levers pulled."""
+
 import random
 import tempfile
 import time
@@ -83,7 +84,9 @@ class SetupReportOutput(BaseModel):
 
 
 class ColdStartBaseline(fal.App, keep_alive=60):
-    machine_type = "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
+    machine_type = (
+        "GPU-H100"  # same pinned GPU as app.py: apples-to-apples before/after
+    )
     app_auth = "private"
     startup_timeout = 2700  # ~29 GB Hub download + CPU deserialize + full compile
     # Identical pins to app.py (shared cached env, benchmark isolates the
@@ -110,6 +113,7 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         t0 = time.perf_counter()
         import torch
         from diffusers import WanPipeline
+
         stage("imports", t0)
 
         # Same serving dtypes as the optimized app's pack, so the two apps
@@ -153,7 +157,9 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         import torch
         from diffusers.utils import export_to_video
 
-        seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        seed = (
+            request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
+        )
         t0 = time.perf_counter()
         frames = self.pipe(
             prompt=request.prompt,

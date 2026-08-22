@@ -1,4 +1,5 @@
 """Hello, fal - the smallest deployable fal app."""
+
 import fal
 from pydantic import BaseModel, Field
 

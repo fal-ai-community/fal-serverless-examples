@@ -1,5 +1,7 @@
 """3D progressive rendering: stream SAM-3D reconstruction as it happens."""
+
 import base64
+import contextlib
 import json
 import queue
 import random
@@ -8,7 +10,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import fal
 from fal.container import ContainerImage
@@ -18,6 +20,9 @@ from fal.toolkit import Image as FalImage
 from fastapi import Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    import numpy as np
 
 # Voxel coords are indices in a fixed 64-cube grid, so uint8 is lossless.
 GRID_SIZE = 64
@@ -52,22 +57,30 @@ class Input(BaseModel):
         default=None, description="Random seed; omit for a random one."
     )
     stage1_steps: int | None = Field(
-        default=None, ge=4, le=50,
+        default=None,
+        ge=4,
+        le=50,
         description="Geometry diffusion steps (default: model config, 25).",
     )
     stage2_steps: int | None = Field(
-        default=None, ge=4, le=50,
+        default=None,
+        ge=4,
+        le=50,
         description="Appearance diffusion steps (default: model config, 25).",
     )
 
 
 class StreamInput(Input):
     geometry_every: int = Field(
-        default=1, ge=1, le=10,
+        default=1,
+        ge=1,
+        le=10,
         description="Emit a geometry frame every N steps (1 = smoothest).",
     )
     colors_every: int = Field(
-        default=5, ge=1, le=25,
+        default=5,
+        ge=1,
+        le=25,
         description=(
             "Emit a colored appearance frame every N steps. Each frame costs "
             "a Gaussian decode, so this is a latency knob, not just polish."
@@ -106,7 +119,8 @@ def decode_voxels(payload: str) -> list[tuple[int, int, int, int, int, int]]:
     raw = base64.b64decode(payload)
     if len(raw) % 6:
         raise ValueError(f"voxel payload length {len(raw)} is not a multiple of 6")
-    return [tuple(raw[i : i + 6]) for i in range(0, len(raw), 6)]
+    rows = [tuple(raw[i : i + 6]) for i in range(0, len(raw), 6)]
+    return cast("list[tuple[int, int, int, int, int, int]]", rows)
 
 
 def sse_format(event: dict) -> str:
@@ -114,43 +128,43 @@ def sse_format(event: dict) -> str:
 
 
 def put_progress(q: queue.Queue, event: dict) -> None:
-    """Enqueue a disposable frame; when full, drop the oldest so a slow client never stalls the GPU."""
+    """Enqueue a frame; drop oldest when full so a slow client can't stall the GPU."""
     while True:
         try:
             q.put_nowait(event)
             return
         except queue.Full:
-            try:
+            with contextlib.suppress(queue.Empty):
                 q.get_nowait()
-            except queue.Empty:
-                pass
 
 
 def put_terminal(q: queue.Queue, event: dict | None) -> None:
-    """Enqueue a terminal event (or None sentinel) with guaranteed delivery, evicting progress frames."""
+    """Enqueue a terminal event (or None sentinel), evicting frames until it fits."""
     while True:
         try:
             q.put(event, timeout=0.1)
             return
         except queue.Full:
-            try:
+            with contextlib.suppress(queue.Empty):
                 q.get_nowait()
-            except queue.Empty:
-                pass
 
 
-def stream_frames(q: queue.Queue, worker_done: threading.Event,
-                  heartbeat_s: float = HEARTBEAT_SECONDS) -> Iterator[str]:
-    """Drain the queue into SSE frames until the None sentinel; a dead worker yields a terminal error."""
+def stream_frames(
+    q: queue.Queue, worker_done: threading.Event, heartbeat_s: float = HEARTBEAT_SECONDS
+) -> Iterator[str]:
+    """Drain the queue to SSE frames until the None sentinel; dead worker = error."""
     while True:
         try:
             event = q.get(timeout=heartbeat_s)
         except queue.Empty:
             if worker_done.is_set() and q.empty():
-                yield sse_format({
-                    "type": "error", "code": "worker_died",
-                    "message": "generation worker exited unexpectedly",
-                })
+                yield sse_format(
+                    {
+                        "type": "error",
+                        "code": "worker_died",
+                        "message": "generation worker exited unexpectedly",
+                    }
+                )
                 return
             yield SSE_HEARTBEAT
             continue
@@ -159,10 +173,15 @@ def stream_frames(q: queue.Queue, worker_done: threading.Event,
         yield sse_format(event)
 
 
-def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
-                    params: StreamInput, emit: Callable[[dict], None],
-                    cancelled: threading.Event) -> dict:
-    """Mirror InferencePipeline.run() stage by stage, emitting a frame per solver step via `emit`."""
+def stream_generate(
+    pipeline: Any,
+    rgba: "np.ndarray",
+    seed: int,
+    params: StreamInput,
+    emit: Callable[[dict], None],
+    cancelled: threading.Event,
+) -> dict:
+    """Mirror InferencePipeline.run() stagewise, emitting a frame per solver step."""
     import numpy as np
     import torch
     from sam3d_objects.model.backbone.tdfy_dit.modules import sparse as sp
@@ -179,9 +198,15 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
 
     models = pipeline.models
     with pipeline.device:
-        emit({"type": "status", "stage": "preprocessing", "progress": 0.03,
-              "message": "Preparing pipeline inputs"})
-        # Stage 1 requires the pointmap (its embedder KeyErrors without it); stage 2 does not take it.
+        emit(
+            {
+                "type": "status",
+                "stage": "preprocessing",
+                "progress": 0.03,
+                "message": "Preparing pipeline inputs",
+            }
+        )
+        # Stage 1 needs the pointmap (its embedder KeyErrors without); stage 2 doesn't.
         pointmap_dict = pipeline.compute_pointmap(rgba, None)
         ss_input = pipeline.preprocess_image(
             rgba, pipeline.ss_preprocessor, pointmap=pointmap_dict["pointmap"]
@@ -201,22 +226,28 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
 
         image = ss_input["image"]
         bs = image.shape[0]
+        # MM-DiT takes a per-stream dict of latent shapes; plain DiT one tuple.
+        latent_shape: dict[str, tuple[int, int, int]] | tuple[int, int, int]
         if pipeline.is_mm_dit():
             latent_shape = {
-                k: (bs,) + (v.pos_emb.shape[0], v.input_layer.in_features)
+                k: (bs, v.pos_emb.shape[0], v.input_layer.in_features)
                 for k, v in ss_gen.reverse_fn.backbone.latent_mapping.items()
             }
         else:
-            latent_shape = (bs,) + (4096, 8)
+            latent_shape = (bs, 4096, 8)
         cond_args, cond_kwargs = pipeline.get_condition_input(
             pipeline.condition_embedders["ss_condition_embedder"],
-            ss_input, pipeline.ss_condition_input_mapping,
+            ss_input,
+            pipeline.ss_condition_input_mapping,
         )
 
         coords = None
         step = 0
         try:
-            with torch.no_grad(), torch.autocast("cuda", dtype=pipeline.shape_model_dtype):
+            with (
+                torch.no_grad(),
+                torch.autocast("cuda", dtype=pipeline.shape_model_dtype),
+            ):
                 for _t, x_t, _ in ss_gen.generate_iter(
                     latent_shape, image.device, *cond_args, **cond_kwargs
                 ):
@@ -226,18 +257,25 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
                         continue
                     shape_latent = x_t["shape"] if isinstance(x_t, dict) else x_t
                     ss = ss_dec(
-                        shape_latent.permute(0, 2, 1).contiguous().view(bs, 8, 16, 16, 16)
+                        shape_latent.permute(0, 2, 1)
+                        .contiguous()
+                        .view(bs, 8, 16, 16, 16)
                     )
                     coords = torch.argwhere(ss > 0)[:, [0, 2, 3, 4]].int()
                     grid_xyz = coords[:, 1:].cpu().numpy()
-                    emit({
-                        "type": "geometry", "step": step, "total_steps": total_ss_steps,
-                        "progress": round(0.05 + 0.45 * step / total_ss_steps, 3),
-                        "voxels": encode_voxels(grid_xyz),
-                        "count": int(len(grid_xyz)), "grid_size": GRID_SIZE,
-                    })
+                    emit(
+                        {
+                            "type": "geometry",
+                            "step": step,
+                            "total_steps": total_ss_steps,
+                            "progress": round(0.05 + 0.45 * step / total_ss_steps, 3),
+                            "voxels": encode_voxels(grid_xyz),
+                            "count": len(grid_xyz),
+                            "grid_size": GRID_SIZE,
+                        }
+                    )
         finally:
-            # Generators are shared across warm requests: restore even on cancel/exception.
+            # Generators are shared across warm requests: restore even on cancel/error.
             ss_gen.inference_steps = prev_ss_steps
 
         if pipeline.downsample_ss_dist > 0:
@@ -255,19 +293,23 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
             slat_gen.inference_steps = params.stage2_steps
         total_slat_steps = slat_gen.inference_steps
 
-        slat_latent_shape = (bs,) + (coords.shape[0], 8)
+        slat_latent_shape = (bs, coords.shape[0], 8)
         slat_cond_args, slat_cond_kwargs = pipeline.get_condition_input(
             pipeline.condition_embedders["slat_condition_embedder"],
-            slat_input, pipeline.slat_condition_input_mapping,
+            slat_input,
+            pipeline.slat_condition_input_mapping,
         )
-        slat_cond_args = slat_cond_args + (coords.cpu().numpy(),)
+        slat_cond_args = (*slat_cond_args, coords.cpu().numpy())
         grid_xyz = coords[:, 1:].cpu().numpy()
         n_vox = coords.shape[0]
 
         def voxel_colors(x_t) -> "np.ndarray | None":
-            """Per-voxel [0,1] colors via degree-0 SH (costs one Gaussian decode); None if the layout doesn't map onto voxels."""
+            """Per-voxel [0,1] colors via degree-0 SH (one Gaussian decode);
+            None when the layout doesn't map onto voxels."""
             st = sp.SparseTensor(coords=coords, feats=x_t[0]).to(image.device)
-            st = st * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
+            st = st * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(
+                image.device
+            )
             g = models["slat_decoder_gs"](st)[0]
             fdc = getattr(g, "_features_dc", None)
             if fdc is None:
@@ -289,30 +331,45 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
                 ):
                     step += 1
                     check_cancelled()
-                    # Capture BEFORE the throttle: the final decode needs the last latent even when its frame is skipped.
+                    # Capture BEFORE the throttle: final decode needs the last latent.
                     slat_latent = x_t
                     if step % params.colors_every != 0 and step != total_slat_steps:
                         continue
                     colors = voxel_colors(x_t)
-                    emit({
-                        "type": "appearance", "step": step, "total_steps": total_slat_steps,
-                        "progress": round(0.50 + 0.40 * step / total_slat_steps, 3),
-                        "voxels": encode_voxels(grid_xyz, colors),
-                        "count": int(n_vox), "grid_size": GRID_SIZE,
-                    })
+                    emit(
+                        {
+                            "type": "appearance",
+                            "step": step,
+                            "total_steps": total_slat_steps,
+                            "progress": round(0.50 + 0.40 * step / total_slat_steps, 3),
+                            "voxels": encode_voxels(grid_xyz, colors),
+                            "count": int(n_vox),
+                            "grid_size": GRID_SIZE,
+                        }
+                    )
         finally:
             # Same shared-generator restore as stage 1.
             slat_gen.inference_steps = prev_slat_steps
         slat = sp.SparseTensor(coords=coords, feats=slat_latent[0]).to(image.device)
-        slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(image.device)
+        slat = slat * pipeline.slat_std.to(image.device) + pipeline.slat_mean.to(
+            image.device
+        )
 
         # ---- finalize: decode + GLB ----------------------------------------
-        emit({"type": "status", "stage": "finalizing", "progress": 0.90,
-              "message": "Decoding mesh + gaussians, exporting GLB"})
+        emit(
+            {
+                "type": "status",
+                "stage": "finalizing",
+                "progress": 0.90,
+                "message": "Decoding mesh + gaussians, exporting GLB",
+            }
+        )
         check_cancelled()
         outputs = pipeline.decode_slat(slat, pipeline.decode_formats)
         outputs = pipeline.postprocess_slat_output(
-            outputs, with_mesh_postprocess=False, with_texture_baking=False,
+            outputs,
+            with_mesh_postprocess=False,
+            with_texture_baking=False,
             use_vertex_color=True,
         )
 
@@ -322,19 +379,25 @@ def stream_generate(pipeline: Any, rgba: "np.ndarray", seed: int,
             faces = np.asarray(glb.faces, dtype=np.uint32)
             colors_u8 = None
             visual = getattr(glb, "visual", None)
-            if visual is not None and getattr(visual, "vertex_colors", None) is not None:
+            if (
+                visual is not None
+                and getattr(visual, "vertex_colors", None) is not None
+            ):
                 colors_u8 = np.asarray(visual.vertex_colors, dtype=np.uint8)[:, :3]
             # A frame, not an asset: cap the inline preview.
             if len(verts) <= 200_000:
-                emit({
-                    "type": "mesh_preview",
-                    "vertices": base64.b64encode(verts.tobytes()).decode("ascii"),
-                    "faces": base64.b64encode(faces.tobytes()).decode("ascii"),
-                    "colors": None if colors_u8 is None
-                    else base64.b64encode(colors_u8.tobytes()).decode("ascii"),
-                    "vertex_count": int(len(verts)),
-                    "face_count": int(len(faces)),
-                })
+                emit(
+                    {
+                        "type": "mesh_preview",
+                        "vertices": base64.b64encode(verts.tobytes()).decode("ascii"),
+                        "faces": base64.b64encode(faces.tobytes()).decode("ascii"),
+                        "colors": None
+                        if colors_u8 is None
+                        else base64.b64encode(colors_u8.tobytes()).decode("ascii"),
+                        "vertex_count": len(verts),
+                        "face_count": len(faces),
+                    }
+                )
         return outputs
 
 
@@ -376,15 +439,17 @@ class SAM3DStreamApp(
 
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        # No warmup on purpose: compile_model=False leaves nothing to prime, and a full pass adds ~16s per cold start.
+        # No warmup on purpose: nothing to prime (compile_model=False); pass adds ~16s.
         print("[sam-3d-progressive] pipeline ready")
 
     def _load_rgba(self, request: Input) -> "np.ndarray":
-        """Fetch image (+ optional mask) into pipeline RGBA; runs before streaming so bad inputs are HTTP 422s."""
+        """Fetch image (+ optional mask) as RGBA; pre-stream so bad inputs 422."""
         import numpy as np
 
         try:
-            rgb = np.array(FalImage(url=request.image_url).to_pil().convert("RGB"))
+            # url is the only required field; mypy misses the pydantic defaults
+            image = FalImage(url=request.image_url)  # type: ignore[call-arg]
+            rgb = np.array(image.to_pil().convert("RGB"))
         except Exception as exc:
             raise FieldException(
                 field="image_url",
@@ -394,20 +459,24 @@ class SAM3DStreamApp(
 
         if request.mask_url:
             try:
-                mask_pil = FalImage(url=request.mask_url).to_pil().convert("L")
+                # same pydantic-defaults blind spot as image_url above
+                mask_image = FalImage(url=request.mask_url)  # type: ignore[call-arg]
+                mask_pil = mask_image.to_pil().convert("L")
             except Exception as exc:
                 raise FieldException(
                     field="mask_url",
                     message="Could not fetch or decode the mask.",
                     type="file_download_error",
                 ) from exc
-            mask = (np.array(mask_pil.resize((rgb.shape[1], rgb.shape[0]))) > 127)
+            mask = np.array(mask_pil.resize((rgb.shape[1], rgb.shape[0]))) > 127
             mask = mask.astype(np.uint8) * 255
         else:
             mask = np.full(rgb.shape[:2], 255, dtype=np.uint8)
         return np.concatenate([rgb, mask[..., None]], axis=-1)
 
-    def _export_assets(self, outputs: dict, fastapi_request: Request) -> tuple[File, File]:
+    def _export_assets(
+        self, outputs: dict, fastapi_request: Request
+    ) -> tuple[File, File]:
         """Final assets travel by URL, never inline - both endpoints share this rule."""
         with TemporaryDirectory() as tmp:
             splat_path = str(Path(tmp) / "splat.ply")
@@ -417,8 +486,10 @@ class SAM3DStreamApp(
             glb_path = str(Path(tmp) / "model.glb")
             outputs["glb"].export(glb_path)
             glb = File.from_path(
-                glb_path, content_type="model/gltf-binary",
-                multipart=True, request=fastapi_request,
+                glb_path,
+                content_type="model/gltf-binary",
+                multipart=True,
+                request=fastapi_request,
             )
         return glb, splat
 
@@ -444,7 +515,9 @@ class SAM3DStreamApp(
         return Output(model_glb=glb, gaussian_splat=splat, seed=seed)
 
     @fal.endpoint("/stream")
-    def stream(self, request: StreamInput, fastapi_request: Request) -> StreamingResponse:
+    def stream(
+        self, request: StreamInput, fastapi_request: Request
+    ) -> StreamingResponse:
         """SSE progressive rendering. Every stream ends in exactly one
         terminal event: complete (asset URLs) or error (sanitized)."""
         rgba = self._load_rgba(request)
@@ -456,30 +529,54 @@ class SAM3DStreamApp(
 
         def worker() -> None:
             try:
-                put_progress(q, {"type": "status", "stage": "loading",
-                                 "progress": 0.01, "message": "Starting"})
+                put_progress(
+                    q,
+                    {
+                        "type": "status",
+                        "stage": "loading",
+                        "progress": 0.01,
+                        "message": "Starting",
+                    },
+                )
                 outputs = stream_generate(
-                    self.pipeline, rgba, seed, request,
+                    self.pipeline,
+                    rgba,
+                    seed,
+                    request,
                     emit=lambda ev: put_progress(q, ev),
                     cancelled=cancelled,
                 )
                 glb, splat = self._export_assets(outputs, fastapi_request)
-                put_terminal(q, {
-                    "type": "complete", "progress": 1.0,
-                    "model_glb": {"url": glb.url,
-                                  "content_type": "model/gltf-binary"},
-                    "gaussian_splat": {"url": splat.url,
-                                       "content_type": "application/octet-stream"},
-                    "seed": seed,
-                })
+                put_terminal(
+                    q,
+                    {
+                        "type": "complete",
+                        "progress": 1.0,
+                        "model_glb": {
+                            "url": glb.url,
+                            "content_type": "model/gltf-binary",
+                        },
+                        "gaussian_splat": {
+                            "url": splat.url,
+                            "content_type": "application/octet-stream",
+                        },
+                        "seed": seed,
+                    },
+                )
             except GenerationCancelled:
                 pass  # client left; nobody is reading
             except Exception:
                 traceback.print_exc()  # full detail server-side ONLY
-                put_terminal(q, {"type": "error", "code": "generation_failed",
-                                 "message": "3D generation failed; check app logs."})
+                put_terminal(
+                    q,
+                    {
+                        "type": "error",
+                        "code": "generation_failed",
+                        "message": "3D generation failed; check app logs.",
+                    },
+                )
             finally:
-                # Sentinel BEFORE the done flag, else a heartbeat in the gap misreads a finished stream as worker_died.
+                # Sentinel BEFORE done flag, else a gap heartbeat reports worker_died.
                 put_terminal(q, None)
                 worker_done.set()
 
@@ -489,7 +586,7 @@ class SAM3DStreamApp(
             try:
                 yield from stream_frames(q, worker_done)
             finally:
-                # Runs on completion AND client disconnect; the worker checks between solver steps.
+                # Runs on completion AND disconnect; worker checks between solver steps.
                 cancelled.set()
 
         return StreamingResponse(

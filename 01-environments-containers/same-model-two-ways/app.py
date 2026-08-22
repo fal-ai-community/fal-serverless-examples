@@ -1,4 +1,5 @@
 """Same model, way 1: fal builds the environment (twin of app_container.py)."""
+
 import fal
 from pydantic import BaseModel, Field
 

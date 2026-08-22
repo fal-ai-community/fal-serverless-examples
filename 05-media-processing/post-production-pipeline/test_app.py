@@ -1,4 +1,5 @@
 """Tests for the post-production pipeline."""
+
 import hashlib
 import importlib.util
 import json
@@ -12,6 +13,7 @@ from fal.exceptions import FieldException
 _spec = importlib.util.spec_from_file_location(
     "postprod_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
@@ -25,6 +27,7 @@ STILL_IMAGE = "https://storage.googleapis.com/falserverless/UNO/crystal_ball.png
 
 
 # --- unit tests (no deploy, no network, no ffmpeg) --------------------------
+
 
 def test_ladder_dedupes_sorts_and_skips_upscales():
     encode, skipped = app_module.normalize_ladder([480, 1080, 480, 2160], 1080)
@@ -60,7 +63,12 @@ def _probe(streams, duration="5.0"):
     return {"streams": streams, "format": fmt}
 
 
-VIDEO_STREAM = {"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080}
+VIDEO_STREAM = {
+    "codec_type": "video",
+    "codec_name": "h264",
+    "width": 1920,
+    "height": 1080,
+}
 
 
 def test_parse_probe_reads_dims_duration_and_audio():
@@ -118,6 +126,7 @@ def test_run_ffmpeg_error_taxonomy_and_remaining_cmd_builders():
 
 # --- live tests (real ephemeral deploy) --------------------------------------
 
+
 def assert_typed_422(exc_info, field: str, type_: str):
     response = exc_info.value.response
     assert response.status_code == 422
@@ -163,7 +172,12 @@ def test_full_pipeline_ladder_captions_thumbnails(app_client):
     assert response["captions_vtt"] is not None
     assert "WEBVTT" in fetch(response["captions_vtt"]["url"]).text
 
-    assert set(response["timings"]) == {"download", "encode_wall", "thumbnails", "upload"}
+    assert set(response["timings"]) == {
+        "download",
+        "encode_wall",
+        "thumbnails",
+        "upload",
+    }
     assert response["timings"]["encode_wall"] > 0
 
     report = fetch(response["report"]["url"]).json()
@@ -229,6 +243,7 @@ def _receiver_module():
     spec = importlib.util.spec_from_file_location(
         "postprod_receiver", Path(__file__).parent / "webhook_receiver.py"
     )
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -240,8 +255,13 @@ def _signed_delivery(timestamp: int | None = None):
 
     private = Ed25519PrivateKey.generate()
     body = json.dumps(
-        {"request_id": "req-1", "gateway_request_id": "req-1",
-         "status": "OK", "error": None, "payload": {"renditions": []}},
+        {
+            "request_id": "req-1",
+            "gateway_request_id": "req-1",
+            "status": "OK",
+            "error": None,
+            "payload": {"renditions": []},
+        },
         sort_keys=True,
     ).encode()
     ts = str(timestamp if timestamp is not None else int(time.time()))
@@ -284,6 +304,7 @@ def test_receiver_rejects_tampered_bodies_and_stale_timestamps():
 
     # A validly-signed delivery only counts if a TRUSTED key signed it.
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     headers2, body2, _ = _signed_delivery()
     stranger_keys = [Ed25519PrivateKey.generate().public_key()]
     ok, reason = receiver.verify(headers2, body2, stranger_keys)

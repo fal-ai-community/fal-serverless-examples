@@ -35,29 +35,42 @@ fal deploy app_trainer.py
 import fal_client
 
 # 1. preflight - free sanity check on your dataset
-print(fal_client.run("<username>/klein-lora-trainer", arguments={
-    "image_data_url": "https://.../your-style.zip",
-    "trigger_phrase": "mystyle style,",
-}))
+print(
+    fal_client.run(
+        "<username>/klein-lora-trainer",
+        arguments={
+            "image_data_url": "https://.../your-style.zip",
+            "trigger_phrase": "mystyle style,",
+        },
+    )
+)
 
 # 2. train - submit to the queue and poll for progress; runs take several minutes
-handle = fal_client.submit("<username>/klein-lora-trainer", path="/train",
+handle = fal_client.submit(
+    "<username>/klein-lora-trainer",
+    path="/train",
     arguments={
         "image_data_url": "https://.../your-style.zip",
         "trigger_phrase": "mystyle style,",
         "lora_name": "my-style",
         "steps": 1800,  # BFL's style band is 750-1500; the demo used 1800 @ 1e-4
         "learning_rate": 1e-4,
-    })
+    },
+)
 for event in handle.iter_events(with_logs=True):
     print(event)
-print(handle.get()["data_path"])   # -> /data/loras/my-style/...
+print(handle.get()["data_path"])  # -> /data/loras/my-style/...
 
 # 3. serve it - the server loads your adapter from /data by name
-print(fal_client.run("<username>/klein-lora-server", arguments={
-    "prompt": "mystyle style, a lighthouse at dusk",
-    "lora_name": "my-style",
-}))
+print(
+    fal_client.run(
+        "<username>/klein-lora-server",
+        arguments={
+            "prompt": "mystyle style, a lighthouse at dusk",
+            "lora_name": "my-style",
+        },
+    )
+)
 ```
 
 ## How it works

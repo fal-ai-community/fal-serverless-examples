@@ -36,7 +36,7 @@ def tune_hf_env() -> None:
 
 
 def fetch_model() -> str:
-    """Download the pinned snapshot to /data; warm boots use local_files_only to skip ~45 s of hub metadata calls."""
+    """Download pinned snapshot to /data; warm boots skip ~45s of hub metadata calls."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
@@ -61,9 +61,11 @@ def fetch_taehv() -> Path:
     if dest.exists():
         return dest
     _TAEHV_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=_TAEHV_DIR, delete=False) as tmp:
-        with urllib.request.urlopen(TAEHV_WEIGHTS_URL, timeout=60) as resp:
-            shutil.copyfileobj(resp, tmp)
+    with (
+        tempfile.NamedTemporaryFile(dir=_TAEHV_DIR, delete=False) as tmp,
+        urllib.request.urlopen(TAEHV_WEIGHTS_URL, timeout=60) as resp,
+    ):
+        shutil.copyfileobj(resp, tmp)
     digest = hashlib.sha256(Path(tmp.name).read_bytes()).hexdigest()
     if digest != TAEHV_WEIGHTS_SHA:
         os.unlink(tmp.name)
@@ -73,10 +75,11 @@ def fetch_taehv() -> Path:
 
 
 def warm_page_cache(directory: str, parallelism: int = 32) -> float:
-    """Pre-read every file into the page cache; on /data's chunked store parallel readers beat sequential ~6-15x."""
+    """Pre-read files; parallel beats sequential ~6-15x on /data's chunked store."""
     t0 = time.perf_counter()
     subprocess.run(
-        f"find {shlex.quote(directory)} -type f | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
+        f"find {shlex.quote(directory)} -type f"
+        f" | xargs -P {parallelism} -I {{}} cat {{}} > /dev/null",
         shell=True,
         check=True,
     )

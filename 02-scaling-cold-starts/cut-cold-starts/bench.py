@@ -1,4 +1,5 @@
-"""Cold-start before/after benchmark via real ephemeral deploys (see README for usage)."""
+"""Cold-start before/after benchmark via real ephemeral deploys (usage: README)."""
+
 import argparse
 import json
 import sys
@@ -61,7 +62,7 @@ def bench_once(app_file: Path) -> tuple[dict, str | None]:
 
 
 def format_table(runs: list[dict]) -> str:
-    """Markdown table, one column per run; stages a run skipped render as '-', never invented zeros."""
+    """Markdown table, one column per run; skipped stages render '-', never zeros."""
     stage_names: list[str] = []
     for run in runs:
         for name in run["timings"]:
@@ -77,17 +78,16 @@ def format_table(runs: list[dict]) -> str:
     rows = []
     for name in stage_names:
         cells = [
-            str(run["timings"][name]) if name in run["timings"] else "-"
-            for run in runs
+            str(run["timings"][name]) if name in run["timings"] else "-" for run in runs
         ]
         rows.append(f"| {name} | " + " | ".join(cells) + " |")
     rows.append(
-        "| setup() total | "
-        + " | ".join(str(r["total_seconds"]) for r in runs) + " |"
+        "| setup() total | " + " | ".join(str(r["total_seconds"]) for r in runs) + " |"
     )
     rows.append(
         "| spawn -> healthy | "
-        + " | ".join(str(r["spawn_to_healthy_s"]) for r in runs) + " |"
+        + " | ".join(str(r["spawn_to_healthy_s"]) for r in runs)
+        + " |"
     )
     return "\n".join([header, divider, *rows])
 

@@ -1,4 +1,5 @@
 """Shared GPU-free helpers shipped to both apps via local_python_modules."""
+
 from __future__ import annotations
 
 import math
@@ -10,8 +11,12 @@ from pathlib import Path
 
 # If HF_REPO moves to the fal HF org, update the URLs in README.md too.
 HF_REPO = "rehan-fal/flux-2-klein-4b-paper-diorama-lora"
-DATASET_ZIP_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
-REFERENCE_ADAPTER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
+DATASET_ZIP_URL = (
+    f"https://huggingface.co/{HF_REPO}/resolve/main/dataset/paper-diorama-16.zip"
+)
+REFERENCE_ADAPTER_URL = (
+    f"https://huggingface.co/{HF_REPO}/resolve/main/pytorch_lora_weights.safetensors"
+)
 
 # Gradients train on the base model; the distilled one serves 4-step inference.
 TRAIN_MODEL_ID = "black-forest-labs/FLUX.2-klein-base-4B"
@@ -27,12 +32,12 @@ SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,39}$"
 
 MAX_ZIP_MB = 200
 MAX_ZIP_ENTRIES = 200
-MAX_UNCOMPRESSED_MB = 500   # zip-bomb gate: declared size, before extraction
-MIN_IMAGE_EDGE = 256        # hard floor; below this, training is hopeless
-RECOMMENDED_EDGE = 1024     # BFL's style-LoRA guidance; smaller -> warning
-MAX_IMAGES = 50             # style LoRAs want 10-40; caps the precompute bill
-MAX_ADAPTER_MB = 300        # klein-4B rank-16 adapters are ~100 MB
-PROBE_TENSOR_COUNT = 4      # smallest tensors only: keeps the CPU data probe cheap
+MAX_UNCOMPRESSED_MB = 500  # zip-bomb gate: declared size, before extraction
+MIN_IMAGE_EDGE = 256  # hard floor; below this, training is hopeless
+RECOMMENDED_EDGE = 1024  # BFL's style-LoRA guidance; smaller -> warning
+MAX_IMAGES = 50  # style LoRAs want 10-40; caps the precompute bill
+MAX_ADAPTER_MB = 300  # klein-4B rank-16 adapters are ~100 MB
+PROBE_TENSOR_COUNT = 4  # smallest tensors only: keeps the CPU data probe cheap
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
@@ -63,7 +68,7 @@ class ArtifactError(ValueError):
 
 
 def tmp_sibling(dest: Path) -> Path:
-    """Temp file in dest's own directory — same filesystem, so the final os.replace is atomic."""
+    """Temp file in dest's own directory — same filesystem, so os.replace is atomic."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=dest.parent, prefix=".tmp-", suffix=dest.suffix)
     os.close(fd)
@@ -78,16 +83,14 @@ def atomic_replace(tmp: Path, dest: Path) -> None:
 def validate_safetensors_headers(
     path: Path, max_mb: int = MAX_ADAPTER_MB
 ) -> dict[str, tuple[tuple[int, ...], str]]:
-    """Cheap CPU gate before publish/serve: size cap, header parse, finite/non-zero probe; returns {key: (shape, dtype)}."""
+    """CPU gate: size, header, finite/non-zero probes; returns {key: (shape, dtype)}."""
     import safetensors
     import torch
     from safetensors import safe_open
 
     size_mb = path.stat().st_size / (1024 * 1024)
     if size_mb > max_mb:
-        raise ArtifactError(
-            f"adapter is {size_mb:.0f} MB; maximum is {max_mb} MB"
-        )
+        raise ArtifactError(f"adapter is {size_mb:.0f} MB; maximum is {max_mb} MB")
     try:
         with safe_open(str(path), framework="pt", device="cpu") as f:
             keys = list(f.keys())
@@ -97,7 +100,9 @@ def validate_safetensors_headers(
                 k: (tuple(f.get_slice(k).get_shape()), f.get_slice(k).get_dtype())
                 for k in keys
             }
-            probe = sorted(keys, key=lambda k: math.prod(shapes[k][0]))[:PROBE_TENSOR_COUNT]
+            probe = sorted(keys, key=lambda k: math.prod(shapes[k][0]))[
+                :PROBE_TENSOR_COUNT
+            ]
             any_nonzero = False
             for k in probe:
                 t = f.get_tensor(k)
@@ -105,14 +110,16 @@ def validate_safetensors_headers(
                     raise ArtifactError(f"non-finite values in {k}")
                 any_nonzero = any_nonzero or bool(t.count_nonzero())
             if not any_nonzero:
-                raise ArtifactError("probed tensors are all zeros - corrupt or untrained")
+                raise ArtifactError(
+                    "probed tensors are all zeros - corrupt or untrained"
+                )
     except safetensors.SafetensorError as exc:
         raise ArtifactError(f"not a valid safetensors file: {exc}") from None
     return shapes
 
 
 def assert_diffusers_lora_keys(shapes: dict[str, tuple[tuple[int, ...], str]]) -> None:
-    """Publish gate: only diffusers-native transformer.*.lora_A/B keys load downstream."""
+    """Publish gate: only diffusers-native transformer.*.lora_A/B keys load at serve."""
     bad = [
         k
         for k in shapes
@@ -129,14 +136,14 @@ def assert_diffusers_lora_keys(shapes: dict[str, tuple[tuple[int, ...], str]]) -
 class PreparedDataset:
     """What prepare_dataset returns: training-ready items + a preflight report."""
 
-    items: list[tuple[Path, str]]   # (processed RGB png path, final caption)
+    items: list[tuple[Path, str]]  # (processed RGB png path, final caption)
     num_images: int
     num_sidecar_captions: int
     warnings: list[str]
 
 
 def _safe_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
-    """Zip safety before any extraction: entry cap, zip-slip rejection, size-bomb gate, macOS junk filter."""
+    """Zip safety before extraction: entry cap, zip-slip, size-bomb, macOS junk."""
     infos = [i for i in zf.infolist() if not i.filename.endswith("/")]
     if len(infos) > MAX_ZIP_ENTRIES:
         raise DatasetError(
@@ -153,7 +160,9 @@ def _safe_infolist(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
                 f"archive entry {info.filename!r} escapes the extraction directory",
                 "invalid_archive",
             )
-        if any(p.lower() == "__macosx" for p in parts) or Path(info.filename).name.startswith("._"):
+        if any(p.lower() == "__macosx" for p in parts) or Path(
+            info.filename
+        ).name.startswith("._"):
             continue
         total += info.file_size
         if total > MAX_UNCOMPRESSED_MB * 1024 * 1024:
@@ -172,7 +181,7 @@ def prepare_dataset(
     default_caption: str | None = None,
     trigger_phrase: str | None = None,
 ) -> PreparedDataset:
-    """Safe unzip, image validation/normalization, caption pairing, deterministic order; shared verbatim by /train and preflight."""
+    """Safe unzip, image normalization, captions, stable order; used by / and /train."""
     from PIL import Image as PILImage
     from PIL import ImageOps
 
@@ -205,7 +214,8 @@ def prepare_dataset(
     if not images:
         raise DatasetError(
             "image_data_url",
-            f"no images found in the archive (accepted: {', '.join(sorted(IMAGE_SUFFIXES))})",
+            "no images found in the archive "
+            f"(accepted: {', '.join(sorted(IMAGE_SUFFIXES))})",
             "no_images_found",
         )
     if len(images) > MAX_IMAGES:
@@ -230,8 +240,8 @@ def prepare_dataset(
     small: list[str] = []
     for idx, path in enumerate(images):
         try:
-            with PILImage.open(path) as img:
-                img = ImageOps.exif_transpose(img).convert("RGB")
+            with PILImage.open(path) as src:
+                img = ImageOps.exif_transpose(src).convert("RGB")
                 img.load()
         except Exception as exc:
             raise DatasetError(
@@ -251,6 +261,7 @@ def prepare_dataset(
         processed = out_dir / f"{idx:03d}.png"
         img.save(processed, format="PNG")
         caption = captions.get(path.with_suffix("").name) or default_caption
+        assert caption is not None  # missing_captions raised above otherwise
         if trigger_phrase:
             caption = f"{trigger_phrase} {caption}"
         items.append((processed, caption))
@@ -258,7 +269,8 @@ def prepare_dataset(
     if small:
         warnings.append(
             f"{len(small)} image(s) below {RECOMMENDED_EDGE}px shortest edge "
-            f"({', '.join(small[:5])}); BFL recommends >={RECOMMENDED_EDGE}px for style LoRAs"
+            f"({', '.join(small[:5])}); "
+            f"BFL recommends >={RECOMMENDED_EDGE}px for style LoRAs"
         )
     return PreparedDataset(
         items=items,

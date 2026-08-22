@@ -1,4 +1,5 @@
 """Tests for the input gauntlet."""
+
 import base64
 import importlib.util
 import io
@@ -16,6 +17,7 @@ BIG_FILE = "https://storage.googleapis.com/falserverless/model_weights/flux2/flu
 _spec = importlib.util.spec_from_file_location(
     "bulletproof_app", Path(__file__).parent / "app.py"
 )
+assert _spec is not None and _spec.loader is not None
 app_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(app_module)
 
@@ -59,7 +61,9 @@ def test_port_policy_rejects_odd_ports():
 
 def test_pixel_gate_rejects_bombs_and_passes_normal_images():
     with pytest.raises(FieldException) as excinfo:
-        app_module.check_pixel_budget(12000, 12000, app_module.DEFAULT_MAX_PIXELS, "image_url")
+        app_module.check_pixel_budget(
+            12000, 12000, app_module.DEFAULT_MAX_PIXELS, "image_url"
+        )
     assert excinfo.value.type == "image_too_large"
     app_module.check_pixel_budget(1024, 768, app_module.DEFAULT_MAX_PIXELS, "image_url")
 
@@ -69,10 +73,14 @@ def test_archive_gates(tmp_path):
     with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         archive.writestr("big.bin", b"\0" * (64 * 1024 * 1024))
     with pytest.raises(FieldException) as excinfo:
-        app_module.inspect_zip(bomb, max_entries=100, max_uncompressed_mb=1, field="archive_url")
+        app_module.inspect_zip(
+            bomb, max_entries=100, max_uncompressed_mb=1, field="archive_url"
+        )
     assert excinfo.value.type == "file_too_large"
 
-    stats = app_module.inspect_zip(bomb, max_entries=100, max_uncompressed_mb=128, field="archive_url")
+    stats = app_module.inspect_zip(
+        bomb, max_entries=100, max_uncompressed_mb=128, field="archive_url"
+    )
     assert stats.entries == 1
     assert stats.compression_ratio > 100  # the bomb signature
 
@@ -81,7 +89,9 @@ def test_archive_gates(tmp_path):
         for i in range(50):
             archive.writestr(f"f{i}.txt", b"")
     with pytest.raises(FieldException) as excinfo:
-        app_module.inspect_zip(many, max_entries=10, max_uncompressed_mb=1, field="archive_url")
+        app_module.inspect_zip(
+            many, max_entries=10, max_uncompressed_mb=1, field="archive_url"
+        )
     assert excinfo.value.type == "archive_file_count_exceeds_maximum"
 
     with pytest.raises(FieldException) as excinfo:
@@ -92,7 +102,13 @@ def test_archive_gates(tmp_path):
 def test_valid_image_passes_every_gate(app_client):
     response = app_client.run("/", {"image_url": SAMPLE})
     assert response["accepted"] is True
-    assert response["gates"] == ["url_policy", "download_cap", "format_allowlist", "pixel_budget", "decode"]
+    assert response["gates"] == [
+        "url_policy",
+        "download_cap",
+        "format_allowlist",
+        "pixel_budget",
+        "decode",
+    ]
     assert (response["width"], response["height"]) == (768, 1024)
 
 
@@ -106,7 +122,7 @@ def assert_typed_422(exc_info, field: str, type_: str):
 
 
 def test_metadata_endpoint_is_refused(app_client):
-    """The SDK blocks the classic SSRF target; the caller must get a typed 422, not a 500."""
+    """SDK blocks the classic SSRF target; caller must get a typed 422, not a 500."""
     with pytest.raises(httpx.HTTPStatusError) as excinfo:
         app_client.run("/", {"image_url": "http://169.254.169.254/latest/meta-data/"})
     assert_typed_422(excinfo, "image_url", "file_download_error")

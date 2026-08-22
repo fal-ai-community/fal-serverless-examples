@@ -1,4 +1,5 @@
 """Unit tests for shared.py plus harness-run live tests for both apps."""
+
 import importlib.util
 import os
 import re
@@ -11,6 +12,7 @@ import pytest
 _spec = importlib.util.spec_from_file_location(
     "tsl_shared", Path(__file__).parent / "shared.py"
 )
+assert _spec is not None and _spec.loader is not None
 shared = importlib.util.module_from_spec(_spec)
 sys.modules["tsl_shared"] = shared
 _spec.loader.exec_module(shared)
@@ -23,6 +25,7 @@ REQUIREMENTS = (Path(__file__).parent / "requirements.txt").read_text().split()
 
 # ---------------------------------------------------------------- unit: core
 
+
 def test_slug_pattern_accepts_and_rejects():
     ok = ["paper-diorama", "u123", "a", "x" * 40, "with_underscore"]
     bad = ["", "-leading", "UPPER", "has space", "x" * 41, "dots.bad", "ünïcode"]
@@ -33,7 +36,9 @@ def test_slug_pattern_accepts_and_rejects():
 
 
 def test_lora_paths_compose():
-    assert shared.lora_weights_path("abc") == Path("/data/loras/abc/pytorch_lora_weights.safetensors")
+    assert shared.lora_weights_path("abc") == Path(
+        "/data/loras/abc/pytorch_lora_weights.safetensors"
+    )
     assert shared.lora_config_path("abc") == Path("/data/loras/abc/config.json")
 
 
@@ -56,8 +61,13 @@ def test_tmp_sibling_same_directory(tmp_path):
 
 # ---------------------------------------------------------- unit: lora gates
 
+
 def _write_lora_file(path, keys_shapes, corrupt=False, zeros=False):
-    torch = pytest.importorskip("torch", reason="LoRA-gate tests need torch (installed in example/runner envs, not static CI)")
+    torch = pytest.importorskip(
+        "torch",
+        reason="LoRA-gate tests need torch "
+        "(installed in example/runner envs, not static CI)",
+    )
     safetensors_torch = pytest.importorskip("safetensors.torch")
 
     tensors = {}
@@ -81,7 +91,10 @@ def test_validate_headers_accepts_good_file(tmp_path):
     _write_lora_file(p, GOOD_KEYS)
     shapes = shared.validate_safetensors_headers(p)
     assert set(shapes) == set(GOOD_KEYS)
-    assert shapes["transformer.transformer_blocks.0.attn.to_q.lora_A.weight"][0] == (16, 3072)
+    assert shapes["transformer.transformer_blocks.0.attn.to_q.lora_A.weight"][0] == (
+        16,
+        3072,
+    )
 
 
 def test_validate_headers_rejects_corrupt_file(tmp_path):
@@ -107,11 +120,14 @@ def test_validate_headers_rejects_oversize(tmp_path):
 
 def test_assert_diffusers_keys_rejects_foreign_prefix(tmp_path):
     with pytest.raises(shared.ArtifactError):
-        shared.assert_diffusers_lora_keys({"unet.down.0.lora_A.weight": ((16, 8), "F32")})
+        shared.assert_diffusers_lora_keys(
+            {"unet.down.0.lora_A.weight": ((16, 8), "F32")}
+        )
     shared.assert_diffusers_lora_keys({k: (v, "BF16") for k, v in GOOD_KEYS.items()})
 
 
 # ------------------------------------------------------- unit: dataset prep
+
 
 def _make_zip(tmp_path, entries):
     """entries: {archive_name: bytes}"""
@@ -133,15 +149,18 @@ def _png_bytes(w=1024, h=1024, color=(200, 30, 30)):
 
 
 def test_prepare_dataset_happy_path(tmp_path):
-    zp = _make_zip(tmp_path, {
-        "a.png": _png_bytes(),
-        "a.txt": b"a red square on a table",
-        "b.png": _png_bytes(color=(30, 30, 200)),
-    })
+    zp = _make_zip(
+        tmp_path,
+        {
+            "a.png": _png_bytes(),
+            "a.txt": b"a red square on a table",
+            "b.png": _png_bytes(color=(30, 30, 200)),
+        },
+    )
     ds = shared.prepare_dataset(zp, tmp_path / "w", default_caption="a photo")
     assert ds.num_images == 2
     assert ds.num_sidecar_captions == 1
-    captions = dict((p.name, c) for p, c in ds.items)
+    captions = {p.name: c for p, c in ds.items}
     assert captions["000.png"] == "a red square on a table"
     assert captions["001.png"] == "a photo"
     assert all(p.exists() for p, _ in ds.items)
@@ -203,11 +222,14 @@ def test_prepare_dataset_rejects_tiny_image_and_warns_small(tmp_path):
 
 
 def test_prepare_dataset_skips_macosx_junk(tmp_path):
-    zp = _make_zip(tmp_path, {
-        "__MACOSX/._a.png": b"junk",
-        "a.png": _png_bytes(),
-        "a.txt": b"cap",
-    })
+    zp = _make_zip(
+        tmp_path,
+        {
+            "__MACOSX/._a.png": b"junk",
+            "a.png": _png_bytes(),
+            "a.txt": b"cap",
+        },
+    )
     ds = shared.prepare_dataset(zp, tmp_path / "w")
     assert ds.num_images == 1
 
@@ -224,10 +246,12 @@ def test_prepare_dataset_blank_sidecar_caption_is_missing(tmp_path):
 
 # ----------------------------------------------------- unit: trainer module
 
+
 def _load_module(name):
     spec = importlib.util.spec_from_file_location(
         f"tsl_{name}", Path(__file__).parent / f"{name}.py"
     )
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -257,6 +281,7 @@ def test_trainer_preflight_input_has_smoke_example():
 
 # ------------------------------------------------------ unit: server module
 
+
 def test_server_module_loads_with_expected_settings():
     server = _load_module("app")
     cls = server.KleinLoraServer
@@ -277,7 +302,9 @@ def test_server_module_loads_with_expected_settings():
 import httpx  # noqa: E402  (used only by live tests; harness env has it)
 
 server_only = pytest.mark.skipif(VARIANT != "app", reason="server variant only")
-trainer_only = pytest.mark.skipif(VARIANT != "app_trainer", reason="trainer variant only")
+trainer_only = pytest.mark.skipif(
+    VARIANT != "app_trainer", reason="trainer variant only"
+)
 
 
 def assert_typed_422(excinfo, field, type_):
@@ -290,6 +317,7 @@ def assert_typed_422(excinfo, field, type_):
 
 
 # -------------------------------------------------------------- live: server
+
 
 @server_only
 def test_generate_with_seeded_demo_adapter(app_client):
@@ -327,6 +355,7 @@ def test_bad_slug_is_schema_422(app_client):
 
 
 # ------------------------------------------------------------- live: trainer
+
 
 @trainer_only
 def test_preflight_accepts_published_dataset(app_client):

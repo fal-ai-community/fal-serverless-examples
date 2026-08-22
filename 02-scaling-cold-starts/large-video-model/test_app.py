@@ -1,4 +1,5 @@
-"""Harness smoke tests; /stream needs a raw SSE client because the harness only speaks request/response."""
+"""Harness smoke tests; /stream needs a raw SSE client (harness is request/response)."""
+
 import base64
 import json
 import os

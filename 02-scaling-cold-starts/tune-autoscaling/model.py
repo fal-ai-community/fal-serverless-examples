@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import sys
@@ -54,7 +55,7 @@ class RunnerWindow:
 def billable_seconds(
     windows: list[RunnerWindow], *, keep_alive: float, granularity: float = 1.0
 ) -> float:
-    """Billed runner-seconds; the per-runner round-up to `granularity` is assumed, not documented."""
+    """Billed runner-seconds; per-runner `granularity` round-up is our assumption."""
     total = 0.0
     for window in windows:
         alive = (window.last_completion_s + keep_alive) - window.setup_start_s
@@ -73,7 +74,7 @@ _MAX_TICKS = 2_000_000  # runaway guard; 0.1s ticks = ~55 hours of sim time
 
 
 def _snap_to_clock(value: float) -> float:
-    """Round to the tick clock's precision - unrounded times land a tick late and compound."""
+    """Snap to tick-clock precision - unrounded times land a tick late and compound."""
     return round(value, 6)
 
 
@@ -135,7 +136,7 @@ def simulate(
     scaling_delay: float = 0.0,
     tick_s: float = TICK_S,
 ) -> SimResult:
-    """Fixed-step burst simulation; scale-down is keep_alive expiry only - fal publishes no other dynamics."""
+    """Fixed-step burst sim; keep_alive expiry is the only scale-down fal publishes."""
     pending = sorted(arrivals)
     queue: deque[tuple[float, int]] = deque()
     runners: list[dict] = []
@@ -181,7 +182,7 @@ def simulate(
             done = [c for c in runner["inflight"] if c <= t]
             if done:
                 runner["inflight"] = [c for c in runner["inflight"] if c > t]
-                runner["last_activity"] = max(runner["last_activity"], max(done))
+                runner["last_activity"] = max(runner["last_activity"], *done)
 
         for runner in alive:
             while (
@@ -279,7 +280,7 @@ class Calibration:
 
 
 def _ok_requests(trace: dict) -> list[dict]:
-    """2xx requests with a runner identity; an empty served_by would fabricate a phantom runner."""
+    """2xx requests with runner identity; empty served_by would fabricate a runner."""
     return [
         r
         for r in trace["requests"]
@@ -298,7 +299,8 @@ def _by_runner(requests: list[dict]) -> dict[str, list[dict]]:
 def _check_schema(trace: dict) -> None:
     if trace.get("schema") != TRACE_SCHEMA:
         raise ValueError(
-            f"unsupported trace schema {trace.get('schema')!r}; expected {TRACE_SCHEMA!r}"
+            f"unsupported trace schema {trace.get('schema')!r}; "
+            f"expected {TRACE_SCHEMA!r}"
         )
 
 
@@ -315,10 +317,10 @@ def calibrate(trace: dict) -> Calibration:
 
     # Service = back-to-back completion gap on one runner; round-trip minus
     # arrival would fold queue waits in.
-    gaps = []
+    gaps: list[float] = []
     for requests in _by_runner(ok).values():
         completions = sorted(float(r["completed_s"]) for r in requests)
-        gaps.extend(b - a for a, b in zip(completions, completions[1:]))
+        gaps.extend(b - a for a, b in itertools.pairwise(completions))
     if not gaps:
         raise ValueError(
             "no runner served two requests; cannot measure service time - "
@@ -338,7 +340,7 @@ def calibrate(trace: dict) -> Calibration:
 
 
 def _cold_request(requests: list[dict]) -> dict:
-    """The runner's authoritative setup_duration_s: the cold-flagged request, not list order."""
+    """The runner's true setup_duration_s: the cold-flagged request, not list order."""
     return next((r for r in requests if r["was_cold"]), requests[0])
 
 
@@ -383,7 +385,7 @@ def measured_timeline(trace: dict, *, tick_s: float = TICK_S) -> list[TimelineRo
     end = max(w.last_completion_s + keep_alive for w in windows.values())
 
     timeline: list[TimelineRow] = []
-    steps = int(math.ceil((end - start) / tick_s)) + 1
+    steps = math.ceil((end - start) / tick_s) + 1
     for step in range(steps):
         t = round(start + step * tick_s, 6)
         setup = idle = running = 0
@@ -434,7 +436,7 @@ def sweep(
     bursts_per_hour: float = 1.0,
     horizon_s: float = 3600.0,
 ) -> list[dict]:
-    """Sweep every knob combination over the measured traffic, costed over the whole `horizon_s`."""
+    """Sweep all knob combos over measured traffic, costed over all of `horizon_s`."""
     grid = grid or DEFAULT_GRID
     rate = USD_PER_SECOND if usd_per_second is None else usd_per_second
     base = calibration.scale_config
@@ -500,7 +502,7 @@ def sweep(
 
 
 def _tick_quantized(value: float, *, tick_s: float = TICK_S) -> float:
-    """Round to the sim's own tick; sub-tick differences are numerical noise, not latency."""
+    """Round to the sim tick; sub-tick differences are numerical noise, not latency."""
     return round(value / tick_s) * tick_s
 
 
@@ -533,7 +535,7 @@ def build_frontier(
     bursts_per_hour: float = 1.0,
     horizon_s: float = 3600.0,
 ) -> dict:
-    """The frontier.json document; carries no wall-clock stamp so CI regeneration is byte-identical."""
+    """The frontier.json document; no wall-clock stamp so CI regen is byte-identical."""
     calibration = calibrate(trace)
     # Default to the trace's own recorded rate, not the list price.
     rate = (

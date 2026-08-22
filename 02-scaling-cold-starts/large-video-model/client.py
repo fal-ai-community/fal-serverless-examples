@@ -1,4 +1,5 @@
-"""Usage: FAL_KEY=... python client.py <owner>/large-video-model "<prompt>" - streams previews to preview_latest.mp4, then final.mp4."""
+"""Usage: FAL_KEY=... python client.py <owner>/large-video-model "<prompt>"."""
+
 import base64
 import pathlib
 import shutil
@@ -24,9 +25,11 @@ def main() -> None:
                 f" - preview_latest.mp4 updated ({len(data) // 1024} KB)"
             )
         elif event["type"] == "result":
-            with urllib.request.urlopen(event["video"]["url"], timeout=60) as resp:
-                with open("final.mp4", "wb") as out:
-                    shutil.copyfileobj(resp, out)
+            with (
+                urllib.request.urlopen(event["video"]["url"], timeout=60) as resp,
+                open("final.mp4", "wb") as out,
+            ):
+                shutil.copyfileobj(resp, out)
             print(f"done: final.mp4 (seed {event['seed']}, {event['timings']})")
         elif event["type"] == "error":
             print(f"generation failed ({event['status_code']}): {event['detail']}")

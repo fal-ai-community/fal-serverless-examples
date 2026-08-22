@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render this example's committed SVG charts from trace.json and frontier.json."""
+
 # Stdlib-only and byte-deterministic: CI regenerates these files and fails on
 # a mismatch; a plotting dependency would also have to ship in App.requirements.
 from __future__ import annotations
@@ -10,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import model  # noqa: E402
+import model
 
 WIDTH, HEIGHT = 960, 420
 PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 64, 24, 40, 48
@@ -102,8 +103,8 @@ def burst_timeline(trace: dict) -> str:
     t_lo = 0.0
     t_hi = max(row["t"] for row in timeline)
     y_max = max(
-        max(model.live_runners(r) for r in timeline),
-        max(r["queue_depth"] for r in timeline),
+        *(model.live_runners(r) for r in timeline),
+        *(r["queue_depth"] for r in timeline),
         1,
     )
     x0, x1 = PAD_LEFT, WIDTH - PAD_RIGHT

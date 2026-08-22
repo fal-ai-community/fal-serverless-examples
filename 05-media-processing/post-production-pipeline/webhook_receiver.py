@@ -1,4 +1,5 @@
 """Signature-verifying fal webhook receiver - reference code for a product backend."""
+
 import argparse
 import base64
 import hashlib
@@ -29,13 +30,17 @@ def public_keys() -> list[Ed25519PublicKey]:
             raw = base64.urlsafe_b64decode(x + "=" * (-len(x) % 4))
             keys.append(Ed25519PublicKey.from_public_bytes(raw))
         if not keys:
-            raise RuntimeError("JWKS returned no keys - refusing to cache an empty key set")
+            raise RuntimeError(
+                "JWKS returned no keys - refusing to cache an empty key set"
+            )
         _jwks_cache.update(keys=keys, fetched_at=now)
     return _jwks_cache["keys"]
 
 
-def verify(headers: dict[str, str], body: bytes, keys: list[Ed25519PublicKey]) -> tuple[bool, str]:
-    """(ok, reason) for one delivery; `headers` lowercase-keyed, `body` the RAW received bytes (never re-serialized)."""
+def verify(
+    headers: dict[str, str], body: bytes, keys: list[Ed25519PublicKey]
+) -> tuple[bool, str]:
+    """(ok, reason); `headers` lowercase-keyed, `body` raw bytes, not re-serialized."""
     try:
         request_id = headers["x-fal-webhook-request-id"]
         user_id = headers["x-fal-webhook-user-id"]
@@ -77,8 +82,11 @@ class Receiver(BaseHTTPRequestHandler):
         event = json.loads(body)
         request_id = event.get("request_id", "?")
         if request_id in self.seen:
-            print(f"VERIFIED status={event.get('status')} request_id={request_id} "
-                  "(duplicate delivery - fal retries until it sees a 2xx; already processed, acking again)")
+            print(
+                f"VERIFIED status={event.get('status')} request_id={request_id} "
+                "(duplicate delivery - fal retries until it sees a 2xx; "
+                "already processed, acking again)"
+            )
             self._respond(200, {"ok": True, "duplicate": True})
             return
         print(f"VERIFIED status={event.get('status')} request_id={request_id}")
@@ -88,7 +96,8 @@ class Receiver(BaseHTTPRequestHandler):
         else:
             print(f"  error: {event.get('error')}")
             print(f"  payload: {json.dumps(event.get('payload'))[:300]}")
-        # mark only after successful processing - a crash must let fal's retry re-process
+        # mark only after successful processing - a crash must let fal's
+        # retry re-process
         self.seen.add(request_id)
         self._respond(200, {"ok": True})
 
@@ -105,7 +114,9 @@ class Receiver(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--port", type=int, default=8321)
     args = parser.parse_args()
     print(f"listening on http://localhost:{args.port} - POST path can be anything")
