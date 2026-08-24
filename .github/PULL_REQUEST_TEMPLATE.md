@@ -2,7 +2,7 @@
 
 ## What this adds/changes
 
-<!-- One example per PR. For new examples, agree scope with the maintainers first (see CONTRIBUTING.md). -->
+<!-- One example per PR. For new examples, agree scope with the maintainers first. -->
 
 ## Validation
 
