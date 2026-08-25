@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Realtime video-to-video viewer</title>
+<style>
+  body { margin: 0; font: 14px system-ui; background: #111; color: #eee; }
+  #bar { display: flex; gap: 8px; padding: 10px; flex-wrap: wrap; align-items: center; }
+  #bar input { padding: 6px; background: #222; color: #eee; border: 1px solid #444; }
+  #endpoint { width: 340px; } #key { width: 220px; }
+  button { padding: 6px 14px; }
+  #note { padding: 0 10px 8px; color: #9ad; }
+  #videos { display: flex; gap: 10px; padding: 0 10px; flex-wrap: wrap; }
+  .pane { flex: 1; min-width: 320px; }
+  .pane video { width: 100%; background: #000; border: 1px solid #333; }
+  .stats { color: #8b8; font: 12px ui-monospace, monospace; padding: 4px 0; }
+  #log { white-space: pre-wrap; font: 12px ui-monospace, monospace; color: #999;
+         padding: 10px; max-height: 30vh; overflow-y: auto; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <input id="endpoint" placeholder="you/realtime-video-to-video (or full fal.run URL)">
+  <input id="key" placeholder="FAL key id:secret" type="password">
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+</div>
+<div id="note">Paste your endpoint + a FAL key (local dev only: the key is visible
+to this page - it mints a 120s JWT, and only the JWT goes on the wire).</div>
+<div id="videos">
+  <div class="pane"><div>webcam &rarr; fal</div><video id="local" autoplay muted playsinline></video>
+    <div class="stats" id="localStats">--</div></div>
+  <div class="pane"><div>fal &rarr; you (YOLO boxes)</div><video id="remote" autoplay playsinline></video>
+    <div class="stats" id="remoteStats">--</div></div>
+</div>
+<div id="log"></div>
+<script type="module">
+import { encode, decode } from "https://cdn.jsdelivr.net/npm/@msgpack/msgpack@3.1.3/+esm";
+
+const el = (id) => document.getElementById(id);
+const log = (msg) => { el("log").textContent = msg + "\n" + el("log").textContent; };
+
+let ws = null, pc = null, localStream = null, statsTimer = null;
+let statsCancels = [];
+// Bumped on every start AND stop: async continuations from a stale session
+// compare against it and bail instead of resurrecting closed resources.
+let session = 0;
+
+// Accepts "owner/app", "owner/app/realtime", or a full URL (any scheme).
+function parseEndpoint(value) {
+  const path = value.trim().replace(/^[a-z]+:\/\/[^/]+\//i, "").replace(/^\/+|\/+$/g, "");
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length < 2) throw new Error(`use <owner>/<app>, got "${value}"`);
+  return { owner: parts[0], app: parts[1] };
+}
+
+async function mintToken(app, falKey) {
+  const response = await fetch("https://rest.alpha.fal.ai/tokens/", {
+    method: "POST",
+    headers: { Authorization: `Key ${falKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ allowed_apps: [app], token_expiration: 120 }),
+  });
+  if (!response.ok) throw new Error(`token mint failed: ${response.status} ${await response.text()}`);
+  const token = await response.json();
+  return typeof token === "string" ? token : token.detail;
+}
+
+function trackStats(video, statsEl, direction) {
+  let frames = 0, last = performance.now(), mbps = "--", cancelled = false;
+  const tick = () => {
+    if (cancelled) return;
+    frames += 1;
+    const now = performance.now();
+    if (now - last >= 1000) {
+      statsEl.textContent =
+        `${Math.round((frames * 1000) / (now - last))} fps · ` +
+        `${video.videoWidth}x${video.videoHeight} · ${mbps} Mbps ${direction}`;
+      frames = 0; last = now;
+    }
+    video.requestVideoFrameCallback(tick);
+  };
+  video.requestVideoFrameCallback(tick);
+  statsCancels.push(() => { cancelled = true; statsEl.textContent = "--"; });
+  return (value) => { mbps = value; };
+}
+
+function startBitrateMonitor(setUp, setDown) {
+  let up = {}, down = {};
+  return setInterval(async () => {
+    if (!pc) return;
+    (await pc.getStats()).forEach((report) => {
+      if (report.kind !== "video") return;
+      if (report.type === "outbound-rtp") {
+        if (up.bytes != null) setUp((((report.bytesSent - up.bytes) * 8) / (report.timestamp - up.t) / 1000).toFixed(2));
+        up = { bytes: report.bytesSent, t: report.timestamp };
+      }
+      if (report.type === "inbound-rtp") {
+        if (down.bytes != null) setDown((((report.bytesReceived - down.bytes) * 8) / (report.timestamp - down.t) / 1000).toFixed(2));
+        down = { bytes: report.bytesReceived, t: report.timestamp };
+      }
+    });
+  }, 1000);
+}
+
+const send = (payload) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const bytes = encode(payload);
+  ws.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+};
+
+async function readMessage(data) {
+  if (data instanceof ArrayBuffer) return decode(new Uint8Array(data));
+  if (data instanceof Blob) return decode(new Uint8Array(await data.arrayBuffer()));
+  try { return JSON.parse(data); } catch { return { type: "text", text: data }; }
+}
+
+function stop() {
+  session += 1; // invalidate any in-flight async continuation
+  statsCancels.forEach((cancel) => cancel());
+  statsCancels = [];
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  if (ws) { ws.close(); ws = null; }
+  if (pc) { pc.close(); pc = null; }
+  if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
+  el("local").srcObject = null;
+  el("remote").srcObject = null;
+  el("start").disabled = false;
+  el("stop").disabled = true;
+}
+
+async function start() {
+  const mySession = ++session;
+  const stale = () => mySession !== session;
+  el("start").disabled = true;
+  el("stop").disabled = false;
+  try {
+    const { owner, app } = parseEndpoint(el("endpoint").value);
+    const token = await mintToken(app, el("key").value.trim());
+    if (stale()) return;
+    ws = new WebSocket(`wss://fal.run/${owner}/${app}/realtime?fal_jwt_token=${encodeURIComponent(token)}`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => log("WebSocket open, waiting for ICE servers…");
+    ws.onclose = (event) => { if (!stale()) { log(`WebSocket closed (${event.code})`); stop(); } };
+    ws.onerror = () => { if (!stale()) { log("WebSocket error"); stop(); } };
+
+    let offerSent = false;
+    ws.onmessage = async (event) => {
+      if (stale()) return;
+      try {
+        const msg = await readMessage(event.data);
+        if (msg.type === "iceservers" && !offerSent) {
+          offerSent = true;
+          log(`ICE servers: ${msg.iceservers.map((s) => s.urls).flat().join(", ")}`);
+          pc = new RTCPeerConnection({ iceServers: msg.iceservers });
+          pc.onconnectionstatechange = () => {
+            if (pc && !stale()) log(`peer connection: ${pc.connectionState}`);
+          };
+          pc.onicecandidate = ({ candidate }) => send({
+            type: "icecandidate",
+            candidate: candidate && {
+              candidate: candidate.candidate,
+              sdpMid: candidate.sdpMid,
+              sdpMLineIndex: candidate.sdpMLineIndex,
+            },
+          });
+          pc.ontrack = ({ track, streams }) => {
+            log(`remote ${track.kind} track`);
+            el("remote").srcObject = streams[0] || new MediaStream([track]);
+          };
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          if (stale()) { stream.getTracks().forEach((t) => t.stop()); return; }
+          localStream = stream;
+          el("local").srcObject = localStream;
+          localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+          const setUp = trackStats(el("local"), el("localStats"), "up");
+          const setDown = trackStats(el("remote"), el("remoteStats"), "down");
+          statsTimer = startBitrateMonitor(setUp, setDown);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          send({ type: "offer", sdp: offer.sdp });
+          log("offer sent, waiting for answer…");
+        } else if (msg.type === "answer" && pc) {
+          await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+          log("answer applied - connecting…");
+        } else if (msg.type === "error") {
+          log(`server error: ${msg.error}`);
+        } else {
+          log(`ws: ${JSON.stringify(msg).slice(0, 200)}`);
+        }
+      } catch (error) {
+        // getUserMedia denial lands here too - surface it, don't hang.
+        if (!stale()) { log(`session failed: ${error.message || error}`); stop(); }
+      }
+    };
+  } catch (error) {
+    log(`failed to start: ${error.message || error}`);
+    if (!stale()) stop();
+  }
+}
+
+el("start").addEventListener("click", start);
+el("stop").addEventListener("click", stop);
+</script>
+</body>
+</html>

@@ -7,6 +7,7 @@
 - [Tier 00 - Getting started](00-getting-started/README.md): first app, first image API, media I/O, input hardening
 - [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, environment promotion
 - [Tier 02 - Scaling & cold starts](02-scaling-cold-starts/README.md): cold-start engineering, autoscaling, very large models
+- [Tier 03 - Realtime & streaming](03-realtime-streaming/README.md): WebRTC video pipelines, realtime WebSocket endpoints, progressive streaming
 - [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): per-user LoRAs, LoRA train-and-serve, multi-GPU video, 3D progressive rendering
 - [Tier 05 - Media processing](05-media-processing/README.md): post-production transcode/thumbnail/caption pipeline
 
@@ -21,6 +22,7 @@
 - [cut-cold-starts](02-scaling-cold-starts/cut-cold-starts/README.md): the same WAN 2.1 model deployed twice - every cold-start lever pulled vs none - FlashPack weights on /data, portable torch.compile caches, and a measured 2.1-2.9x setup() reduction with the full before/after table
 - [tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
 - [large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE
+- [realtime-video-to-video](03-realtime-streaming/realtime-video-to-video/README.md): real-time video-to-video over WebRTC - a browser webcam streamed to a fal GPU, YOLO boxes drawn on every frame and streamed back at interactive latency; @fal.realtime msgpack signaling, optional Metered TURN, single-file browser viewer + headless synthetic-video client
 - [per-user-loras](04-genmedia-patterns/per-user-loras/README.md): thousands of per-user LoRAs on one warm FLUX.2 klein fleet - /data adapters, KV user index, bounded GPU LRU, provide_hints() cache affinity with hint-echo headers, synthetic-fleet demo driver
 - [train-serve-lora](04-genmedia-patterns/train-serve-lora/README.md): train a FLUX.2-klein LoRA in-app and serve it - long-request trainer pattern (keep_alive=0, request_timeout, skip_retry), dataset preflight with typed 422s, atomic /data handoff, one-slot adapter serving on distilled klein
 - [multi-gpu-video](04-genmedia-patterns/multi-gpu-video/README.md): WAN 2.2 A14B (2x14B MoE, ~70 GB bf16) sharded across 4 GPUs with fal.distributed + diffusers Ulysses context parallelism - one video, four GPUs; bf16 /data pre-conversion, per-shape warmup, the {"error": ...} worker contract, single-flight runner semantics
