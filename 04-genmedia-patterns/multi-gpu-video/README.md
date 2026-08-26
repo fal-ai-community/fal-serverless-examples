@@ -55,7 +55,7 @@ fal run app.py
 ```
 
 The first-ever boot on your account downloads the ~126 GB fp32 weights and stores a bf16
-copy on [`/data`](https://docs.fal.ai/serverless/data-storage) (roughly half an hour,
+copy on [`/data`](https://fal.ai/docs/documentation/development/use-persistent-storage) (roughly half an hour,
 once). Every boot after that loads the converted copy and is serving in a few minutes.
 `fal run` prints the playground and API URLs when the app is up.
 

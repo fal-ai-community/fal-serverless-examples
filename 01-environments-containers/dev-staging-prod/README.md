@@ -95,4 +95,4 @@ Revisions are **per app, per environment**: rolling back main does nothing to st
 ## Next steps
 
 - **[same-model-two-ways](../same-model-two-ways/)**: choose how the environment gets built before you promote it.
-- Concept docs: [managing environments](https://fal.ai/docs/documentation/deployment/manage-environments) · [secrets](https://fal.ai/docs/documentation/deployment/manage-secrets-securely) · [deployments & revisions](https://fal.ai/docs/documentation/deployment/manage-deployments)
+- Concept docs: [managing environments](https://fal.ai/docs/documentation/deployment/manage-environments) · [secrets](https://fal.ai/docs/documentation/development/manage-secrets-securely) · [deployments & revisions](https://fal.ai/docs/documentation/deployment/manage-deployments)
