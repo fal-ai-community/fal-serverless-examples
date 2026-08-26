@@ -3,5 +3,6 @@ aiortc==1.15.0
 av==17.1.0
 numpy==2.5.2
 opencv-python==4.14.0.94
+pillow==11.3.0
 torch==2.13.0
 ultralytics==8.4.127

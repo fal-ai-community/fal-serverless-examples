@@ -1,6 +1,6 @@
 # fal-serverless-examples
 
-> Production-grade fal Serverless examples, organized as a numbered tier curriculum from first app to production-grade serving; the catalog grows tier by tier. Every example ends in a deployed endpoint and is re-deployed and smoke-tested by CI, so examples cannot silently rot.
+> Production-grade fal Serverless examples, organized as a numbered tier curriculum from first app to production-grade serving; the catalog grows tier by tier. Every example ends in a deployed endpoint. CI checks every pull request statically (layout, pinned requirements, the app loads, a smoke payload is derivable), and the same harness re-deploys each example to fal and smoke-tests it for real in a maintainer-started job, so examples cannot silently rot.
 
 ## Catalog
 
@@ -32,4 +32,4 @@
 ## Docs
 
 - [fal Serverless documentation](https://fal.ai/docs/documentation/serverless): concept docs these examples back
-- [Deploy-check harness](harness/README.md): how CI re-deploys and smoke-tests every example
+- [Deploy-check harness](harness/README.md): how the deploy check re-deploys and smoke-tests every example

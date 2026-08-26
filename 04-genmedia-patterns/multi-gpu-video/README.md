@@ -14,7 +14,7 @@ one prompt, one video, four GPUs cooperating.
 
 A text prompt in; a CDN-hosted mp4 (16 fps) out, with the seed echoed so the same inputs
 reproduce the same clip. This
-[720p sample clip](https://v3b.fal.media/files/b/0aa5f482/O2ywRcibrXZ1YRCIu27CA_wan22-1d96a465e70c4e76ba364350cd034fc4.mp4)
+[720p sample clip](assets/sample-720p-seed7.mp4)
 is the real output of this example's validation run against a registered deploy
 (720p, 81 frames, 27 steps, seed 7), response verbatim:
 
@@ -31,8 +31,12 @@ is the real output of this example's validation run against a registered deploy
 }
 ```
 
+The `url` above is the CDN link that run actually returned; fal CDN files have
+limited retention, so the durable copies are the two clips committed under
+[`assets/`](assets/).
+
 The CI deploy-check exercises the same endpoint at the fast defaults (480p, 33 frames,
-6 steps) - [its output clip](https://v3b.fal.media/files/b/0aa527d3/Egw11G3rCJhuUxb_H-v0d_wan22-557b4d97077f4cfb8aef433a6f492e61.mp4)
+6 steps) - [its output clip](assets/ci-defaults-480p.mp4)
 comes back in about a minute on a warm runner. Timings vary with the node and whether
 the shape is warm - see the measured table under Cost & tuning.
 

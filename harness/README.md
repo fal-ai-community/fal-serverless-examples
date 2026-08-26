@@ -41,11 +41,16 @@ One code path for both environments (`fal.sdk.get_credentials()`):
 
 A preflight call fails the whole run in seconds (with a real error) on bad credentials.
 
+`FAL_KEY` alone is not enough: the harness checks every example and has no skip list, so two examples need extra setup on the account that runs the deploy checks.
+
+- **Required** — `04-genmedia-patterns/3d-progressive-rendering` downloads gated weights. Request access to `facebook/sam-3d-objects` at huggingface.co/facebook/sam-3d-objects, then run `fal secrets set HF_TOKEN "hf_…"` on that account. Without the approval **and** the secret, that example fails its check.
+- **Optional** — `03-realtime-streaming/realtime-video-to-video` uses the `METERED_TURN_SECRET_KEY` and `METERED_TURN_LABEL` secrets for TURN relay. If they are absent, the app falls back to public STUN and the check still passes.
+
 ## Knobs (env vars)
 
 | Var | Default | Meaning |
 |---|---|---|
-| `HARNESS_URL_TIMEOUT` | 900 | seconds to wait for the deploy to produce a URL (covers env build) |
+| `HARNESS_URL_TIMEOUT` | 900 | seconds to wait for the deploy to produce a URL (covers env build). An image built from source needs much more: CI sets 3600 for the flash-attn/pytorch3d compile in `04-genmedia-patterns/3d-progressive-rendering` |
 | `HARNESS_STARTUP_TIMEOUT` | 600 | seconds to wait for `/health` after the URL exists (covers `setup()`) |
 | `HARNESS_REQUEST_TIMEOUT` | 120 | timeout for the smoke request |
 | `HARNESS_TEST_TIMEOUT` | 600 | timeout for the example's pytest run |

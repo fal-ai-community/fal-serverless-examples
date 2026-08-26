@@ -22,6 +22,8 @@ WEIGHTS_URL = (
 )
 WEIGHTS_PATH = FAL_PERSISTENT_DIR / "yolo" / "yolov8n-v8.3.0.pt"
 
+# Smoke payload for CI (DetectInput.examples below) and for client.py;
+# test_app.py asserts the "person" and "bus" labels, so another image breaks it.
 SAMPLE_IMAGE = "https://ultralytics.com/images/bus.jpg"
 
 # Without TURN secrets the app signals public STUN: direct peer connections
@@ -181,18 +183,19 @@ def create_yolo_track(source_track, yolo_model):
     from aiortc.mediastreams import MediaStreamTrack
     from av import VideoFrame
 
+    def annotate(image: "np.ndarray") -> "np.ndarray":
+        return draw_boxes(image, yolo_model(image, verbose=False)[0])
+
     class YoloTrack(MediaStreamTrack):
         kind = "video"
-
-        def __init__(self):
-            super().__init__()
 
         async def recv(self):
             frame = await source_track.recv()
             image = frame.to_ndarray(format="bgr24")
             try:
-                detections = yolo_model(image, verbose=False)[0]
-                annotated = draw_boxes(image, detections)
+                # Blocking CUDA call: run it off the event loop, which also
+                # drives ICE keepalives, signaling, and outbound RTP pacing.
+                annotated = await asyncio.to_thread(annotate, image)
             except Exception as exc:
                 print(f"YOLO inference error: {exc}")
                 annotated = image
@@ -219,6 +222,7 @@ class RealtimeVideoToVideo(
         "av==17.1.0",  # aiortc 1.15 caps av at <18
         "numpy==2.5.2",
         "opencv-python==4.14.0.94",
+        "pillow==11.3.0",
         "torch==2.13.0",
         "ultralytics==8.4.127",
     ]
@@ -329,7 +333,10 @@ class RealtimeVideoToVideo(
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
-            if pc.connectionState in ("failed", "closed", "disconnected"):
+            # "disconnected" stays out: it is transient (brief packet loss) and
+            # ICE recovers to "connected" on its own - tearing down loses the
+            # session for good.
+            if pc.connectionState in ("failed", "closed"):
                 stop_event.set()
                 await outgoing.put(None)
 

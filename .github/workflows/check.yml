@@ -85,4 +85,7 @@ jobs:
           # WAN-scale setup() (download+pack or full compile) exceeds the 600s
           # default; healthy apps return early, so this only delays failures.
           HARNESS_STARTUP_TIMEOUT: "2700"
+          # 3d-progressive-rendering compiles flash-attn and pytorch3d from
+          # source; on a cold fal build cache that exceeds the 900s default.
+          HARNESS_URL_TIMEOUT: "3600"
         run: python harness/check.py --example "$EXAMPLE"

@@ -183,6 +183,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
         "accelerate==1.14.0",
         "pyzmq==27.1.0",  # fal.distributed's transport; not a dependency of fal itself
         "hf-transfer==0.1.9",
+        "huggingface_hub==1.27.0",
         "ftfy==6.3.1",
         "imageio==2.37.4",
         "imageio-ffmpeg==0.6.0",
