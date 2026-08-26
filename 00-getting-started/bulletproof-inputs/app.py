@@ -4,7 +4,7 @@ import base64
 import binascii
 import hashlib
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -170,7 +170,13 @@ class BulletproofInputs(fal.App, keep_alive=60):
 
 def check_url_policy(url: str, field: str) -> None:
     """Scheme/port policy - the SDK SSRF client ignores ports; data: URIs bypass it."""
-    parsed = urlparse(url)
+    try:
+        # urlparse itself raises on a malformed IPv6 literal, e.g. "http://[::1/".
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise FieldException(
+            field=field, message="malformed URL", type="value_error"
+        ) from exc
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise FieldException(
             field=field,
@@ -178,14 +184,22 @@ def check_url_policy(url: str, field: str) -> None:
             f"allowed: {', '.join(sorted(ALLOWED_SCHEMES))}",
             type="value_error",
         )
-    if (
-        parsed.scheme != "data"
-        and parsed.port is not None
-        and parsed.port not in ALLOWED_PORTS
-    ):
+    if parsed.scheme == "data":
+        return
+    try:
+        # .port parses lazily and raises on a non-numeric or out-of-range value.
+        port = parsed.port
+    except ValueError as exc:
         raise FieldException(
             field=field,
-            message=f"port {parsed.port} is not allowed; allowed: "
+            message="malformed port in URL; allowed: "
+            f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
+            type="value_error",
+        ) from exc
+    if port is not None and port not in ALLOWED_PORTS:
+        raise FieldException(
+            field=field,
+            message=f"port {port} is not allowed; allowed: "
             f"{', '.join(str(p) for p in sorted(ALLOWED_PORTS))}",
             type="value_error",
         )
@@ -233,11 +247,7 @@ def inspect_zip(
     compressed = sum(info.compress_size for info in infos) or 1
     ratio = uncompressed / compressed
     # Callers who extract must reject absolute/..-traversal member names first.
-    unsafe = [
-        info.filename
-        for info in infos
-        if Path(info.filename).is_absolute() or ".." in Path(info.filename).parts
-    ]
+    unsafe = [info.filename for info in infos if escapes_extraction_dir(info.filename)]
     if unsafe:
         raise FieldException(
             field=field,
@@ -250,6 +260,15 @@ def inspect_zip(
         uncompressed_mb=round(uncompressed / 1024 / 1024, 2),
         compression_ratio=round(ratio, 1),
     )
+
+
+def escapes_extraction_dir(name: str) -> bool:
+    """True when a zip member name would write outside the extraction directory."""
+    # Members may use "\" as a separator; PurePosixPath keeps this host-independent.
+    candidate = PurePosixPath(name.replace("\\", "/"))
+    head = candidate.parts[0] if candidate.parts else ""
+    drive_letter = len(head) > 1 and head[0].isalpha() and head[1] == ":"
+    return candidate.is_absolute() or drive_letter or ".." in candidate.parts
 
 
 def read_data_uri(url: str, target_dir: Path, max_mb: int, field: str) -> Path:

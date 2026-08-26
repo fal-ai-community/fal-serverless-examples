@@ -59,6 +59,30 @@ def test_port_policy_rejects_odd_ports():
     assert "6379" in excinfo.value.message
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["http://example.com:abc/x.png", "http://example.com:99999/x.png"],
+)
+def test_port_policy_rejects_malformed_ports(url):
+    """urlparse().port raises on these; unhandled it would be a 500, not a 422."""
+    with pytest.raises(FieldException) as excinfo:
+        app_module.check_url_policy(url, "image_url")
+    assert excinfo.value.type == "value_error"
+    assert excinfo.value.status_code == 422
+
+
+def test_url_policy_rejects_a_malformed_ipv6_literal():
+    """urlparse itself raises here; unhandled it would be a 500, not a 422."""
+    with pytest.raises(FieldException) as excinfo:
+        app_module.check_url_policy("http://[::1/x.png", "image_url")
+    assert excinfo.value.type == "value_error"
+    assert excinfo.value.status_code == 422
+
+
+def test_url_policy_accepts_a_well_formed_ipv6_literal():
+    app_module.check_url_policy("https://[2001:db8::1]/x.png", "image_url")
+
+
 def test_pixel_gate_rejects_bombs_and_passes_normal_images():
     with pytest.raises(FieldException) as excinfo:
         app_module.check_pixel_budget(
@@ -97,6 +121,20 @@ def test_archive_gates(tmp_path):
     with pytest.raises(FieldException) as excinfo:
         app_module.inspect_zip(tmp_path / "nope.zip", 10, 1, "archive_url")
     assert excinfo.value.type == "invalid_archive"
+
+
+@pytest.mark.parametrize("name", ["../evil", "..\\evil", "C:\\evil"])
+def test_archive_rejects_traversal_members(tmp_path, name):
+    path = tmp_path / "traversal.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        # The gate needs the raw member name, backslashes included.
+        archive.writestr(zipfile.ZipInfo(name), b"x")
+    with pytest.raises(FieldException) as excinfo:
+        app_module.inspect_zip(
+            path, max_entries=100, max_uncompressed_mb=1, field="archive_url"
+        )
+    assert excinfo.value.type == "invalid_archive"
+    assert name in excinfo.value.message
 
 
 def test_valid_image_passes_every_gate(app_client):

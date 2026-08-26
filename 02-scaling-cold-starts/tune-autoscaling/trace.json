@@ -1,5 +1,5 @@
 {
-  "app": "rehan/tune-autoscaling",
+  "app": "<your-username>/tune-autoscaling",
   "burst": {
     "concurrency": 20,
     "duration_s": 0.0,

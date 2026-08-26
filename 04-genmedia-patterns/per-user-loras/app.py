@@ -266,12 +266,14 @@ class PerUserLoras(fal.App, keep_alive=300):
     requirements = [
         "fal==1.78.2",
         "hf-transfer==0.1.9",
+        "huggingface_hub==1.27.0",
         "diffusers==0.39.0",
         "transformers==5.3.0",
         "torch==2.12.1",
         "accelerate==1.14.0",
         "peft==0.20.0",
         "safetensors==0.8.0",
+        "httpx==0.28.1",
     ]
 
     def setup(self) -> None:

@@ -19,7 +19,7 @@ A generated video isn't a shippable video. Every genmedia product ends up buildi
 }
 ```
 
-*Real output from a registered deploy (`rehan/post-production-pipeline`) — see the validation transcript in Deploy below.*
+*Real output from a registered deploy of this app — see the validation transcript in Deploy below.*
 
 Every rendition is an H.264 MP4 (AAC audio when the source has one) with the moov atom up front (`+faststart`), so the CDN URL streams immediately in a `<video>` tag; captions ride along as a selectable `mov_text` track plus a WebVTT sidecar for web players. The `report` is the pipeline's own measurement: probe summary, per-rendition encode times, download/upload timings, skipped rungs, and the exact ffmpeg version that did the work; the top-level `timings` field mirrors the stage timings in seconds.
 
@@ -84,11 +84,11 @@ python client.py --app <your-username>/post-production-pipeline \
 
 Webhook deliveries are signed (Ed25519 over the request id, user id, timestamp, and the SHA-256 of the raw body — keys at `rest.fal.ai/.well-known/jwks.json`); `webhook_receiver.py` rejects anything that doesn't verify, checks timestamp freshness, and dedupes retries by `request_id`. Statuses are `IN_QUEUE → IN_PROGRESS → COMPLETED` — there is no `FAILED` status; failures arrive as `COMPLETED` with `error`/`error_type`, and the result URL returns the error body with a non-2xx code.
 
-Validated end-to-end against the registered deploy (`rehan/post-production-pipeline`) — client output on top, the receiver's independently-verified signature check below it:
+Validated end-to-end against a registered deploy of this app — client output on top, the receiver's independently-verified signature check below it:
 
 ```text
 $ export FAL_KEY=<key_id>:<key_secret>
-$ python client.py --app rehan/post-production-pipeline \
+$ python client.py --app <your-username>/post-production-pipeline \
     --srt-file demo-captions.srt \
     --webhook https://<tunnel-host>/fal-webhook
 queued: request_id=019fcfa8-8987-7370-8180-30514acb2d36
@@ -96,7 +96,7 @@ fal will POST the result to https://<tunnel-host>/fal-webhook (signed; see webho
 polling too, as the fallback a real backend keeps:
   status: IN_QUEUE (queue position 0)
   status: IN_PROGRESS
-  [app] INFO:     172.17.0.1:55870 - "POST / HTTP/1.1" 200 OK
+  [app] INFO:     <client-ip>:55870 - "POST / HTTP/1.1" 200 OK
   status: COMPLETED
 {
   "renditions": [

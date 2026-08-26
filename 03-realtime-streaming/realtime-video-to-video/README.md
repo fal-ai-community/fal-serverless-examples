@@ -94,6 +94,14 @@ Four ideas, in the order app.py builds them:
    quirk worth knowing: the server does not trickle ICE - `setLocalDescription`
    gathers first, so the `answer` SDP already carries the worker's candidates.
 
+   Inference runs in a worker thread (`asyncio.to_thread`), because a blocking
+   GPU call on the event loop also stalls ICE keepalives, signaling, and
+   outbound packet pacing. The wrapper still annotates every frame it gets. If
+   inference is slower than capture, frames queue and latency grows for as long
+   as the session lasts. A production pipeline drops stale frames: it keeps the
+   newest frame and skips the rest. That needs aiortc queue internals, so this
+   example does not do it.
+
 Concept docs: [Realtime Endpoints](https://fal.ai/docs/documentation/development/realtime) ·
 [Real-Time Inference (clients)](https://fal.ai/docs/documentation/model-apis/inference/real-time) ·
 [handling inputs & outputs](https://fal.ai/docs/documentation/development/handle-inputs-and-outputs)

@@ -98,6 +98,7 @@ class ColdStartBaseline(fal.App, keep_alive=60):
         "transformers==5.3.0",
         "torch==2.12.1",
         "accelerate==1.14.0",
+        "huggingface_hub==1.27.0",
         "imageio==2.37.4",
         "imageio-ffmpeg==0.6.0",
     ]

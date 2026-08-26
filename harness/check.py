@@ -259,11 +259,19 @@ def wait_for_url(spawn_info, failure: dict) -> str:
     )
 
 
-def wait_healthy(url: str, headers: dict, poller: RestRunnerPoller) -> None:
+def wait_healthy(
+    url: str,
+    headers: dict,
+    poller: RestRunnerPoller,
+    watcher: BootWatcher | None = None,
+) -> None:
     deadline = time.monotonic() + STARTUP_TIMEOUT_S
     last_status: object = None
     with httpx.Client(timeout=10) as client:
         while time.monotonic() < deadline:
+            # The watcher may log the runner id well after the URL appears.
+            if watcher is not None and poller.runner_id is None:
+                poller.runner_id = watcher.runner_id
             failed = poller.failed_state_seen()
             if failed:
                 raise CheckError(
@@ -342,6 +350,10 @@ def teardown(spawn_info, poller: RestRunnerPoller, headers: dict) -> str | None:
 
     runner_id = poller.runner_id
     if runner_id is None:
+        log(
+            "    WARNING: no runner id seen in the app logs - teardown is "
+            "unconfirmed and a runner may keep billing; check `fal runners list`"
+        )
         return None
     base = rest_url()
     deadline = time.monotonic() + TEARDOWN_WAIT_S
@@ -413,9 +425,7 @@ def check_variant(
     try:
         url = wait_for_url(spawn_info, spawn_failure)
         log(f"    url: {url}")
-        if watcher.runner_id:
-            poller.runner_id = watcher.runner_id
-        wait_healthy(url, headers, poller)
+        wait_healthy(url, headers, poller, watcher)
         smoke_request(url, endpoint_path, payload, headers)
         run_example_tests(example_dir, url, endpoint_path, variant=app_file.stem)
     finally:

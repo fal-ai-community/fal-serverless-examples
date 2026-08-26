@@ -24,6 +24,9 @@ repos:
       - id: check-json
       - id: check-merge-conflict
       - id: check-added-large-files
+        # Bound set by the largest demo asset in the repo (a 2.9 MB viewer gif);
+        # model weights and datasets must never be committed.
+        args: [--maxkb=3072]
       - id: check-case-conflict
       - id: check-symlinks
       - id: destroyed-symlinks
