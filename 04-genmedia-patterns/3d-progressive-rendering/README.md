@@ -87,7 +87,7 @@ it as a bonus, not a stage your client can depend on.
 
 Concept docs: [Streaming Endpoints](https://docs.fal.ai/serverless/development/streaming) ·
 [handling inputs & outputs](https://docs.fal.ai/serverless/development/handle-inputs-and-outputs) ·
-[custom containers](https://docs.fal.ai/serverless/development/customize-environment-containers)
+[custom containers](https://fal.ai/docs/documentation/development/use-custom-container-image)
 
 ## Deploy
 
