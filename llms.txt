@@ -33,3 +33,6 @@
 
 - [fal Serverless documentation](https://fal.ai/docs/documentation/serverless): concept docs these examples back
 - [Deploy-check harness](harness/README.md): how the deploy check re-deploys and smoke-tests every example
+- [Serverless pricing](docs/serverless-pricing.md): per-second runner billing by state, and per-hour and per-second GPU prices
+- [Deploy a ComfyUI workflow as an API](docs/comfyui-workflow-api.md): workflow API JSON, custom nodes and models in a container, autoscaling, calling the endpoint
+- [Migrating a Cog model or custom container](docs/migrate-cog-or-custom-container.md): three paths from a Cog image or Dockerfile to a fal app, and how billing changes
