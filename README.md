@@ -14,7 +14,7 @@ Runnable examples for [fal Serverless](https://fal.ai/docs/documentation/serverl
 
 The numbered folders, [**`00-getting-started/`**](00-getting-started/) through [**`05-media-processing/`**](05-media-processing/), build on each other — start at 00 and work forward. Each folder's README lists what's inside. New folders land over time, so the numbering has gaps.
 
-Every example is one self-contained folder: an `app.py`, pinned requirements, and a smoke test, on Python 3.11. Every pull request runs static checks — layout, pinned requirements mirrored, the app module loads, a smoke payload is derivable. The same harness ([`harness/`](harness/)) also deploys an example to fal for real, smoke-tests it, runs `test_app.py`, and tears it down; that job spends money, so a maintainer starts it. [`llms.txt`](llms.txt) indexes the catalog for AI tools. Found something broken? [Open an issue](https://github.com/fal-ai-community/fal-serverless-examples/issues).
+Every example is one self-contained folder: an `app.py`, pinned requirements, and a smoke test, on Python 3.11. Every pull request runs static checks — layout, pinned requirements mirrored, the app module loads, a smoke payload is derivable. The same harness ([`harness/`](harness/)) also deploys an example to fal for real, smoke-tests it, runs `test_app.py`, and tears it down; that job spends money, so a maintainer starts it. [`docs/`](docs/) holds Markdown copies of the fal docs pages on pricing, ComfyUI workflows and migrating a Cog model or custom container. [`llms.txt`](llms.txt) indexes the catalog for AI tools. Found something broken? [Open an issue](https://github.com/fal-ai-community/fal-serverless-examples/issues).
 
 ## Running an example
 
