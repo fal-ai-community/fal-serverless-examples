@@ -16,6 +16,7 @@ The root [`deploy.yml`](../../.github/workflows/deploy.yml) runs local tests bef
 |---|---|---|
 | Same-repository pull request | Yes | fal `staging` |
 | Fork pull request | Yes | Never |
+| Dependabot pull request | Yes | Never (GitHub withholds Actions secrets from Dependabot runs) |
 | Push to `main` | Yes | fal `main` (production) |
 | Manual `workflow_dispatch` | Yes | fal `staging` |
 
@@ -54,12 +55,13 @@ If you prefer a new repository, copy this entire example directory to `01-enviro
 ### 2. Set up fal and GitHub
 
 1. Create the fal `staging` environment in the account or team you will deploy to, following [Manage Environments](https://fal.ai/docs/documentation/deployment/manage-environments). fal `main` is the production target in this workflow.
-2. Create a key with the `DEPLOY` preset using [Key-Based Authentication](https://fal.ai/docs/documentation/model-apis/authentication/key-based#permissions). Save its complete value as a GitHub Actions secret named `FAL_DEPLOY_KEY`.
-3. The workflow uses GitHub deployment environments named `staging` and `production`. Create and configure them in repository settings if you want required reviewers or deployment branch restrictions. You can put `FAL_DEPLOY_KEY` in each environment instead of using a repository secret. These GitHub environments are approval and secret boundaries, not the fal environments themselves; no approval policy is assumed by the workflow.
-4. Add the repository Actions variable `FAL_CI_CD_ENABLED` with value `true` only when you are ready for deployments. Leave it unset to run tests without touching fal.
-5. Protect `main` with pull request review and a required **Test app** check before merging. In a larger repository, account for GitHub's behavior that required path-filtered checks can remain pending on unrelated changes; adjust the filters before requiring this check globally.
+2. Create a key with the `DEPLOY` preset using [Key-Based Authentication](https://fal.ai/docs/documentation/model-apis/authentication/key-based#permissions).
+3. Create GitHub deployment environments named `staging` and `production` in repository settings. Add the key as an environment secret named `FAL_DEPLOY_KEY` in each one. Do not add it as a repository secret: a repository secret is available to any job, so a pull request that edits the workflow could drop the `environment` block and skip its approvals.
+4. Add a deployment branch rule that limits `production` to `main`, and add required reviewers to either environment if your team wants them. These GitHub environments are approval and secret boundaries, not the fal environments themselves. The workflow does not configure any approval policy for you.
+5. Add the repository Actions variable `FAL_CI_CD_ENABLED` with value `true` only when you are ready for deployments. Leave it unset to run tests without touching fal.
+6. Protect `main` with pull request review and a required **Test app** check before merging. In a larger repository, account for GitHub's behavior that required path-filtered checks can remain pending on unrelated changes; adjust the filters before requiring this check globally.
 
-**Treat same-repository pull request authors as trusted deployers.** The `DEPLOY` preset can manage apps, secrets, and environments; it is not restricted to staging by the workflow's `--env` flag. Even though tests and dependency installation do not receive `FAL_KEY`, deploying the checked-out Python app executes its code with deployment credentials available. Review app and workflow changes accordingly, and configure GitHub environment protection for approvals where your team needs them. The workflow uses `pull_request`, never `pull_request_target`, and fork pull requests cannot enter the deployment job or receive its secret.
+**Treat same-repository pull request authors as trusted deployers.** The `DEPLOY` preset can manage apps, secrets, and environments; it is not restricted to staging by the workflow's `--env` flag. Even though tests and dependency installation do not receive `FAL_KEY`, deploying the checked-out Python app executes its code with deployment credentials available. GitHub environment rules cannot fully contain this. A pull request author can edit the workflow to deploy through the `staging` environment and pass `--env main`, because the `DEPLOY` key reaches every fal environment in the account. Approvals and the `production` branch rule protect the normal path, not against a malicious author. If staging pull requests must never reach production, deploy staging to a separate fal team with its own key. The workflow uses `pull_request`, never `pull_request_target`. Fork and Dependabot pull requests run tests only and never receive the key.
 
 ### 3. Test the pipeline in staging
 
