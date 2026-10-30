@@ -5,7 +5,7 @@
 ## Catalog
 
 - [Tier 00 - Getting started](00-getting-started/README.md): first app, first image API, media I/O, input hardening
-- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, environment promotion
+- [Tier 01 - Environments & containers](01-environments-containers/README.md): fal runtime vs Dockerfile, environment promotion, tested CI/CD deployments
 - [Tier 02 - Scaling & cold starts](02-scaling-cold-starts/README.md): cold-start engineering, autoscaling, very large models
 - [Tier 03 - Realtime & streaming](03-realtime-streaming/README.md): WebRTC video pipelines, realtime WebSocket endpoints, progressive streaming
 - [Tier 04 - Genmedia patterns](04-genmedia-patterns/README.md): per-user LoRAs, LoRA train-and-serve, multi-GPU video, 3D progressive rendering
@@ -19,6 +19,7 @@
 - [bulletproof-inputs](00-getting-started/bulletproof-inputs/README.md): hostile-input gauntlet - URL/port policy, download caps, decompression-bomb gate before decode, archive gates before extraction, typed 422s from fal's documented error taxonomy
 - [same-model-two-ways](01-environments-containers/same-model-two-ways/README.md): the same whisper model served two ways - fal runtime `requirements` vs your own Dockerfile - with the pick-one decision table, the python-version/ffmpeg gotchas, and what happens when a base-image tag moves
 - [dev-staging-prod](01-environments-containers/dev-staging-prod/README.md): one codebase across environments - env-scoped secrets, promotion-is-redeploy, and the verified three-step rollback (set-rev alone does not move traffic)
+- [deploy-from-ci-cd](01-environments-containers/deploy-from-ci-cd/README.md): tiny private CPU app with credential-free local tests and a pinned GitHub Actions workflow - trusted PRs deploy to staging, main pushes to production, manual runs to staging, and fork PRs test without deployment secrets
 - [cut-cold-starts](02-scaling-cold-starts/cut-cold-starts/README.md): the same WAN 2.1 model deployed twice - every cold-start lever pulled vs none - FlashPack weights on /data, portable torch.compile caches, and a measured 2.1-2.9x setup() reduction with the full before/after table
 - [tune-autoscaling](02-scaling-cold-starts/tune-autoscaling/README.md): pick keep_alive / min_concurrency / concurrency_buffer from a measured burst - a self-reporting FLUX.2 klein endpoint, a stdlib burst driver, and a simulator calibrated on the real trace, with cost integrated over fal's billed runner states
 - [large-video-model](02-scaling-cold-starts/large-video-model/README.md): LTX-2.3 22B distilled on one H200 - parallel loading for ~88 GB of weights, GPU-sizing math, and tiny-VAE intermediate previews streamed over SSE

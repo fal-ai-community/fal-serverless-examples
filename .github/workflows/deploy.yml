@@ -1,0 +1,75 @@
+name: deploy-ci-cd-demo
+
+on:
+  pull_request:
+    paths:
+      - "01-environments-containers/deploy-from-ci-cd/**"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "01-environments-containers/deploy-from-ci-cd/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: 01-environments-containers/deploy-from-ci-cd
+
+jobs:
+  test:
+    name: Test app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt pytest==9.1.1
+      - name: Run local tests
+        run: python -m pytest -q test_app.py
+
+  deploy:
+    name: Deploy app
+    needs: test
+    if: >-
+      ${{ vars.FAL_CI_CD_ENABLED == 'true' &&
+          ((github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository) ||
+           (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+           github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ github.event_name == 'push' && 'production' || 'staging' }}
+    concurrency:
+      group: ci-cd-demo-${{ github.event_name == 'push' && 'main' || 'staging' }}
+      cancel-in-progress: false
+    env:
+      TARGET_ENV: ${{ github.event_name == 'push' && 'main' || 'staging' }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.11"
+      - name: Install deployment dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Deploy tested app
+        env:
+          FAL_KEY: ${{ secrets.FAL_DEPLOY_KEY }}
+        run: |
+          if [ -z "$FAL_KEY" ]; then
+            echo "::error::FAL_DEPLOY_KEY is not configured"
+            exit 1
+          fi
+          fal deploy app.py::CICDDemo --app-name ci-cd-demo \
+            --env "$TARGET_ENV" --strategy rolling --attach --yes
