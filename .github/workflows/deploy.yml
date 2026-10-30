@@ -72,4 +72,4 @@ jobs:
             exit 1
           fi
           fal deploy app.py::CICDDemo --app-name ci-cd-demo \
-            --env "$TARGET_ENV" --strategy rolling --attach --yes
+            --env "$TARGET_ENV" --strategy rolling --reset-scale --attach --yes

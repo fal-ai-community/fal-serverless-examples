@@ -41,7 +41,7 @@ These tests require no credentials and provision no fal compute. They call the e
 - `requirements = ["fal==1.83.0"]` is the remote runtime dependency list. [`requirements.txt`](requirements.txt) mirrors it exactly. The workflow installs the same pinned SDK plus `pytest==9.1.1` for its separate test job.
 - [`test_app.py`](test_app.py) loads `app.py` by its path with a unique module name. Tests still run with the repository's `--import-mode=importlib` setting and do not depend on the live-only `app_client` fixture.
 - The deployment job depends on the test job. Test steps never receive the deployment secret. The deploy step maps `FAL_DEPLOY_KEY` to `FAL_KEY` for noninteractive authentication, and fails if the key is missing.
-- Deployments use the stable app name `ci-cd-demo`, explicit `--env`, `--strategy rolling`, and `--attach --yes`. A deployment failure fails the job rather than reporting success as soon as the deployment is submitted.
+- Deployments use the stable app name `ci-cd-demo`, explicit `--env`, `--strategy rolling`, `--reset-scale`, and `--attach --yes`. `--reset-scale` applies the scaling settings in `app.py`, such as `keep_alive`, on every deploy; without it, a redeploy keeps the previous revision's scaling. A deployment failure fails the job rather than reporting success as soon as the deployment is submitted.
 
 ## Deploy
 
@@ -78,7 +78,7 @@ Merge the reviewed change into `main`. The push workflow tests that merged commi
 The underlying deployment command, run from this example folder with `FAL_KEY` supplied, is:
 
 ```bash
-fal deploy app.py::CICDDemo --app-name ci-cd-demo --env main --strategy rolling --attach --yes
+fal deploy app.py::CICDDemo --app-name ci-cd-demo --env main --strategy rolling --reset-scale --attach --yes
 ```
 
 The workflow passes `--env staging` for pull requests and manual runs. No `fal auth login` step is needed in CI.
@@ -97,7 +97,7 @@ Replace `REVISION_ID` with an ID from the first command. Rolling back `main` doe
 ## Cost & tuning
 
 - Local tests use no fal compute. Deployments and requests use real infrastructure and can incur charges.
-- `machine_type = "S"` keeps this example on CPU. `keep_alive=60` keeps a runner warm for 60 seconds after a request; reduce it when warm responses are less important than idle cost.
+- `machine_type = "S"` keeps this example on CPU. `keep_alive=60` keeps a runner warm for 60 seconds after a request; reduce it when warm responses are less important than idle cost. The next deployment applies the change because the workflow passes `--reset-scale`; scaling changes made in the dashboard are overwritten on each deploy.
 - Set `FAL_CI_CD_ENABLED` to `false` to stop future workflow deployments. This does not delete or stop an already deployed app. Manage existing apps through the [deployment documentation](https://fal.ai/docs/documentation/deployment/manage-deployments).
 
 ## Next steps
