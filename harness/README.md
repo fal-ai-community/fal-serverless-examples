@@ -41,9 +41,10 @@ One code path for both environments (`fal.sdk.get_credentials()`):
 
 A preflight call fails the whole run in seconds (with a real error) on bad credentials.
 
-`FAL_KEY` alone is not enough: the harness checks every example and has no skip list, so two examples need extra setup on the account that runs the deploy checks.
+`FAL_KEY` alone is not enough: the harness checks every example and has no skip list, so three examples need extra setup on the account that runs the deploy checks.
 
 - **Required** — `04-genmedia-patterns/3d-progressive-rendering` downloads gated weights. Request access to `facebook/sam-3d-objects` at huggingface.co/facebook/sam-3d-objects, then run `fal secrets set HF_TOKEN "hf_…"` on that account. Without the approval **and** the secret, that example fails its check.
+- **Required** — `04-genmedia-patterns/multi-app-pipeline` checks the agent app, which calls three stage apps by name. Deploy them once on that account: `fal deploy stage_llm.py`, `fal deploy stage_dit.py`, and `fal deploy stage_sr.py` from the example's directory. Redeploy them when a `stage_*.py` file changes.
 - **Optional** — `03-realtime-streaming/realtime-video-to-video` uses the `METERED_TURN_SECRET_KEY` and `METERED_TURN_LABEL` secrets for TURN relay. If they are absent, the app falls back to public STUN and the check still passes.
 
 ## Knobs (env vars)
