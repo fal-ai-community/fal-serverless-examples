@@ -139,10 +139,11 @@ stages that move hundreds of megabytes.
 The agent validates what it can before it calls anything. For example, it rejects
 `num_frames=34` with a 422 before it spends an LLM call.
 
-If a stage returns a 4xx, the agent returns the same status, because the input was wrong.
-Any other stage failure becomes a `502` that names the stage and app, for example
+If a stage rejects its input with a 422, the agent returns the same 422. Any other stage
+failure, including a stage app that does not exist, becomes a `502` that names the stage
+and app, for example
 `llm stage (alice/video-pipeline-llm) failed: Application "video-pipeline-llm" not found`.
-You know which app's logs to read. fal does not retry 4xx or 502 responses.
+You know which app's logs to read. fal does not retry 422 or 502 responses.
 
 Each stage call has a 30-minute limit, which covers a cold DiT boot. The agent's own
 `request_timeout` is set above the sum of the three. `skip_retry_conditions = ["timeout"]`

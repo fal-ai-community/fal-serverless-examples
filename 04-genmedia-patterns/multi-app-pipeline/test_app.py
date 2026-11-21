@@ -75,12 +75,14 @@ def test_agent_and_dit_reject_off_grid_frames():
             model(idea="x", prompt="x", num_frames=34)
 
 
-def test_stage_4xx_passes_through_and_everything_else_is_502():
+def test_stage_422_passes_through_and_everything_else_is_502():
     class StageError(Exception):
         def __init__(self, status_code):
             self.status_code = status_code
 
     assert agent.stage_error_status(StageError(422)) == 422
+    # A missing stage app (404) is the operator's problem, not the caller's.
+    assert agent.stage_error_status(StageError(404)) == 502
     assert agent.stage_error_status(StageError(500)) == 502
     assert agent.stage_error_status(RuntimeError("network")) == 502
 
