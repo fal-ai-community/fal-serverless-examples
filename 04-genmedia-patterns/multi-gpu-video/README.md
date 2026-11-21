@@ -110,8 +110,9 @@ every rank. Two tricks keep 80 GB H100s comfortable:
 ### The error contract
 
 Worker exceptions do **not** raise on the caller side - `runner.invoke()` returns
-`{"error": "..."}`, and the endpoint re-raises it as a 5xx (which fal does not bill and
-retries on healthy hardware). The warmup in `setup()` asserts on that key so a broken
+`{"error": "..."}`, and the endpoint re-raises it as a 500. fal does not bill a 500 and
+health-checks the runner, but does not retry the request
+([retries](https://fal.ai/docs/documentation/serverless/reliability/retries)). The warmup in `setup()` asserts on that key so a broken
 model never reports healthy - and it warms the default 480p/33-frame shape, because
 attention kernels autotune per shape and a cold shape adds ~40 s to the first request.
 One more honesty note: each runner handles one request at a time - fal's default

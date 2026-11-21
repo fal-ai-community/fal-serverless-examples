@@ -68,9 +68,37 @@ def test_parse_plan_reads_json_and_falls_back():
     assert (p, n) == ("just a sentence", llm.DEFAULT_NEGATIVE)
 
 
-def test_dit_rejects_off_grid_frames():
-    with pytest.raises(ValueError):
-        dit.Input(prompt="x", num_frames=34)
+def test_agent_and_dit_reject_off_grid_frames():
+    # The agent must reject before it spends an LLM call on a doomed request.
+    for model in (agent.Input, dit.Input):
+        with pytest.raises(ValueError):
+            model(idea="x", prompt="x", num_frames=34)
+
+
+def test_stage_4xx_passes_through_and_everything_else_is_502():
+    class StageError(Exception):
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    assert agent.stage_error_status(StageError(422)) == 422
+    assert agent.stage_error_status(StageError(500)) == 502
+    assert agent.stage_error_status(RuntimeError("network")) == 502
+
+
+def test_agent_timeout_covers_every_stage():
+    cls = agent.VideoPipelineAgent
+    assert cls.request_timeout >= len(agent.STAGE_APPS) * agent.STAGE_TIMEOUT_S
+    assert cls.skip_retry_conditions == ["timeout"]
+
+
+def test_sr_rejects_oversized_input_before_decoding():
+    from fal.exceptions import FieldException
+
+    sr.check_source((1920, 1080), sr.MAX_FRAMES)
+    with pytest.raises(FieldException):
+        sr.check_source((3840, 2160), 1)
+    with pytest.raises(FieldException):
+        sr.check_source((832, 480), sr.MAX_FRAMES + 1)
 
 
 # Live: only under harness/check.py, and only after the three stages are deployed.

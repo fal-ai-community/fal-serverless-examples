@@ -64,7 +64,7 @@ example reuses its copy.
 ### The Dockerfile
 
 ```dockerfile
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04@sha256:17e2...
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04@sha256:78ba...
 RUN apt-get install ... python3.11 curl ffmpeg ...
 RUN python3.11 -m pip install torch==2.12.1 diffusers==0.39.0 ... pyzmq==27.1.0 ...
 RUN python3.11 -m pip install fal==1.78.2
@@ -84,6 +84,9 @@ Four rules apply to any custom image on fal:
 - **`curl` must be installed.** fal's runtime installer uses it.
 - **Install `fal` last**, so that pip picks `pydantic`, `protobuf`, and `boto3` versions
   that fal supports.
+- **Match the base image's CUDA to your framework's.** The `torch==2.12.1` wheel from
+  PyPI brings its own CUDA 13.0 runtime, so the base is CUDA 13.0 too. If you compile
+  extensions against the base image's CUDA, a mismatch shows up as a load error at runtime.
 - **Pin the base image by digest.** fal caches builds by the Dockerfile's text. If you
   use a moving tag, a new upstream image never reaches your build. With a digest, every
   base-image change is a visible edit.
@@ -105,7 +108,8 @@ and seed. Ulysses sequence parallelism splits the attention sequence across the 
 and rank 0 writes and returns the mp4.
 
 The Ulysses degree is the GPU count, and it must divide the model's attention-head
-count. WAN has 40 heads, so 2, 4, or 8 GPUs work. `test_app.py` checks this rule. For your own model, check its head count
+count. WAN has 40 heads, so 2, 4, or 8 GPUs work. `test_app.py` checks this rule. For
+your own model, check its head count
 before you pick `num_gpus`.
 
 See [`multi-gpu-video`](../multi-gpu-video/) for the parts that are the same in both
@@ -143,6 +147,10 @@ print(result["video"]["url"], result["num_gpus"])
   minutes after the last request.
 - **An 8-GPU allocation can wait for capacity.** A whole node is harder to get than one
   GPU. Call the app through the queue with a generous timeout.
+- **Convert the weights on a cheaper app first.** The first boot on an account spends
+  about 35 minutes downloading and converting the weights on CPU, while eight H100s are
+  billed. Running [`multi-gpu-video`](../multi-gpu-video/) once first does the same
+  conversion on four GPUs, and this example reuses its copy.
 - **One request at a time per runner.** All eight GPUs work on one video. To serve more
   videos at the same time, add runners (`max_concurrency`).
 
@@ -152,7 +160,7 @@ deploy, warm runner). These are single measurements, not a guarantee:
 | Config | `generate` on 8 GPUs | `generate` on 4 GPUs ([`multi-gpu-video`](../multi-gpu-video/)) |
 |---|---|---|
 | 720p · 81 frames · 27 steps | 155.5 s | ~270-282 s |
-| 480p · 33 frames · 6 steps (defaults) | 54.5-56.0 s | — |
+| 480p · 33 frames · 6 steps (defaults) | 54.5-56.0 s | ~62-95 s (request wall-clock, not `generate`) |
 
 Doubling the GPUs cut the full-quality clip from about 280 s to 156 s (1.8x). The short
 480p default gains much less. At 6 steps the fixed per-request costs, such as moving the

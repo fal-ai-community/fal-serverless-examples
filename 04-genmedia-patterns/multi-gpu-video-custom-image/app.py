@@ -226,7 +226,7 @@ class MultiGpuVideoCustomImage(fal.App, keep_alive=300):
         )
         result = await self.runner.invoke(_worker_payload(request, seed))
         if "error" in result:
-            # 5xx: not billed, and the platform retries on healthy hardware.
+            # 500: not billed and not retried; fal health-checks the runner.
             raise HTTPException(
                 status_code=500, detail=f"generation failed: {result['error']}"
             )
