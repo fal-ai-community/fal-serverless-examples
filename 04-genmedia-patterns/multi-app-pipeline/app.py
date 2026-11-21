@@ -7,7 +7,7 @@ from typing import Any
 import fal
 from fal.toolkit import File
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Must match the `name=` of each stage class in stage_*.py.
 STAGE_APPS = {
@@ -17,6 +17,8 @@ STAGE_APPS = {
 }
 # Covers a cold DiT boot (weights + warmup) plus generation.
 STAGE_TIMEOUT_S = 1800
+# Three sequential stages must finish inside the agent's own request timeout.
+AGENT_REQUEST_TIMEOUT_S = len(STAGE_APPS) * STAGE_TIMEOUT_S + 60
 
 
 class Input(BaseModel):
@@ -39,6 +41,13 @@ class Input(BaseModel):
     seed: int | None = Field(
         default=None, description="DiT seed; random when omitted, echoed back."
     )
+
+    @field_validator("num_frames")
+    @classmethod
+    def _frames_are_4k_plus_1(cls, v: int) -> int:
+        if (v - 1) % 4 != 0:
+            raise ValueError("num_frames must be 4k+1 (17, 21, ..., 81)")
+        return v
 
 
 class StageTiming(BaseModel):
@@ -68,6 +77,14 @@ def stage_owner() -> str:
     return owner
 
 
+def stage_error_status(exc: Exception) -> int:
+    """A stage 4xx is a caller mistake and passes through; anything else is 502."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 400 <= status < 500:
+        return status
+    return 502
+
+
 def timing(wall: float, result: dict[str, Any]) -> StageTiming:
     compute = float(result.get("compute_seconds", 0.0))
     return StageTiming(
@@ -82,6 +99,9 @@ class VideoPipelineAgent(fal.App, keep_alive=300):
     app_auth = "private"
     # Waiting on other apps costs no CPU: one runner can drive many requests.
     max_multiplexing = 20
+    request_timeout = AGENT_REQUEST_TIMEOUT_S
+    # A retried agent request would resubmit every stage; let the caller decide.
+    skip_retry_conditions = ["timeout"]
     requirements = [
         "fal==1.78.2",
         "fal-client==1.0.3",
@@ -91,7 +111,7 @@ class VideoPipelineAgent(fal.App, keep_alive=300):
         import fal_client
 
         # FAL_KEY is injected into every runner; it authorizes calls to private apps.
-        self.client = fal_client.AsyncClient(default_timeout=STAGE_TIMEOUT_S)
+        self.client = fal_client.AsyncClient()
         owner = stage_owner()
         self.apps = {stage: f"{owner}/{name}" for stage, name in STAGE_APPS.items()}
 
@@ -105,7 +125,7 @@ class VideoPipelineAgent(fal.App, keep_alive=300):
             )
         except Exception as exc:
             raise HTTPException(
-                status_code=502,
+                status_code=stage_error_status(exc),
                 detail=f"{stage} stage ({self.apps[stage]}) failed: {exc}",
             ) from exc
         return result, time.perf_counter() - t0

@@ -45,7 +45,8 @@ retention, so the URLs are omitted here:
 `overhead_seconds` is what each hop costs: the agent's wall time for the call minus the
 time the stage itself reports. It covers queueing, the HTTP round trips, and the file
 moving through the fal CDN. On warm runners it was 0.5-1.0 s per stage in this run. A cold
-stage adds its boot time to its own overhead, and nothing else.
+stage adds its boot time to its own overhead, and nothing else: in a run where every app
+started cold, the request took 70.4 s, and the LLM stage's `overhead_seconds` was 31.3 s.
 
 ## Run it
 
@@ -133,16 +134,45 @@ Stages return `File` outputs, which fal uploads to its CDN. The next stage gets 
 not bytes. A video never goes through the agent, so a small CPU agent can coordinate
 stages that move hundreds of megabytes.
 
-### Errors
+### Errors and timeouts
 
-If a stage fails, the agent returns a `502` that names the stage and app, for example
-`dit stage (alice/video-pipeline-dit) failed: ...`. You know which app's logs to read.
+The agent validates what it can before it calls anything. For example, it rejects
+`num_frames=34` with a 422 before it spends an LLM call.
+
+If a stage returns a 4xx, the agent returns the same status, because the input was wrong.
+Any other stage failure becomes a `502` that names the stage and app, for example
+`llm stage (alice/video-pipeline-llm) failed: Application "video-pipeline-llm" not found`.
+You know which app's logs to read. fal does not retry 4xx or 502 responses.
+
+Each stage call has a 30-minute limit, which covers a cold DiT boot. The agent's own
+`request_timeout` is set above the sum of the three. `skip_retry_conditions = ["timeout"]`
+stops fal from retrying a timed-out agent request, because a retry would resubmit every
+stage.
+
+The SR stage checks its input before it decodes it: at most 200 MB, 1920x1080, and 241
+frames. It reads, upscales, and writes four frames at a time, so memory does not grow with
+the clip length.
 
 ## Deploy
 
 The four apps are deployed separately. Deploy order matters only the first time: the
 stages must exist before the agent receives traffic. After that, redeploy any app on its
 own.
+
+The commands above were run end to end from a fresh clone on 2026-11-20 in three states:
+with the stages missing (the 502 above), with all four apps cold, and with all of them
+warm.
+
+To test a change before you deploy it, use the repository's deploy-check harness. The test
+suite has free unit tests and one live test. The live test runs only under the
+deploy-check harness, and only after the three stages are deployed on the harness
+account. The harness checks only `app*.py` files, so it tests the agent against whatever
+stage versions are deployed:
+
+```bash
+fal deploy stage_llm.py && fal deploy stage_dit.py && fal deploy stage_sr.py
+HARNESS_REQUEST_TIMEOUT=1800 python harness/check.py --example 04-genmedia-patterns/multi-app-pipeline
+```
 
 ## Cost & tuning
 
@@ -166,15 +196,3 @@ own.
   for a larger model on 8 GPUs.
 - Stream progress to the client while the stages run. See
   [`3d-progressive-rendering`](../3d-progressive-rendering/) for SSE streaming.
-
-## Testing
-
-`test_app.py` has free unit tests (stage names match, all apps are private and pinned,
-the agent runs on CPU and the stages on GPUs, the timing math) and one live test. The
-live test runs only under the deploy-check harness, and **only after the three stages
-are deployed on the harness account**:
-
-```bash
-fal deploy stage_llm.py && fal deploy stage_dit.py && fal deploy stage_sr.py
-HARNESS_REQUEST_TIMEOUT=1800 python harness/check.py --example 04-genmedia-patterns/multi-app-pipeline
-```

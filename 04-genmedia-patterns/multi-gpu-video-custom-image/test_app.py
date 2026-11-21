@@ -42,8 +42,23 @@ def test_requirements_txt_mirrors_dockerfile_pins():
     assert docker_pins == txt_pins
 
 
-def test_dockerfile_python_matches_ci():
-    assert "python3.11" in (HERE / "Dockerfile").read_text()
+def test_base_image_is_digest_pinned():
+    from_line = next(
+        line
+        for line in (HERE / "Dockerfile").read_text().splitlines()
+        if line.startswith("FROM ")
+    )
+    assert re.search(r"@sha256:[0-9a-f]{64}$", from_line), from_line
+
+
+def test_dockerfile_installs_python_311_and_fal_last():
+    pip_lines = [
+        line
+        for line in (HERE / "Dockerfile").read_text().splitlines()
+        if line.startswith("RUN python3.11 -m pip install")
+    ]
+    assert pip_lines, "no python3.11 pip installs"
+    assert "fal==" in pip_lines[-1]
 
 
 # Live: only under harness/check.py (app_client skips otherwise); each run spins 8 GPUs.

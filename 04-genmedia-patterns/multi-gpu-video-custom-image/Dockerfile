@@ -1,25 +1,22 @@
-# The app's environment. fal builds this server-side (no local Docker, no
-# registry push) and caches by the CONTENT of this file - a digest-pinned
-# FROM makes every base change a visible edit. (nvidia/cuda tag resolved
-# 2026-11-20.)
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04@sha256:17e2934e1fa96152b14f78078bfbafd0f00f391df995dc6c641a720fce1202bb
+# Digest-pinned: fal caches builds by this file's content (tag resolved 2026-11-20).
+# CUDA 13.0.2 matches the cuda-toolkit that the torch==2.12.1 wheel depends on.
+FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu22.04@sha256:78badc969903e2aebc515b087f6276a15eae17c6aade19068b18dc252bd6ec90
 
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
-# python3.11 must match the Python that runs `fal deploy`: fal ships the app
-# as cloudpickled bytecode, which is CPython-minor-specific. curl is required
-# by fal's resolver. ffmpeg is the system encoder the app writes mp4s with.
+# python3.11 must match the Python that runs `fal deploy`; curl is fal's installer dependency.
+# Symlinks go in /usr/local/bin: apt's tooling needs /usr/bin/python3 to stay 3.10.
 RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common && \
     add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && \
     apt-get install -y --no-install-recommends \
         python3.11 python3.11-venv curl ca-certificates ffmpeg && \
     rm -rf /var/lib/apt/lists/* && \
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/local/bin/python3 && \
     python3.11 -m ensurepip --upgrade && \
     python3.11 -m pip install --no-cache-dir pip==25.2
 
-# The model stack. Keep in sync with requirements.txt.
+# Keep in sync with requirements.txt.
 RUN python3.11 -m pip install --no-cache-dir \
         torch==2.12.1 \
         diffusers==0.39.0 \
