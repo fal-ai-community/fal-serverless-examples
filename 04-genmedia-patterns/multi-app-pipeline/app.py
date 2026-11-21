@@ -78,11 +78,9 @@ def stage_owner() -> str:
 
 
 def stage_error_status(exc: Exception) -> int:
-    """A stage 4xx is a caller mistake and passes through; anything else is 502."""
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int) and 400 <= status < 500:
-        return status
-    return 502
+    """A stage's 422 is bad caller input and passes through; anything else is 502."""
+    # 401/403/404 here mean a missing or misconfigured stage, not a caller mistake.
+    return 422 if getattr(exc, "status_code", None) == 422 else 502
 
 
 def timing(wall: float, result: dict[str, Any]) -> StageTiming:
