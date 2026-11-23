@@ -118,3 +118,50 @@ def test_pipeline_end_to_end(app_client):
         response["video"]["url"], timeout=60, headers={"Range": "bytes=0-63"}
     ).content
     assert b"ftyp" in head[:16]
+
+
+class FakeClient:
+    """Records submits; answers subscribes with canned stage outputs."""
+
+    def __init__(self, fail_submit: bool = False):
+        self.submits: list[tuple[str, str]] = []
+        self.fail_submit = fail_submit
+
+    async def submit(self, app, arguments, *, path=""):
+        self.submits.append((app, path))
+        if self.fail_submit:
+            raise RuntimeError("stage app not found")
+
+    async def subscribe(self, app, arguments, **kwargs):
+        video = {"url": f"https://cdn/{app}.mp4", "content_type": "video/mp4"}
+        if app.endswith("llm"):
+            return {"prompt": "p", "negative_prompt": "n", "compute_seconds": 1.0}
+        return {"video": video, "seed": 7, "compute_seconds": 1.0}
+
+
+def _run(client, **request):
+    import asyncio
+
+    app = object.__new__(agent.VideoPipelineAgent)
+    app.client = client
+    app.apps = {k: f"me/{v}" for k, v in agent.STAGE_APPS.items()}
+    return asyncio.run(
+        agent.VideoPipelineAgent.run(app, agent.Input(idea="x", **request))
+    )
+
+
+def test_prewarm_boots_only_the_stages_this_request_uses():
+    client = FakeClient()
+    _run(client)
+    assert sorted(client.submits) == [
+        ("me/video-pipeline-dit", "/warm"),
+        ("me/video-pipeline-sr", "/warm"),
+    ]
+    client = FakeClient()
+    _run(client, upscale=False)
+    assert client.submits == [("me/video-pipeline-dit", "/warm")]
+
+
+def test_failed_prewarm_never_fails_the_request():
+    out = _run(FakeClient(fail_submit=True))
+    assert set(out.timings) == {"llm", "dit", "sr"}

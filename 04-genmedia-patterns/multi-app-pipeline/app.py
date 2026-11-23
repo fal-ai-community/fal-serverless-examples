@@ -1,5 +1,7 @@
 """CPU agent app chaining private LLM, DiT, and SR apps, each on its own machine."""
 
+import asyncio
+import contextlib
 import os
 import time
 from typing import Any
@@ -128,9 +130,18 @@ class VideoPipelineAgent(fal.App, keep_alive=300):
             ) from exc
         return result, time.perf_counter() - t0
 
+    async def prewarm(self, stage: str) -> None:
+        # Best effort: the real call reports a missing or broken stage.
+        with contextlib.suppress(Exception):
+            await self.client.submit(self.apps[stage], {}, path="/warm")
+
     @fal.endpoint("/")
     async def run(self, request: Input) -> Output:
+        # Boot the later stages while the LLM runs; their own calls come afterwards.
+        later = ["dit", "sr"] if request.upscale else ["dit"]
+        warming = [asyncio.create_task(self.prewarm(s)) for s in later]
         plan, llm_wall = await self.call("llm", {"idea": request.idea})
+        await asyncio.gather(*warming)
 
         dit_args: dict[str, Any] = {
             "prompt": plan["prompt"],

@@ -84,6 +84,11 @@ class PipelineDiT(fal.App, name="video-pipeline-dit", keep_alive=300):
             output_type="latent",
         )
 
+    @fal.endpoint("/warm")
+    def warm(self) -> dict:
+        """No-op: the agent calls it so a cold runner boots while earlier stages run."""
+        return {}
+
     @fal.endpoint("/")
     def generate(self, request: Input) -> Output:
         import torch

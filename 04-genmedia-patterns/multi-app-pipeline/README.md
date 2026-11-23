@@ -45,8 +45,9 @@ retention, so the URLs are omitted here:
 `overhead_seconds` is what each hop costs: the agent's wall time for the call minus the
 time the stage itself reports. It covers queueing, the HTTP round trips, and the file
 moving through the fal CDN. On warm runners it was 0.5-1.0 s per stage in this run. A cold
-stage adds its boot time to its own overhead, and nothing else: in a run where every app
-started cold, the request took 70.4 s, and the LLM stage's `overhead_seconds` was 31.3 s.
+stage adds its boot time to its own overhead. The agent boots the later stages early (see
+below), so in a run where all four apps started cold, the request took 86.9 s: the LLM's
+boot added 41 s, the DiT's added only 16 s, and the SR stage was already warm.
 
 ## Run it
 
@@ -131,6 +132,21 @@ The queue API gives each hop retries and a request id that you can find in the l
 long DiT request does not hold a connection open, and a stage that is scaling up queues
 the request instead of failing it.
 
+### Booting the later stages early
+
+Calling the stages one after another also boots them one after another: a cold LLM, then
+a cold DiT, then a cold SR. The DiT and SR stages each have a `/warm` endpoint that does
+nothing. At the start of a request the agent sends `/warm` to them through the queue and
+does not wait for an answer. If a stage has no runner, that request starts one, which
+boots while the LLM is working. By the time the agent calls the stage for real, it is
+warm or nearly warm.
+
+Measured with all four apps scaled to zero, on otherwise identical code: 274.7 s without
+the early boot, 103.4 s with it. On warm runners the early boot costs nothing measurable
+(19.8-20.6 s with it, 20.3-20.5 s without). It is best effort: if a `/warm` call fails,
+the real call still runs and reports the error. The agent skips the SR stage when
+`upscale` is false, so it never boots a GPU it will not use.
+
 ### Large data moves as URLs
 
 Stages return `File` outputs, which fal uploads to its CDN. The next stage gets a URL,
@@ -187,6 +203,9 @@ HARNESS_REQUEST_TIMEOUT=1800 python harness/check.py --example 04-genmedia-patte
 - **Hop overhead is about 1 s per stage when warm.** For a pipeline whose stages run for
   seconds to minutes, that is small. If one hop must be faster than that, put those two
   models in the same app.
+- **SR runs channels-last.** Real-ESRGAN's convolutions are faster in NHWC layout: on the
+  1920x1080 sample, the upscale phase went from 46.6 s to 38.1 s, with identical decoded
+  frames.
 - **Run independent stages at the same time.** This pipeline is a chain, but if your
   agent calls independent stages (for example, audio and video), start them with
   `asyncio.gather`.
