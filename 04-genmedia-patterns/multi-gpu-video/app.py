@@ -1,8 +1,10 @@
 """Multi-GPU video: WAN 2.2 A14B sharded across 4 GPUs with fal.distributed."""
 
+import asyncio
 import os
 import random
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +19,9 @@ from pydantic import BaseModel, Field, field_validator
 MODEL_ID = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 MODEL_REVISION = "5be7df9619b54f4e2667b2755bc6a756675b5cd7"
 NUM_GPUS = 4
+# A rank that never joins a collective hangs the others with 0% GPU use; cap the wait.
+WARMUP_TIMEOUT_S = 900
+GENERATE_TIMEOUT_S = 900
 
 # HF repo is fp32 (~126 GB); convert once to bf16 on /data (persists account-wide).
 CONVERTED_DIR = "/data/models/wan22-t2v-a14b-bf16"
@@ -120,8 +125,8 @@ class WanWorker(DistributedWorker):
         pipe.transformer_2.enable_parallelism(config=cp)
 
         pipe.vae.enable_tiling()
-        # MoE stages are disjoint; offload keeps only the active expert (~30/80 GB).
-        pipe.enable_model_cpu_offload(device=self.device)
+        # All weights stay resident: CPU offload would move ~64 GB each way per request.
+        pipe.to(self.device)
         self.pipe = pipe
 
     def __call__(  # type: ignore[override]  # intentional kwargs narrowing
@@ -155,7 +160,8 @@ class WanWorker(DistributedWorker):
             guidance_scale=guidance_scale,
             guidance_scale_2=guidance_scale_2,
             generator=generator,
-            output_type="np",
+            # Every rank holds the same final latents; only rank 0 needs pixels.
+            output_type="np" if self.rank == 0 else "latent",
         )
         generate_seconds = round(time.perf_counter() - t0, 1)
 
@@ -172,7 +178,7 @@ class MultiGpuVideo(fal.App, keep_alive=300):
     machine_type = "GPU-H100"
     num_gpus = NUM_GPUS  # class attribute, not a class kwarg
     app_auth = "private"
-    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~8 min.
+    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~3 min.
     startup_timeout = 3600
     # Authoritative; requirements.txt mirrors this exactly.
     requirements = [
@@ -212,13 +218,22 @@ class MultiGpuVideo(fal.App, keep_alive=300):
                 # Another boot won the race and already published its copy.
                 shutil.rmtree(tmp_dir)
 
+        # One parallel read fills the page cache that all ranks then load from.
+        subprocess.run(
+            f"find {CONVERTED_DIR} -type f | xargs -P 32 -I {{}} cat {{}} > /dev/null",
+            shell=True,
+            check=True,
+        )
         self.runner = DistributedRunner(worker_cls=WanWorker, world_size=NUM_GPUS)
         await self.runner.start(timeout=1800)
 
-        # Warm at the default request shape: attention kernels autotune per shape
-        # (a cold shape adds ~40 s); worker errors arrive as an "error" key, not raised.
-        warmup = await self.runner.invoke(
-            _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
+        # Warm at the default request shape; worker errors arrive as an "error" key,
+        # not raised. A hung warmup fails setup() so fal replaces the runner.
+        warmup = await asyncio.wait_for(
+            self.runner.invoke(
+                _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
+            ),
+            timeout=WARMUP_TIMEOUT_S,
         )
         assert "error" not in warmup, f"warmup failed: {warmup}"
         os.remove(warmup["video_path"])
@@ -228,7 +243,16 @@ class MultiGpuVideo(fal.App, keep_alive=300):
         seed = (
             request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
         )
-        result = await self.runner.invoke(_worker_payload(request, seed))
+        try:
+            result = await asyncio.wait_for(
+                self.runner.invoke(_worker_payload(request, seed)),
+                timeout=GENERATE_TIMEOUT_S,
+            )
+        except TimeoutError as exc:
+            # 503: fal terminates this runner and retries the request on a new one.
+            raise HTTPException(
+                status_code=503, detail="ranks stopped making progress"
+            ) from exc
         if "error" in result:
             # 500: not billed and not retried; fal health-checks the runner.
             raise HTTPException(

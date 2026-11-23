@@ -150,7 +150,7 @@ Three choices make this app much faster than the obvious version:
 
 See [`multi-gpu-video`](../multi-gpu-video/) for the parts that are the same in both
 examples: the bf16 conversion on `/data`, the `{"error": ...}` worker contract, and the
-warmup. That example still uses CPU offload.
+warmup. It uses the same resident-weights setup on 4 GPUs.
 
 ## Deploy
 
