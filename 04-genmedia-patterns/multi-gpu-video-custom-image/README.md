@@ -26,18 +26,20 @@ durable copy):
 ```json
 {
   "video": {
-    "url": "https://v3b.fal.media/files/b/0ab34845/5wzQuA4Jln4TBUgaRbCcH_wan22-d42db670b2fc4ad1a8b4699ec0f778e3.mp4",
+    "url": "https://v3b.fal.media/files/b/0ab392a3/cC-qJ0CzCd2vWCl3f28ls_wan22-8542e4f6bd2345fe85df6b3a3d134ab1.mp4",
     "content_type": "video/mp4",
-    "file_name": "wan22-d42db670b2fc4ad1a8b4699ec0f778e3.mp4",
+    "file_name": "wan22-8542e4f6bd2345fe85df6b3a3d134ab1.mp4",
     "file_size": 840455
   },
   "seed": 7,
   "num_gpus": 8,
-  "timings": {"generate": 155.5}
+  "timings": {"generate": 106.6}
 }
 ```
 
-`ffprobe` on the clip shows 1280x720, 81 frames, 16 fps.
+`ffprobe` on the clip shows 1280x720, 81 frames, 16 fps. The committed file is
+byte-identical to the output of an earlier revision that used CPU offload, so the speed-ups
+described below do not change the output.
 
 ## Run it
 
@@ -53,8 +55,9 @@ fal run app.py --auth private
 `fal run` ignores `app_auth` and makes the temporary app public unless you pass
 `--auth private`. Without it, anyone with the URL could run eight H100s on your bill.
 
-On a healthy node, `fal run` was serving in about 5 minutes: the 8 workers loaded the bf16
-copy in under a minute, and the warmup took the rest, mostly kernel autotuning.
+On a healthy node, the app was serving about 2 minutes after the runner started: about
+1 minute to pre-read the bf16 copy into the page cache, under 40 s for the 8 workers to
+load it onto their GPUs, and under 20 s for the warmup.
 
 Use Python 3.11 locally. fal sends your app class to the runner as pickled bytecode, so
 your Python version must match the Python in the image.
@@ -129,9 +132,25 @@ app limits both waits:
 - Each request has a 15-minute limit. If it hangs, the endpoint returns a 503. fal then
   terminates the runner and retries the request on a new one.
 
+### Where the time goes, and what keeps it short
+
+Three choices make this app much faster than the obvious version:
+
+- **Every rank keeps the whole pipeline on its GPU.** Sequence parallelism shards the
+  sequence, not the weights, so each rank holds both experts, the text encoder, and the
+  VAE: about 64 GB. Peak use at 720p x 81 frames was 66 GiB of the H100's 80. diffusers'
+  `enable_model_cpu_offload` would fit in less memory, but it moves the models to the GPU
+  and back on every request. With offload, the default request took 56 s; without it,
+  4.2 s.
+- **Only rank 0 decodes.** After the last step every rank holds the same latents. The
+  other seven ask for `output_type="latent"` and skip the VAE decode.
+- **One parallel read before the workers start.** `setup()` reads the bf16 files once
+  with 32 parallel `cat`s, so the 8 workers load from the page cache. Without it, the
+  workers took 4 min 22 s to load on one boot; with it, about 1.5 minutes in total.
+
 See [`multi-gpu-video`](../multi-gpu-video/) for the parts that are the same in both
-examples: the bf16 conversion on `/data`, CPU offload of the inactive expert, the
-`{"error": ...}` worker contract, and the warmup.
+examples: the bf16 conversion on `/data`, the `{"error": ...}` worker contract, and the
+warmup. That example still uses CPU offload.
 
 ## Deploy
 
@@ -175,18 +194,15 @@ Measured on 8x GPU-H100 with this Dockerfile (CUDA 13.0.2) on 2026-11-22 (fal 1.
 diffusers 0.39.0, one registered deploy, warm runner). These are single measurements, not
 a guarantee:
 
-| Config | `generate` on 8 GPUs | `generate` on 4 GPUs ([`multi-gpu-video`](../multi-gpu-video/)) |
-|---|---|---|
-| 720p · 81 frames · 27 steps | 158.9 s | ~270-282 s |
-| 480p · 33 frames · 6 steps (defaults) | 56.1-56.2 s | ~62-95 s (request wall-clock, not `generate`) |
+| Config | This app | This app with CPU offload | 4 GPUs with CPU offload ([`multi-gpu-video`](../multi-gpu-video/)) |
+|---|---|---|---|
+| 720p · 81 frames · 27 steps | 106.6 s | 158.9 s | ~270-282 s |
+| 480p · 33 frames · 6 steps (defaults) | 4.2 s | 56.1-56.2 s | ~62-95 s (request wall-clock) |
 
-An earlier revision of the Dockerfile on a CUDA 12.8.1 base measured 155.5 s and
-54.5-56.0 s for the same two configs, so the base image does not change the speed.
-
-Doubling the GPUs cut the full-quality clip from about 280 s to 159 s (1.8x). The short
-480p default gains much less. At 6 steps the fixed per-request costs, such as moving the
-two experts between CPU and GPU (`enable_model_cpu_offload`) and the VAE decode, are a
-large share of the time, and more GPUs do not shorten them.
+Times are `timings.generate`. At the defaults, a request takes about 6.5 s from the client.
+An instrumented run split the 720p request into 97 s of denoising and 11.5 s of VAE decode
+on rank 0. The first 720p request on a runner warmed at 480p took as long as the second,
+so there is no per-shape warm-up cost.
 
 Building the image with `fal deploy --no-cache` took about 3 minutes on fal's builders.
 The one-time bf16 conversion on `/data` was observed once, on the account's first boot,

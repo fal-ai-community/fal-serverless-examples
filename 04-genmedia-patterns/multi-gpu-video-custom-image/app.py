@@ -4,6 +4,7 @@ import asyncio
 import os
 import random
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -129,8 +130,9 @@ class WanWorker(DistributedWorker):
         pipe.transformer_2.enable_parallelism(config=cp)
 
         pipe.vae.enable_tiling()
-        # MoE stages are disjoint; offload keeps only the active expert (~30/80 GB).
-        pipe.enable_model_cpu_offload(device=self.device)
+        # All weights stay resident (measured peak ~66 of 80 GB at 720p x 81 frames):
+        # CPU offload would move ~64 GB each way per request.
+        pipe.to(self.device)
         self.pipe = pipe
 
     def __call__(  # type: ignore[override]  # intentional kwargs narrowing
@@ -164,7 +166,8 @@ class WanWorker(DistributedWorker):
             guidance_scale=guidance_scale,
             guidance_scale_2=guidance_scale_2,
             generator=generator,
-            output_type="np",
+            # Every rank holds the same final latents; only rank 0 needs pixels.
+            output_type="np" if self.rank == 0 else "latent",
         )
         generate_seconds = round(time.perf_counter() - t0, 1)
 
@@ -185,7 +188,7 @@ class MultiGpuVideoCustomImage(fal.App, keep_alive=300):
     machine_type = "GPU-H100"
     num_gpus = NUM_GPUS  # class attribute, not a class kwarg
     app_auth = "private"
-    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~8 min.
+    # First boot/account: ~126 GB download + bf16 convert (~35 min); later boots ~2 min.
     startup_timeout = 3600
     # Dependencies are pinned in the Dockerfile; no `requirements` list here.
     image = ContainerImage.from_dockerfile(str(DOCKERFILE))
@@ -213,11 +216,18 @@ class MultiGpuVideoCustomImage(fal.App, keep_alive=300):
                 # Another boot won the race and already published its copy.
                 shutil.rmtree(tmp_dir)
 
+        # One parallel read fills the page cache that all 8 ranks then load from;
+        # measured ~3 min faster than 8 ranks pulling the same files from /data.
+        subprocess.run(
+            f"find {CONVERTED_DIR} -type f | xargs -P 32 -I {{}} cat {{}} > /dev/null",
+            shell=True,
+            check=True,
+        )
         self.runner = DistributedRunner(worker_cls=WanWorker, world_size=NUM_GPUS)
         await self.runner.start(timeout=1800)
 
-        # Warm at the default request shape: attention kernels autotune per shape
-        # (a cold shape adds ~40 s); worker errors arrive as an "error" key, not raised.
+        # One real generation proves the model end to end before the runner reports
+        # healthy; worker errors arrive as an "error" key, not raised.
         # A hung warmup fails setup() so fal replaces the runner instead of idling.
         warmup = await asyncio.wait_for(
             self.runner.invoke(
