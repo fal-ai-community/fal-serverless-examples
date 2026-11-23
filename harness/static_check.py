@@ -12,6 +12,7 @@ REQUIRED_FILES = ("app.py", "README.md", "requirements.txt", "test_app.py")
 
 def check_example(example_dir: Path) -> list[str]:
     from harness.check import (
+        discover_stages,
         discover_variants,
         load_app_class,
         pick_endpoint,
@@ -31,7 +32,7 @@ def check_example(example_dir: Path) -> list[str]:
         if line.strip() and not line.strip().startswith("#")
     ]
 
-    for app_file in discover_variants(example_dir):
+    for app_file in [*discover_variants(example_dir), *discover_stages(example_dir)]:
         where = "" if app_file.name == "app.py" else f"{app_file.name}: "
         try:
             app_cls = load_app_class(app_file)
@@ -50,8 +51,10 @@ def check_example(example_dir: Path) -> list[str]:
         except Exception as exc:
             errors.append(f"{where}{exc}")
 
-        # image-based variants declare no requirements - nothing to mirror
-        if app_cls.requirements and pinned != app_cls.requirements:
+        # image-based variants declare no requirements - nothing to mirror;
+        # stages pin their own requirements and are not mirrored.
+        is_stage = app_file.name.startswith("stage_")
+        if app_cls.requirements and not is_stage and pinned != app_cls.requirements:
             errors.append(
                 f"{where}requirements.txt does not mirror App.requirements exactly "
                 f"(file: {pinned} vs app: {app_cls.requirements})"

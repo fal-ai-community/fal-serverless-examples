@@ -1,5 +1,6 @@
 """Free unit tests plus one live harness smoke test for multi-gpu-video."""
 
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -38,6 +39,22 @@ def test_defaults_are_the_ci_smoke_config():
     assert i.resolution == "480p"
     assert i.num_frames == 33
     assert i.num_inference_steps == 6
+
+
+def test_hung_ranks_return_503(monkeypatch):
+    from fastapi import HTTPException
+
+    class HungRunner:
+        async def invoke(self, payload):
+            await asyncio.sleep(3600)
+
+    app = object.__new__(app_module.MultiGpuVideo)
+    app.runner = HungRunner()
+    monkeypatch.setattr(app_module, "GENERATE_TIMEOUT_S", 0.05)
+    request = app_module.Input(prompt="x")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(app_module.MultiGpuVideo.generate(app, request))
+    assert exc.value.status_code == 503
 
 
 # Live: only under harness/check.py (app_client skips otherwise); each run spins 4 GPUs.

@@ -16,18 +16,18 @@ A text prompt in; a CDN-hosted mp4 (16 fps) out, with the seed echoed so the sam
 reproduce the same clip. This
 [720p sample clip](assets/sample-720p-seed7.mp4)
 is the real output of this example's validation run against a registered deploy
-(720p, 81 frames, 27 steps, seed 7), response verbatim:
+(720p, 81 frames, 27 steps, seed 7). The response:
 
 ```json
 {
   "video": {
-    "url": "https://v3b.fal.media/files/b/0aa5f482/O2ywRcibrXZ1YRCIu27CA_wan22-1d96a465e70c4e76ba364350cd034fc4.mp4",
+    "url": "https://v3b.fal.media/files/b/0ab3965d/2_A_-8Lw4nhxCS1mIYxLj_wan22-bd3f9efeebb54e6b868e9e7fba5b6180.mp4",
     "content_type": "video/mp4",
-    "file_name": "wan22-1d96a465e70c4e76ba364350cd034fc4.mp4",
-    "file_size": 841093
+    "file_name": "wan22-bd3f9efeebb54e6b868e9e7fba5b6180.mp4",
+    "file_size": 840455
   },
   "seed": 7,
-  "timings": {"generate": 282.2}
+  "timings": {"generate": 196.9}
 }
 ```
 
@@ -37,7 +37,7 @@ limited retention, so the durable copies are the two clips committed under
 
 The CI deploy-check exercises the same endpoint at the fast defaults (480p, 33 frames,
 6 steps) - [its output clip](assets/ci-defaults-480p.mp4)
-comes back in about a minute on a warm runner. Timings vary with the node and whether
+comes back in about 10 seconds on a warm runner. Timings vary with the node and whether
 the shape is warm - see the measured table under Cost & tuning.
 
 ## Run it
@@ -56,7 +56,7 @@ fal run app.py
 
 The first-ever boot on your account downloads the ~126 GB fp32 weights and stores a bf16
 copy on [`/data`](https://fal.ai/docs/documentation/development/use-persistent-storage) (roughly half an hour,
-once). Every boot after that loads the converted copy and is serving in a few minutes.
+once). Every boot after that loads the converted copy and is serving in about 3 minutes.
 `fal run` prints the playground and API URLs when the app is up.
 
 ## How it works
@@ -97,23 +97,33 @@ full strategy taxonomy.
 
 ### The MoE VRAM budget
 
-Sequence parallelism shards the *sequence*, not the weights - all ~70 GB would sit on
-every rank. Two tricks keep 80 GB H100s comfortable:
+Sequence parallelism shards the *sequence*, not the weights - the whole pipeline sits on
+every rank, and it fits:
 
 - **bf16 pre-conversion on `/data`**: the HF repo stores fp32 (~126 GB); `setup()`
-  converts once to bf16, so all four workers read half the bytes on every later boot
-  (measured: worker load drops from ~14 min worst-case to ~2-4 min).
-- **Sequenced CPU offload** (`enable_model_cpu_offload`): WAN 2.2's two experts run in
-  disjoint denoising stages, so only the active component stays resident - peak is
-  ~27-30 GB per GPU, with headroom all the way to 720p x 81 frames.
+  converts once to bf16, so all four workers read half the bytes on every later boot.
+  Before starting the workers, `setup()` reads that copy once in parallel, so the four
+  ranks load from the page cache instead of each pulling the same files from `/data`.
+- **Weights stay resident**: both experts, the text encoder and the VAE live on every
+  GPU - measured peak 65 GiB at the defaults and 67 GiB at 720p x 81 frames, of 80.
+  `enable_model_cpu_offload` would cut that to ~27-30 GB, but it moves the experts
+  between CPU and GPU on every request, which cost ~45 s per request at the defaults.
+- **Only rank 0 decodes**: every rank ends with the same latents, so the others return
+  them undecoded (`output_type="latent"`) instead of running the VAE for nothing.
 
 ### The error contract
 
 Worker exceptions do **not** raise on the caller side - `runner.invoke()` returns
-`{"error": "..."}`, and the endpoint re-raises it as a 5xx (which fal does not bill and
-retries on healthy hardware). The warmup in `setup()` asserts on that key so a broken
-model never reports healthy - and it warms the default 480p/33-frame shape, because
-attention kernels autotune per shape and a cold shape adds ~40 s to the first request.
+`{"error": "..."}`, and the endpoint re-raises it as a 500. fal does not bill a 500 and
+health-checks the runner, but does not retry the request
+([retries](https://fal.ai/docs/documentation/serverless/reliability/retries)). The warmup in `setup()` asserts on that key so a broken
+model never reports healthy, and it warms the default 480p/33-frame shape.
+
+A rank that stops responding never raises: the other ranks wait inside an NCCL
+collective at 0% GPU use. Both the warmup and each request are capped with
+`asyncio.wait_for`. A hung warmup fails `setup()`, so fal replaces the runner; a hung
+request returns a 503, which makes fal terminate the runner and retry the request on a
+new one.
 One more honesty note: each runner handles one request at a time - fal's default
 `max_multiplexing = 1` admits a single request per runner, and the distributed workers
 process tasks serially - so this endpoint scales by adding runners (raise
@@ -165,7 +175,7 @@ curl -X POST https://queue.fal.run/<your-username>/multi-gpu-video \
 ```
 
 That 720p call is also this example's validation protocol: deploy, run it once, confirm
-the returned mp4 plays. (Last run 2026-08-11 - it produced the sample clip at the top of
+the returned mp4 plays. (Last run 2026-11-22 - it produced the sample clip at the top of
 this page.)
 
 ## Cost & tuning
@@ -181,17 +191,18 @@ this page.)
   fast path; WAN's native quality settings (720p, 81 frames, 27 steps) use the same
   endpoint and seed semantics.
 
-Measured on real 4x GPU-H100 runs (validation deploys 2026-08-04/05, registered-deploy
-run 2026-08-11; fal 1.78.2, diffusers 0.39.0) - one-time
-measurements, not a guarantee:
+Measured 2026-11-22 on 4x GPU-H100 (fal 1.78.2, diffusers 0.39.0, seed 7), against the
+same app with CPU offload deployed side by side - one-time measurements, not a
+guarantee. Both variants returned byte-identical clips for both configs.
 
-| Config | Wall-clock |
-|---|---|
-| 480p · 33 frames · 6 steps (defaults, warm shape) | ~62-95 s |
-| 720p · 81 frames · 27 steps | ~270-282 s |
+| Config | This app (`generate`) | With CPU offload |
+|---|---|---|
+| 480p · 33 frames · 6 steps (defaults, warm) | 6.2 s | 49.7-58.1 s |
+| 720p · 81 frames · 27 steps | 196.9 s | 239.3 s |
+| Boot, deploy to ready (bf16 copy present) | 153 s | 357 s |
 
-Node-to-node variance is real: worker boot ranged 15 s (page-cache-warm node) to 221 s
-(cold node) on the bf16 copy, and host-to-device bandwidth varies with the machine.
+Node-to-node variance is real: boot time depends on how much of the bf16 copy is
+already in the node's page cache, and host-to-device bandwidth varies with the machine.
 Multi-GPU capacity can also queue - a 4-GPU allocation may wait when capacity is tight
 (we have seen tens of minutes at peak), which is one more reason to call this endpoint
 through the queue with generous client timeouts rather than synchronous HTTP.

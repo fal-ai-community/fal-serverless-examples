@@ -88,4 +88,6 @@ jobs:
           # 3d-progressive-rendering compiles flash-attn and pytorch3d from
           # source; on a cold fal build cache that exceeds the 900s default.
           HARNESS_URL_TIMEOUT: "3600"
+          # multi-app-pipeline's smoke request can hit three cold stage apps.
+          HARNESS_REQUEST_TIMEOUT: "1800"
         run: python harness/check.py --example "$EXAMPLE"

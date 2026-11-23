@@ -9,6 +9,7 @@ import json
 import os
 import re
 import runpy
+import subprocess
 import sys
 import threading
 import time
@@ -67,6 +68,28 @@ def discover_examples() -> list[Path]:
 def discover_variants(example_dir: Path) -> list[Path]:
     """Return app.py plus any app_<variant>.py; all must pass the same test_app.py."""
     return sorted(example_dir.glob("app*.py"))
+
+
+def discover_stages(example_dir: Path) -> list[Path]:
+    """stage_*.py: apps that app.py calls by name; deployed before app.py is checked."""
+    return sorted(example_dir.glob("stage_*.py"))
+
+
+def deploy_stages(example_dir: Path) -> None:
+    """`fal deploy` each stage so the agent is checked against this tree's code."""
+    for stage_file in discover_stages(example_dir):
+        log(f"  deploying stage {stage_file.name}")
+        result = subprocess.run(
+            [sys.executable, "-m", "fal", "deploy", stage_file.name, "--yes"],
+            cwd=example_dir,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=URL_TIMEOUT_S,
+        )
+        if result.returncode != 0:
+            tail = (result.stdout + result.stderr)[-2000:]
+            raise CheckError(f"stage deploy failed: {stage_file.name}\n{tail}")
 
 
 def load_app_class(app_file: Path):
@@ -394,6 +417,7 @@ def check(example_dir: Path, teardown_report: dict | None = None) -> None:
     variants = discover_variants(example_dir)
     if not variants:
         raise CheckError(f"{example_dir}: no app.py")
+    deploy_stages(example_dir)
     for app_file in variants:
         if len(variants) > 1:
             log(f"  variant {app_file.name}")
