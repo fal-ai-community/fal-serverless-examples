@@ -8,6 +8,7 @@ CI checks correctness only — deploy + health + smoke + tests; it does not meas
 
 `python harness/check.py --example <dir>` — omit `--example` (or pass an empty value, as CI does) to check all examples:
 
+0. If the example has `stage_*.py` files (apps that `app.py` calls by name), runs a registered `fal deploy` on each one first. Those apps stay deployed and scale to zero when idle.
 1. Ephemeral-deploys the example's app (AppClient spawn pattern) with **private** auth.
 2. Waits for `/health`, fires **one smoke request** at the example's `/` endpoint (payload built from the Input model's `Field(examples=[...])`), and validates a 2xx response.
 3. Runs the example's `test_app.py` (if present) against the live app via the `app_client` fixture from `harness/pytest_plugin.py`.
@@ -41,10 +42,9 @@ One code path for both environments (`fal.sdk.get_credentials()`):
 
 A preflight call fails the whole run in seconds (with a real error) on bad credentials.
 
-`FAL_KEY` alone is not enough: the harness checks every example and has no skip list, so three examples need extra setup on the account that runs the deploy checks.
+`FAL_KEY` alone is not enough: the harness checks every example and has no skip list, so two examples need extra setup on the account that runs the deploy checks.
 
 - **Required** — `04-genmedia-patterns/3d-progressive-rendering` downloads gated weights. Request access to `facebook/sam-3d-objects` at huggingface.co/facebook/sam-3d-objects, then run `fal secrets set HF_TOKEN "hf_…"` on that account. Without the approval **and** the secret, that example fails its check.
-- **Required** — `04-genmedia-patterns/multi-app-pipeline` checks the agent app, which calls three stage apps by name. Deploy them once on that account: `fal deploy stage_llm.py`, `fal deploy stage_dit.py`, and `fal deploy stage_sr.py` from the example's directory. Redeploy them when a `stage_*.py` file changes.
 - **Optional** — `03-realtime-streaming/realtime-video-to-video` uses the `METERED_TURN_SECRET_KEY` and `METERED_TURN_LABEL` secrets for TURN relay. If they are absent, the app falls back to public STUN and the check still passes.
 
 ## Knobs (env vars)
@@ -53,7 +53,7 @@ A preflight call fails the whole run in seconds (with a real error) on bad crede
 |---|---|---|
 | `HARNESS_URL_TIMEOUT` | 900 | seconds to wait for the deploy to produce a URL (covers env build). An image built from source needs much more: CI sets 3600 for the flash-attn/pytorch3d compile in `04-genmedia-patterns/3d-progressive-rendering` |
 | `HARNESS_STARTUP_TIMEOUT` | 600 | seconds to wait for `/health` after the URL exists (covers `setup()`) |
-| `HARNESS_REQUEST_TIMEOUT` | 120 | timeout for the smoke request |
+| `HARNESS_REQUEST_TIMEOUT` | 120 | timeout for the smoke request. CI sets 1800, because `04-genmedia-patterns/multi-app-pipeline` can hit three cold stage apps |
 | `HARNESS_TEST_TIMEOUT` | 600 | timeout for the example's pytest run |
 
 ## Notes

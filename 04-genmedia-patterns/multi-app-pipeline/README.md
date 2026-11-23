@@ -164,14 +164,13 @@ The commands above were run end to end from a fresh clone on 2026-11-20 in three
 with the stages missing (the 502 above), with all four apps cold, and with all of them
 warm.
 
-To test a change before you deploy it, use the repository's deploy-check harness. The test
-suite has free unit tests and one live test. The live test runs only under the
-deploy-check harness, and only after the three stages are deployed on the harness
-account. The harness checks only `app*.py` files, so it tests the agent against whatever
-stage versions are deployed:
+To test a change, use the repository's deploy-check harness. The test suite has free unit
+tests and one live test, which runs only under the harness. The harness first runs
+`fal deploy` on each `stage_*.py` file, so the agent is always tested against the stage
+code in your tree. It then checks the agent. The stage apps stay deployed afterwards and
+scale to zero when idle:
 
 ```bash
-fal deploy stage_llm.py && fal deploy stage_dit.py && fal deploy stage_sr.py
 HARNESS_REQUEST_TIMEOUT=1800 python harness/check.py --example 04-genmedia-patterns/multi-app-pipeline
 ```
 
