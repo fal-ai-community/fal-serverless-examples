@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import httpx
+import pytest
 
 HERE = Path(__file__).parent
 
@@ -59,6 +60,24 @@ def test_dockerfile_installs_python_311_and_fal_last():
     ]
     assert pip_lines, "no python3.11 pip installs"
     assert "fal==" in pip_lines[-1]
+
+
+def test_hung_ranks_return_503(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    class HungRunner:
+        async def invoke(self, payload):
+            await asyncio.sleep(3600)
+
+    app = object.__new__(app_module.MultiGpuVideoCustomImage)
+    app.runner = HungRunner()
+    monkeypatch.setattr(app_module, "GENERATE_TIMEOUT_S", 0.05)
+    request = app_module.Input(prompt="x")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(app_module.MultiGpuVideoCustomImage.generate(app, request))
+    assert exc.value.status_code == 503
 
 
 # Live: only under harness/check.py (app_client skips otherwise); each run spins 8 GPUs.

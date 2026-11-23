@@ -112,6 +112,17 @@ count. WAN has 40 heads, so 2, 4, or 8 GPUs work. `test_app.py` checks this rule
 your own model, check its head count
 before you pick `num_gpus`.
 
+### When one GPU stops responding
+
+If one rank fails to join a collective, the other seven wait for it. Their GPUs sit at 0%
+while the runner keeps billing for eight. A single faulty GPU is enough to cause this. The
+app limits both waits:
+
+- The warmup in `setup()` has a 15-minute limit. If it hangs, `setup()` fails and fal
+  replaces the runner.
+- Each request has a 15-minute limit. If it hangs, the endpoint returns a 503. fal then
+  terminates the runner and retries the request on a new one.
+
 See [`multi-gpu-video`](../multi-gpu-video/) for the parts that are the same in both
 examples: the bf16 conversion on `/data`, CPU offload of the inactive expert, the
 `{"error": ...}` worker contract, and the warmup.
@@ -154,22 +165,27 @@ print(result["video"]["url"], result["num_gpus"])
 - **One request at a time per runner.** All eight GPUs work on one video. To serve more
   videos at the same time, add runners (`max_concurrency`).
 
-Measured on 8x GPU-H100 on 2026-11-20 (fal 1.78.2, diffusers 0.39.0, one registered
-deploy, warm runner). These are single measurements, not a guarantee:
+Measured on 8x GPU-H100 with this Dockerfile (CUDA 13.0.2) on 2026-11-22 (fal 1.78.2,
+diffusers 0.39.0, one registered deploy, warm runner). These are single measurements, not
+a guarantee:
 
 | Config | `generate` on 8 GPUs | `generate` on 4 GPUs ([`multi-gpu-video`](../multi-gpu-video/)) |
 |---|---|---|
-| 720p · 81 frames · 27 steps | 155.5 s | ~270-282 s |
-| 480p · 33 frames · 6 steps (defaults) | 54.5-56.0 s | ~62-95 s (request wall-clock, not `generate`) |
+| 720p · 81 frames · 27 steps | 158.9 s | ~270-282 s |
+| 480p · 33 frames · 6 steps (defaults) | 56.1-56.2 s | ~62-95 s (request wall-clock, not `generate`) |
 
-Doubling the GPUs cut the full-quality clip from about 280 s to 156 s (1.8x). The short
+An earlier revision of the Dockerfile on a CUDA 12.8.1 base measured 155.5 s and
+54.5-56.0 s for the same two configs, so the base image does not change the speed.
+
+Doubling the GPUs cut the full-quality clip from about 280 s to 159 s (1.8x). The short
 480p default gains much less. At 6 steps the fixed per-request costs, such as moving the
 two experts between CPU and GPU (`enable_model_cpu_offload`) and the VAE decode, are a
 large share of the time, and more GPUs do not shorten them.
 
-The deploy-check harness run on the same day built the image from scratch, converted the
-weights to bf16 on `/data` (first boot on that account), launched 8 ranks, and passed the
-smoke request and `test_app.py`.
+Building the image with `fal deploy --no-cache` took about 3 minutes on fal's builders.
+The one-time bf16 conversion on `/data` was observed once, on the account's first boot,
+and was not timed separately. The deploy-check harness passed on the final Dockerfile:
+it launched 8 ranks and passed the smoke request and `test_app.py`.
 
 ## Next steps
 

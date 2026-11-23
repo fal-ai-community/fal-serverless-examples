@@ -1,5 +1,6 @@
 """WAN 2.2 A14B on 8 GPUs, served from a custom Dockerfile with fal.distributed."""
 
+import asyncio
 import os
 import random
 import shutil
@@ -20,6 +21,10 @@ MODEL_REVISION = "5be7df9619b54f4e2667b2755bc6a756675b5cd7"
 # Ulysses degree = NUM_GPUS and must divide WAN's 40 attention heads.
 NUM_GPUS = 8
 DOCKERFILE = Path(__file__).parent / "Dockerfile"
+# A rank that never joins a collective hangs the others with 0% GPU use; cap the wait.
+# The largest request (720p x 81 frames x 27 steps) measured ~160 s on 8 H100s.
+WARMUP_TIMEOUT_S = 900
+GENERATE_TIMEOUT_S = 900
 
 # Same path as multi-gpu-video: both examples share one bf16 copy on /data.
 CONVERTED_DIR = "/data/models/wan22-t2v-a14b-bf16"
@@ -213,8 +218,12 @@ class MultiGpuVideoCustomImage(fal.App, keep_alive=300):
 
         # Warm at the default request shape: attention kernels autotune per shape
         # (a cold shape adds ~40 s); worker errors arrive as an "error" key, not raised.
-        warmup = await self.runner.invoke(
-            _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
+        # A hung warmup fails setup() so fal replaces the runner instead of idling.
+        warmup = await asyncio.wait_for(
+            self.runner.invoke(
+                _worker_payload(Input(prompt="warmup", num_inference_steps=2), seed=0)
+            ),
+            timeout=WARMUP_TIMEOUT_S,
         )
         assert "error" not in warmup, f"warmup failed: {warmup}"
         os.remove(warmup["video_path"])
@@ -224,7 +233,16 @@ class MultiGpuVideoCustomImage(fal.App, keep_alive=300):
         seed = (
             request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
         )
-        result = await self.runner.invoke(_worker_payload(request, seed))
+        try:
+            result = await asyncio.wait_for(
+                self.runner.invoke(_worker_payload(request, seed)),
+                timeout=GENERATE_TIMEOUT_S,
+            )
+        except TimeoutError as exc:
+            # 503: fal terminates this runner and retries the request on a new one.
+            raise HTTPException(
+                status_code=503, detail="ranks stopped making progress"
+            ) from exc
         if "error" in result:
             # 500: not billed and not retried; fal health-checks the runner.
             raise HTTPException(
