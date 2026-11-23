@@ -69,8 +69,11 @@ Then run the agent. `fal run` gives you a temporary agent with a playground URL.
 the deployed stages:
 
 ```bash
-fal run app.py
+fal run app.py --auth private
 ```
+
+`fal run` ignores `app_auth` and makes the temporary app public unless you pass
+`--auth private`. A public agent would let anyone with the URL run your GPU stages.
 
 Or deploy it too and call it like any other fal app:
 

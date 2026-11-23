@@ -47,8 +47,14 @@ fal auth login
 
 git clone https://github.com/fal-ai-community/fal-serverless-examples.git
 cd fal-serverless-examples/04-genmedia-patterns/multi-gpu-video-custom-image
-fal run app.py
+fal run app.py --auth private
 ```
+
+`fal run` ignores `app_auth` and makes the temporary app public unless you pass
+`--auth private`. Without it, anyone with the URL could run eight H100s on your bill.
+
+On a healthy node, `fal run` was serving in about 5 minutes: the 8 workers loaded the bf16
+copy in under a minute, and the warmup took the rest, mostly kernel autotuning.
 
 Use Python 3.11 locally. fal sends your app class to the runner as pickled bytecode, so
 your Python version must match the Python in the image.
